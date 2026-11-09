@@ -120,6 +120,55 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await recorder.seek_start(self.page, '999', timeout=.1)
 
+    async def test_failure_diagnostics_omit_private_content_and_urls(self):
+        await self.page.set_content('<div id="postId_1" style="margin-top:120px;height:500px">Private caption'
+                                    '<img src="http://127.0.0.1:1/secret?token=PRIVATE" style="width:100px;height:100px"></div>')
+        diagnostics = await recorder.failure_diagnostics(self.page)
+        self.assertEqual(diagnostics[0]['cards'][0]['id'], '1')
+        self.assertFalse(diagnostics[0]['images'][0]['loaded'])
+        self.assertNotIn('PRIVATE', json.dumps(diagnostics))
+        self.assertNotIn('Private caption', json.dumps(diagnostics))
+
+    async def test_failed_visible_record_preserves_progress_and_waits_before_closing(self):
+        from playwright.async_api import TimeoutError
+        async def fail_walk(page, ids, **kwargs):
+            kwargs['seen'].append('300')
+            raise TimeoutError('secret browser URL?token=PRIVATE')
+        async def inspect_open_browser(page):
+            self.assertFalse(page.is_closed())
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / 'session.json'
+            await self.page.context.storage_state(path=str(state))
+            with patch.object(recorder, 'ROOT', Path(directory)), patch.object(recorder, 'STATE', state), \
+                 patch.object(recorder, 'seek_start', new=AsyncMock(return_value={'_frame': None})), \
+                 patch.object(recorder, 'video_boundary', new=AsyncMock()), \
+                 patch.object(recorder, 'capture_walk', side_effect=fail_walk), \
+                 patch.object(recorder, 'pause_failed_test', side_effect=inspect_open_browser) as pause, \
+                 patch.object(recorder, 'launch_browser', new=AsyncMock(return_value=self.browser)):
+                # Use an existing browser to exercise real context/video cleanup without a desktop.
+                await self.page.route('https://app.agencykey.com/**', lambda route: route.fulfill(body='fixture'))
+                original = self.browser.new_context
+                async def routed_context(**kwargs):
+                    context = await original(**kwargs)
+                    await context.route('https://app.agencykey.com/**', lambda route: route.fulfill(body='fixture'))
+                    return context
+                with patch.object(self.browser, 'new_context', side_effect=routed_context):
+                    with self.assertRaisesRegex(ValueError, 'recorrer posts / cargar imágenes'):
+                        await recorder.record({'profile_url': 'https://app.agencykey.com/models/123',
+                                               'post_ids_newest_first': ['300', '200']})
+                pause.assert_awaited_once()
+            report_path = next(Path(directory).glob('output/*/report.json'))
+            report = json.loads(report_path.read_text())
+            self.assertFalse(report['headless'])
+            self.assertEqual(report['seen'], ['300'])
+            self.assertEqual(report['next_post_id'], '200')
+            self.assertEqual(report['error_type'], 'TimeoutError')
+            self.assertEqual(report['status'], 'incomplete')
+            self.assertNotIn('PRIVATE', report_path.read_text())
+            self.assertFalse((report_path.parent / 'raw').exists())
+            with self.assertRaisesRegex(ValueError, 'no está completo'):
+                recorder.verified_video(report_path)
+
     async def test_pinned_post_does_not_define_start(self):
         await self.page.set_content('<div id="postId_1" class="m-pinned" style="height:200px;margin-top:120px">fijado</div>')
         with self.assertRaises(ValueError):
@@ -254,6 +303,26 @@ class SessionValidationTests(unittest.IsolatedAsyncioTestCase):
             context.storage_state.assert_not_awaited()
 
 
+class VisibilityTests(unittest.TestCase):
+    def test_cli_record_and_demo_show_browser_unless_headless_is_explicit(self):
+        for command in ('record', 'demo'):
+            for flags, expected in (([], False), (['--show-browser'], False), (['--headless'], True)):
+                with self.subTest(command=command, flags=flags), \
+                     patch.object(recorder.sys, 'argv', ['recorder.py', command, *flags]), \
+                     patch.object(recorder, 'load_config', return_value={}), \
+                     patch.object(recorder, 'record', new=AsyncMock()) as record:
+                    recorder.main()
+                    self.assertEqual(record.call_args.kwargs['headless'], expected)
+
+    def test_menu_propagates_visibility_to_recording(self):
+        for headless in (False, True):
+            with patch('builtins.input', side_effect=['3', '0']), \
+                 patch.object(recorder, 'load_config', return_value={}), \
+                 patch.object(recorder, 'record', new=AsyncMock()) as record:
+                recorder.menu(headless=headless)
+                self.assertEqual(record.call_args.kwargs['headless'], headless)
+
+
 class BrowserSetupTests(unittest.IsolatedAsyncioTestCase):
     async def test_installed_chrome_channel_is_used(self):
         browser = object()
@@ -290,3 +359,4 @@ class BrowserSetupTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
