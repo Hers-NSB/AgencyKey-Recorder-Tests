@@ -269,9 +269,9 @@ async def seek_start(page, newest: str, timeout: float = 120) -> dict:
     raise ValueError('No se localizó el primer post. Revisa los IDs, la modelo y si la sesión sigue iniciada.')
 
 
-async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 600, *, frame=None) -> list[str]:
+async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 600, *, frame=None, seen=None) -> list[str]:
     frame = frame or await post_frame(page) or page.main_frame
-    seen: list[str] = []
+    seen = [] if seen is None else seen
     deadline = monotonic() + timeout
     while monotonic() < deadline:
         if frame.is_detached():
@@ -376,7 +376,36 @@ def encode(source: Path, target: Path, start: float, duration: float) -> None:
         raise ValueError('No se pudo generar un video válido.')
 
 
-async def record(config: dict, *, fixture: Path | None = None, headless: bool = True, dwell: float = 0) -> Path:
+async def failure_diagnostics(page) -> list[dict]:
+    """Only collect geometry and load state; omit URLs, text and session data."""
+    result = []
+    for index, frame in enumerate(page.frames):
+        if frame.is_detached():
+            continue
+        try:
+            cards = await frame.evaluate(SNAPSHOT)
+            images = await frame.evaluate(r'''() => [...document.querySelectorAll('[id^="postId_"] img')]
+                .filter(img => { const r=img.getBoundingClientRect();
+                    return r.width>0 && r.height>0 && r.bottom>100 && r.top<innerHeight; })
+                .map(img => ({post_id:img.closest('[id^="postId_"]').id.slice(7),
+                    complete:img.complete, loaded:img.naturalWidth>0}))''')
+            result.append({'frame_index': index, 'cards': cards, 'images': images})
+        except Exception:
+            result.append({'frame_index': index, 'unavailable': True})
+    return result
+
+
+async def pause_failed_test(page) -> None:
+    if page.is_closed():
+        return
+    print('Chrome queda abierto en el punto del fallo para revisarlo.', flush=True)
+    try:
+        await asyncio.to_thread(input, 'Pulsa Enter en esta consola para cerrar Chrome: ')
+    except EOFError:
+        pass
+
+
+async def record(config: dict, *, fixture: Path | None = None, headless: bool = False, dwell: float = 0) -> Path:
     from playwright.async_api import async_playwright
     if not fixture and not STATE.exists():
         raise ValueError('Ejecuta primero Conectar AgencyKey.')
@@ -400,18 +429,37 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         context = await browser.new_context(**options)
         page = await context.new_page()
         try:
+            report['stage'] = 'abrir perfil'
+            print('Etapa: abrir perfil', flush=True)
             url = fixture.resolve().as_uri() if fixture else config['profile_url']
             await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            report['stage'] = 'buscar y encuadrar primer post / cargar imágenes'
+            print(f'Etapa: {report["stage"]} · ID {report["first_post_id"]}', flush=True)
             first = await seek_start(page, config['post_ids_newest_first'][0], timeout=10 if fixture else 120)
             print(f'Inicio del comprobante: post {config["post_ids_newest_first"][0]} · segundo plano: {headless}', flush=True)
+            report['stage'] = 'marcar inicio del video'
             await video_boundary(page)
-            report['seen'] = await capture_walk(page, config['post_ids_newest_first'], dwell=dwell,
-                                                 timeout=30 if fixture else 600, frame=first['_frame'])
+            report['stage'] = 'recorrer posts / cargar imágenes'
+            await capture_walk(page, config['post_ids_newest_first'], dwell=dwell,
+                               timeout=30 if fixture else 600, frame=first['_frame'], seen=report['seen'])
             await page.wait_for_timeout(120)
+            report['stage'] = 'marcar fin del video'
             await video_boundary(page)
         except Exception as exc:
             error = exc
-            report['error'] = str(exc) if isinstance(exc, ValueError) else 'No se completó el recorrido. Revisa sesión, IDs, orden y carga de imágenes.'
+            from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+            report['error_type'] = type(exc).__name__
+            reason = str(exc) if isinstance(exc, ValueError) else (
+                'Se agotó el tiempo de espera del navegador.' if isinstance(exc, PlaywrightTimeoutError)
+                else f'Error del navegador ({type(exc).__name__}).')
+            report['error'] = f'Etapa: {report["stage"]}. {reason}'
+            report['next_post_id'] = next((pid for pid in report['post_ids'] if pid not in report['seen']), None)
+            report['diagnostics'] = await failure_diagnostics(page)
+            save_json(report_path, report)
+            print(f'{report["error"]}\nPosts comprobados: {len(report["seen"])}/{len(report["post_ids"])}'
+                  f' · siguiente ID: {report["next_post_id"]}\nInforme: {report_path}', flush=True)
+            if not headless and not fixture:
+                await pause_failed_test(page)
         finally:
             await context.close()
             if page.video:
@@ -420,10 +468,12 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
     try:
         if error:
             raise ValueError(report['error']) from error
+        report['stage'] = 'verificar límites del video'
         started, ended = await asyncio.to_thread(video_bounds, raw)
+        report['stage'] = 'convertir video a MP4'
         video = output / 'comprobante.mp4'
         await asyncio.to_thread(encode, raw, video, started, ended - started)
-        report.update(status='complete', duration_seconds=round(ended-started, 2),
+        report.update(status='complete', stage='completo', duration_seconds=round(ended-started, 2),
                       bytes=video.stat().st_size, sha256=hashlib.sha256(video.read_bytes()).hexdigest(),
                       video='comprobante.mp4')
         print(f'Video completo: {video}\nTamaño: {video.stat().st_size / 1_000_000:.2f} MB')
@@ -554,8 +604,8 @@ def latest_report() -> Path:
     return reports[-1]
 
 
-def menu() -> None:
-    print('Chrome instalado · grabación en segundo plano · movimiento continuo.')
+def menu(*, headless: bool = False) -> None:
+    print(f'Chrome instalado · navegador {"oculto" if headless else "visible"} · movimiento continuo.')
     print(f'Carpeta de datos y videos: {ROOT}')
     while True:
         print('\nAgencyKey Recorder Tests — independiente de Dropper\n'
@@ -570,12 +620,12 @@ def menu() -> None:
             elif choice == '2':
                 asyncio.run(login())
             elif choice == '3':
-                asyncio.run(record(load_config()))
+                asyncio.run(record(load_config(), headless=headless))
             elif choice == '4':
                 asyncio.run(send(latest_report()))
             elif choice == '5':
                 asyncio.run(record({'profile_url': 'SIMULACIÓN', 'post_ids_newest_first': ['200', '100']},
-                                   fixture=RESOURCE_ROOT / 'tests' / 'feed.html'))
+                                   fixture=RESOURCE_ROOT / 'tests' / 'feed.html', headless=headless))
         except KeyboardInterrupt:
             print('\nOperación interrumpida.')
         except Exception as exc:
@@ -589,8 +639,8 @@ def main() -> None:
     parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'configure', 'login', 'record', 'send', 'demo', 'check-chrome'])
     parser.add_argument('--report', type=Path)
     visibility = parser.add_mutually_exclusive_group()
-    visibility.add_argument('--headless', action='store_true', help='Grabar sin ventana (predeterminado).')
-    visibility.add_argument('--show-browser', action='store_true', help='Mostrar Chrome durante una prueba.')
+    visibility.add_argument('--headless', action='store_true', help='Grabar sin ventana explícitamente.')
+    visibility.add_argument('--show-browser', action='store_true', help='Mostrar Chrome durante una prueba (predeterminado).')
     parser.add_argument('--check-token-input', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.check_token_input:
@@ -602,18 +652,18 @@ def main() -> None:
     if args.command == 'check-chrome':
         asyncio.run(check_chrome())
     elif args.command == 'menu':
-        menu()
+        menu(headless=args.headless)
     elif args.command == 'configure':
         configure()
     elif args.command == 'login':
         asyncio.run(login())
     elif args.command == 'record':
-        asyncio.run(record(load_config(), headless=not args.show_browser))
+        asyncio.run(record(load_config(), headless=args.headless))
     elif args.command == 'send':
         asyncio.run(send(args.report or latest_report()))
     elif args.command == 'demo':
         asyncio.run(record({'profile_url': 'SIMULACIÓN', 'post_ids_newest_first': ['200', '100']},
-                           fixture=RESOURCE_ROOT / 'tests' / 'feed.html', headless=not args.show_browser))
+                           fixture=RESOURCE_ROOT / 'tests' / 'feed.html', headless=args.headless))
 
 
 if __name__ == '__main__':
@@ -628,3 +678,4 @@ if __name__ == '__main__':
         if FROZEN and len(sys.argv) == 1:
             input('Pulsa Enter para cerrar: ')
         sys.exit(1)
+

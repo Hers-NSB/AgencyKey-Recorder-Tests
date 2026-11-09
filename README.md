@@ -9,7 +9,7 @@ Grabador independiente para comprobar publicaciones existentes en AgencyKey. **N
 3. Primero selecciona **5. Generar demo**. Usa posts ficticios locales. **No descarga Chromium, otro navegador ni codificadores durante el primer uso.**
 4. Usa **1. Configurar posts** para indicar el perfil de AgencyKey y todos los enlaces o IDs de 3–5 publicaciones existentes consecutivas, del más reciente al más antiguo. Un enlace por línea; línea vacía para terminar. Evita posts fijados en la prueba inicial.
 5. Usa **2. Conectar AgencyKey**. Inicia sesión en la ventana de Chrome que abre únicamente la opción de conectar; después regresa a la consola y pulsa Enter. Esta ventana usa una sesión separada y no abre el perfil personal habitual de Chrome. Puedes confirmar desde la cabecera del perfil: no es necesario tener posts visibles para guardar la sesión. Los IDs se comprueban después, al grabar.
-6. Usa **3. Grabar prueba local**. Chrome graba sin abrir una ventana y puedes seguir usando tu PC. El programa recorre el feed hacia abajo, verifica el orden de los IDs, espera las imágenes visibles y se desplaza continuamente, sin pausas fijas por post. Los posts largos se recorren por segmentos.
+6. Usa **3. Grabar prueba local**. Chrome permanece visible durante la prueba para observar el recorrido y detectar dónde falla. Mantén la ventana visible mientras graba. El programa recorre el feed hacia abajo, verifica el orden de los IDs, espera las imágenes visibles y se desplaza continuamente, sin pausas fijas por post. Los posts largos se recorren por segmentos.
 7. Revisa `comprobante.mp4` y `report.json` en la carpeta del resultado. El MP4 es continuo, H.264, **854×480**, sin audio.
 8. Usa **4. Enviar último video** cuando quieras enviarlo al bot de pruebas. En Windows se abre un campo oculto: pega el token con **Ctrl+V** y pulsa **Usar token**. Después confirma el usuario del bot y envíale desde Telegram el código que se muestra. Solo el chat privado que envió ese código recibirá el video. El token no se guarda. El bot debe estar sin webhook ni otro receptor activo; no se cambian esos ajustes.
 9. Repite con unos 30 posts existentes. **0** cierra la app.
@@ -44,7 +44,7 @@ python -m unittest discover -s tests -v
 python recorder.py demo --headless
 ```
 
-Comandos: `configure`, `login`, `record`, `send`, `demo`, `check-chrome`; sin comando abre el menú. La grabación es sin ventana de forma predeterminada; `--show-browser` permite mostrar Chrome para una prueba. `--headless` sigue siendo compatible. `send --report RUTA/report.json` selecciona un comprobante concreto. Para aislar datos de pruebas puede definirse `AGENCYKEY_RECORDER_DATA_DIR`.
+Comandos: `configure`, `login`, `record`, `send`, `demo`, `check-chrome`; sin comando abre el menú. La grabación muestra Chrome de forma predeterminada, tanto desde el menú como desde `record` y `demo`. `--show-browser` sigue siendo compatible; `--headless` oculta la ventana solo si lo pides explícitamente (también en el menú). Si falla una prueba real con Chrome visible, la ventana permanece abierta hasta que pulses Enter en la consola. El informe local conserva la etapa, el tipo de error, los IDs comprobados, el siguiente ID esperado, la geometría de los posts visibles y el estado de sus imágenes, sin guardar URLs, textos ni datos de sesión. El video incompleto se descarta y no puede enviarse. `send --report RUTA/report.json` selecciona un comprobante concreto. Para aislar datos de pruebas puede definirse `AGENCYKEY_RECORDER_DATA_DIR`.
 
 ## Compilar
 
@@ -62,3 +62,4 @@ python scripts/smoke_exe.py dist/AgencyKeyRecorderTests.exe
 El codificador de Windows se construye con MinGW en Ubuntu mediante `scripts/build_minimal_ffmpeg.sh`. Sus fuentes fijadas están declaradas en el workflow; el paquete de fuentes publicado incluye ambas bibliotecas, licencias y el script de compilación. El resultado es `dist/AgencyKeyRecorderTests.exe`.
 
 Todo el trabajo pertenece a **Hers-NSB/AgencyKey-Recorder-Tests**.
+

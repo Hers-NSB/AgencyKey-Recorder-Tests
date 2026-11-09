@@ -68,7 +68,7 @@ def main():
         configured.check_returncode()
         subprocess.run([str(exe), 'check-chrome'], env=environment, cwd=root, check=True, timeout=180)
         assert (data / 'config.local.json').exists(), 'Frozen app did not persist its configuration'
-        subprocess.run([str(exe), 'demo'], env=environment, cwd=root, check=True, timeout=900)
+        subprocess.run([str(exe), 'demo', '--headless'], env=environment, cwd=root, check=True, timeout=900)
         reports = list((data / 'output').glob('*/report.json'))
         assert len(reports) == 1, 'Expected one standalone demo'
         report = json.loads(reports[0].read_text(encoding='utf-8'))
@@ -104,3 +104,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

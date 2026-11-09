@@ -10,6 +10,9 @@ AGENCYKEY RECORDER TESTS - CHROME - WINDOWS 64 BITS
 
 Chrome se abre en una ventana con una sesion separada del grabador.
 No utiliza ni modifica el perfil personal de tu Chrome habitual.
+Durante la prueba Chrome permanece visible. Si falla, revisa la consola y
+el navegador antes de pulsar Enter para cerrarlo. report.json conserva la
+etapa del fallo, los IDs comprobados y el estado de carga de las imagenes.
 El video sigue siendo un MP4 continuo a 480p.
 
 Datos y videos: %LOCALAPPDATA%\AgencyKeyRecorderTests
@@ -22,3 +25,4 @@ no la borra automaticamente.
 
 Dropper permanece intacto. La prueba real de AgencyKey requiere tu sesion.
 Este EXE mantiene el menu de consola y no incluye activacion por fin de Drop.
+
