@@ -1,0 +1,23 @@
+AGENCYKEY RECORDER TESTS - WINDOWS 64 BITS
+
+1. Descarga AgencyKeyRecorderTests.exe desde Releases de este repositorio privado.
+2. Guardalo en una carpeta propia y abrelo con doble clic.
+3. Se abre un menu de consola. No requiere Python ni OBS.
+4. Primero selecciona 5 (Generar demo). Chromium se descarga automaticamente
+   si todavia no esta instalado para esta aplicacion. Requiere Internet.
+5. Despues usa 1 para configurar posts existentes, 2 para iniciar sesion,
+   3 para grabar y 4 para enviar el ultimo video al bot de pruebas.
+6. Usa 0 para cerrar.
+
+Datos, sesion, navegador y videos:
+%LOCALAPPDATA%\AgencyKeyRecorderTests
+El programa muestra la ruta exacta al abrir. No se guardan dentro del EXE ni
+se pierden al actualizarlo. La sesion permanece local. El token de Telegram
+se pide al enviar y no se guarda.
+
+Este ejecutable es independiente de Dropper. No publica posts, no cambia
+bots, no utiliza claves de Dropper ni incorpora activacion automatica por Drop.
+El recorrido real en AgencyKey todavia requiere probarse con tu sesion.
+
+El EXE usa el mismo menu que el programa Python; no es una interfaz grafica.
+Puedes descargar otra version del EXE conservando la carpeta de datos.

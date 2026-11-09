@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock, Mock
 
 import recorder
 
@@ -50,7 +50,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         await self.pw.stop()
 
     async def test_virtual_feed_with_delayed_images_and_tall_posts(self):
-        await self.page.goto((recorder.ROOT / 'tests/feed.html').as_uri())
+        await self.page.goto((recorder.RESOURCE_ROOT / 'tests/feed.html').as_uri())
         await recorder.seek_start(self.page, '300', timeout=3)
         seen = await recorder.capture_walk(self.page, ['300', '200', '100'], dwell=.05, timeout=15)
         self.assertEqual(seen, ['300', '200', '100'])
@@ -58,7 +58,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(last['y'] + last['height'], 700)
 
     async def test_out_of_order_fails(self):
-        await self.page.goto((recorder.ROOT / 'tests/feed.html').as_uri())
+        await self.page.goto((recorder.RESOURCE_ROOT / 'tests/feed.html').as_uri())
         await recorder.seek_start(self.page, '300', timeout=3)
         with self.assertRaisesRegex(ValueError, 'Orden inesperado'):
             await recorder.capture_walk(self.page, ['300', '100', '200'], dwell=.01, timeout=10)
@@ -125,6 +125,34 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(ValueError):
                     await recorder.send(path)
                 prompt.assert_not_called()
+
+
+class BrowserSetupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_browser_installs_and_retries(self):
+        browser = object()
+        playwright = Mock()
+        playwright.chromium.launch = AsyncMock(side_effect=[RuntimeError("Executable doesn't exist"), browser])
+        with patch.object(recorder, 'install_browser') as install:
+            result = await recorder.launch_browser(playwright, headless=True)
+        self.assertIs(result, browser)
+        self.assertEqual(playwright.chromium.launch.await_count, 2)
+        install.assert_called_once()
+
+    async def test_other_launch_errors_do_not_download(self):
+        playwright = Mock()
+        playwright.chromium.launch = AsyncMock(side_effect=RuntimeError('Operating system failure'))
+        with patch.object(recorder, 'install_browser') as install:
+            with self.assertRaisesRegex(RuntimeError, 'Operating system failure'):
+                await recorder.launch_browser(playwright, headless=True)
+        install.assert_not_called()
+
+    async def test_existing_browser_does_not_download(self):
+        browser = object()
+        playwright = Mock()
+        playwright.chromium.launch = AsyncMock(return_value=browser)
+        with patch.object(recorder, 'install_browser') as install:
+            self.assertIs(await recorder.launch_browser(playwright, headless=False), browser)
+        install.assert_not_called()
 
 
 if __name__ == '__main__':
