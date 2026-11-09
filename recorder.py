@@ -354,10 +354,16 @@ def boundary_intervals(samples: bytes) -> tuple[float, float]:
 
 def video_bounds(source: Path) -> tuple[float, float]:
     result = subprocess.run([ffmpeg_path(), '-hide_banner', '-loglevel', 'error', '-i', str(source),
-                             '-an', '-vf', 'fps=25,crop=64:32:0:0,scale=2:1:flags=area,format=rgb24',
+                             '-an', '-vf', 'fps=25,crop=64:4:0:8,format=rgb24',
                              '-pix_fmt', 'rgb24', '-threads', '1', '-c:v', 'rawvideo', '-f', 'rawvideo', 'pipe:1'],
                             check=True, capture_output=True)
-    return boundary_intervals(result.stdout)
+    raw = result.stdout
+    frame_bytes = 64 * 4 * 3
+    if len(raw) % frame_bytes:
+        raise ValueError('No se pudieron leer los límites del video.')
+    samples = b''.join(raw[i + (64+8)*3:i + (64+8)*3+3] + raw[i + (64+48)*3:i + (64+48)*3+3]
+                       for i in range(0, len(raw), frame_bytes))
+    return boundary_intervals(samples)
 
 
 def encode(source: Path, target: Path, start: float, duration: float) -> None:

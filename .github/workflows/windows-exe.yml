@@ -11,26 +11,52 @@ concurrency:
 jobs:
   encoder:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    env:
+      FFMPEG_REV: 946fcce07b6dcd0331c8cc609192aeff5e1924f8
+      X264_REV: 31e19f92f00c7003fa115047ce50978bc98c3a0d
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: encoder-cache
+        with:
+          path: vendor/encoder
+          key: encoder-win64-${{ env.FFMPEG_REV }}-${{ env.X264_REV }}-${{ hashFiles('scripts/build_minimal_ffmpeg.sh') }}
+      - name: Reuse identical compiled encoder
+        id: encoder-reuse
+        if: steps.encoder-cache.outputs.cache-hit != 'true' && env.FFMPEG_REV == '946fcce07b6dcd0331c8cc609192aeff5e1924f8' && env.X264_REV == '31e19f92f00c7003fa115047ce50978bc98c3a0d' && hashFiles('scripts/build_minimal_ffmpeg.sh') == '5cb18a355c3d9a66ad091a0df8dc743e9a708659e59ff302685c93b72f6295af'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: minimal-windows-encoder
+          run-id: 42714984226
+          github-token: ${{ github.token }}
+          path: vendor/encoder
       - uses: actions/checkout@v4
+        if: steps.encoder-cache.outputs.cache-hit != 'true' && steps.encoder-reuse.outcome != 'success'
         with:
           repository: FFmpeg/FFmpeg
-          ref: 946fcce07b6dcd0331c8cc609192aeff5e1924f8
+          ref: ${{ env.FFMPEG_REV }}
           path: third_party/ffmpeg
           persist-credentials: false
       - uses: actions/checkout@v4
+        if: steps.encoder-cache.outputs.cache-hit != 'true' && steps.encoder-reuse.outcome != 'success'
         with:
           repository: mirror/x264
-          ref: 31e19f92f00c7003fa115047ce50978bc98c3a0d
+          ref: ${{ env.X264_REV }}
           path: third_party/x264
           persist-credentials: false
       - name: Install cross compiler
+        if: steps.encoder-cache.outputs.cache-hit != 'true' && steps.encoder-reuse.outcome != 'success'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-mingw-w64-x86-64-posix nasm make pkg-config
       - run: bash scripts/build_minimal_ffmpeg.sh
+        if: steps.encoder-cache.outputs.cache-hit != 'true' && steps.encoder-reuse.outcome != 'success'
       - name: Include exact encoder sources
+        if: steps.encoder-cache.outputs.cache-hit != 'true' && steps.encoder-reuse.outcome != 'success'
         run: |
           mkdir encoder-sources
           git -C third_party/ffmpeg archive HEAD > encoder-sources/ffmpeg.tar
