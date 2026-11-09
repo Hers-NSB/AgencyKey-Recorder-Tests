@@ -103,6 +103,22 @@ async def check_chrome() -> None:
         await browser.close()
 
 
+async def save_login_session(page, context, profile_url: str) -> None:
+    current, expected = urlparse(page.url), urlparse(profile_url)
+    if (current.scheme != 'https' or current.netloc != 'app.agencykey.com'
+            or current.path.rstrip('/') != expected.path.rstrip('/')):
+        raise ValueError('Abre el perfil de la modelo configurada antes de guardar la sesión.')
+    # The user has confirmed the profile is open. Virtual feeds may have no post nodes yet.
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = STATE.with_suffix('.tmp')
+    try:
+        await context.storage_state(path=str(temporary), indexed_db=True)
+        temporary.chmod(0o600)
+        temporary.replace(STATE)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 async def login() -> None:
     from playwright.async_api import async_playwright
     config = load_config()
@@ -113,12 +129,16 @@ async def login() -> None:
             page = await context.new_page()
             await page.goto(config['profile_url'], wait_until='domcontentloaded', timeout=60000)
             await asyncio.to_thread(input, 'Inicia sesión y abre el feed de la modelo. Después pulsa Enter aquí: ')
-            if urlparse(page.url).netloc != 'app.agencykey.com' or not await page.locator('[id^="postId_"]').count():
-                raise ValueError('No se encontró un feed de posts. Abre el perfil y vuelve a conectar.')
-            STATE.parent.mkdir(parents=True, exist_ok=True)
-            await context.storage_state(path=str(STATE))
-            STATE.chmod(0o600)
-            print('Sesión guardada solo en esta PC. No se ha grabado el inicio de sesión.')
+            while True:
+                try:
+                    await save_login_session(page, context, config['profile_url'])
+                    break
+                except ValueError as error:
+                    print(str(error))
+                    choice = await asyncio.to_thread(input, 'Abre el perfil correcto y pulsa Enter, o escribe C para cancelar: ')
+                    if choice.strip().lower() == 'c':
+                        return
+            print('Sesión guardada en esta PC. Los posts se comprobarán al elegir 3. Grabar prueba local.')
         finally:
             await browser.close()
 
@@ -146,13 +166,52 @@ IMAGES_READY = r'''() => {
 }'''
 
 
-async def images_ready(page, timeout: int = 30000) -> None:
-    await page.wait_for_function(IMAGES_READY, timeout=timeout)
+async def post_frame(page):
+    for frame in page.frames:
+        if not frame.is_detached() and await frame.locator('[id^="postId_"]').count():
+            return frame
+    return None
 
 
-async def scroll_down(page, pixels: int = 190) -> None:
-    # Mouse wheel targets the scrollable feed under the pointer, including nested containers.
-    await page.mouse.move(640, 460)
+async def scroll_frame(page):
+    found = await post_frame(page)
+    if found:
+        return found
+    # A profile header can fill a visible iframe before the recycled posts are mounted.
+    largest, area = page.main_frame, 0
+    for frame in page.frames:
+        if frame is page.main_frame or frame.is_detached():
+            continue
+        box = await (await frame.frame_element()).bounding_box()
+        if box and box['width'] >= 400 and box['height'] >= 250:
+            size = box['width'] * box['height']
+            if size > area:
+                largest, area = frame, size
+    return largest
+
+
+async def frame_geometry(page, frame):
+    height = await frame.evaluate('innerHeight')
+    if frame is page.main_frame:
+        return 640, min(460, height - 30), height
+    box = await (await frame.frame_element()).bounding_box()
+    if not box:
+        raise ValueError('El panel de publicaciones ya no está visible. Vuelve a abrir el perfil.')
+    outer_height = await page.evaluate('innerHeight')
+    visible_height = min(height, outer_height - box['y'])
+    if visible_height < 150:
+        raise ValueError('El panel de publicaciones no tiene espacio visible suficiente.')
+    return box['x'] + box['width'] / 2, max(110, box['y'] + visible_height / 2), visible_height
+
+
+async def images_ready(page, timeout: int = 30000, *, frame=None) -> None:
+    await (frame or page.main_frame).wait_for_function(IMAGES_READY, timeout=timeout)
+
+
+async def scroll_down(page, pixels: int = 190, *, frame=None) -> None:
+    frame = frame or page.main_frame
+    x, y, _ = await frame_geometry(page, frame)
+    await page.mouse.move(x, y)
     await page.mouse.wheel(0, pixels)
     await page.wait_for_timeout(500)
 
@@ -160,29 +219,35 @@ async def scroll_down(page, pixels: int = 190) -> None:
 async def seek_start(page, newest: str, timeout: float = 120) -> dict:
     deadline = monotonic() + timeout
     while monotonic() < deadline:
-        cards = await page.evaluate(SNAPSHOT)
+        frame = await scroll_frame(page)
+        cards = await frame.evaluate(SNAPSHOT)
         target = next((p for p in cards if p['id'] == newest and not p['pinned']), None)
         if target:
-            locator = page.locator(f'[id="postId_{newest}"]:not(.m-pinned)').first
+            locator = frame.locator(f'[id="postId_{newest}"]:not(.m-pinned)').first
             await locator.evaluate('e => e.scrollIntoView({block:"start",behavior:"instant"})')
-            # Leave room for the fixed profile header.
+            x, y, _ = await frame_geometry(page, frame)
+            await page.mouse.move(x, y)
             await page.mouse.wheel(0, -115)
             await page.wait_for_timeout(500)
-            await images_ready(page)
+            await images_ready(page, frame=frame)
+            target['_frame'] = frame
             return target
-        await scroll_down(page, 260)
-    raise ValueError('No se localizó el primer post normal. Revisa IDs, modelo, sesión y posts fijados.')
+        await scroll_down(page, 260, frame=frame)
+    raise ValueError('No se localizó el primer post. Revisa los IDs, la modelo y si la sesión sigue iniciada.')
 
 
-async def capture_walk(page, ids: list[str], dwell: float = 3, timeout: float = 600) -> list[str]:
+async def capture_walk(page, ids: list[str], dwell: float = 3, timeout: float = 600, *, frame=None) -> list[str]:
+    frame = frame or await post_frame(page) or page.main_frame
     seen: list[str] = []
     deadline = monotonic() + timeout
     while monotonic() < deadline:
-        await images_ready(page)
-        cards = await page.evaluate(SNAPSHOT)
+        if frame.is_detached():
+            raise ValueError('El panel de publicaciones se recargó. Repite únicamente la grabación.')
+        await images_ready(page, frame=frame)
+        _, _, height = await frame_geometry(page, frame)
+        cards = await frame.evaluate(SNAPSHOT)
         for card in cards:
-            # Begin the dwell only when the beginning of the post is below the header.
-            if card['pinned'] or card['id'] not in ids or card['id'] in seen or not (100 <= card['top'] < 680):
+            if card['pinned'] or card['id'] not in ids or card['id'] in seen or not (100 <= card['top'] < height - 40):
                 continue
             expected = ids[len(seen)]
             if card['id'] != expected:
@@ -191,10 +256,10 @@ async def capture_walk(page, ids: list[str], dwell: float = 3, timeout: float = 
             print(f'Grabando {len(seen)}/{len(ids)} · ID {card["id"]}', flush=True)
             await page.wait_for_timeout(dwell * 1000)
         last = next((p for p in cards if p['id'] == ids[-1] and not p['pinned']), None)
-        if last and 100 < last['bottom'] <= 700 and seen == ids:
+        if last and 100 < last['bottom'] <= height - 20 and seen == ids:
             await page.wait_for_timeout(dwell * 1000)
             return seen
-        await scroll_down(page)
+        await scroll_down(page, frame=frame)
     raise ValueError(f'Recorrido incompleto: {len(seen)}/{len(ids)} posts. No se enviará el video.')
 
 
@@ -248,10 +313,10 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         try:
             url = fixture.resolve().as_uri() if fixture else config['profile_url']
             await page.goto(url, wait_until='domcontentloaded', timeout=60000)
-            await seek_start(page, config['post_ids_newest_first'][0], timeout=10 if fixture else 120)
+            first = await seek_start(page, config['post_ids_newest_first'][0], timeout=10 if fixture else 120)
             started = max(0, monotonic() - epoch - .5)
             report['seen'] = await capture_walk(page, config['post_ids_newest_first'], dwell=dwell,
-                                                 timeout=15 if fixture else 600)
+                                                 timeout=30 if fixture else 600, frame=first['_frame'])
             ended = monotonic() - epoch
         except Exception as exc:
             error = exc

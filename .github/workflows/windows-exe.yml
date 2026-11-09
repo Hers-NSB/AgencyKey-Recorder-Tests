@@ -88,3 +88,17 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "AgencyKey Recorder Tests · Chrome ligero ${GITHUB_RUN_NUMBER}" \
             --notes-file release-notes.md --latest
+      - name: Keep only the latest recorder release and tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          keep="recorder-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          test "$latest" = "$keep"
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq '.[].tag_name' | while IFS= read -r old; do
+            if [[ "$old" == recorder-* && "$old" != "$keep" ]]; then
+              gh release delete "$old" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            fi
+          done

@@ -77,6 +77,34 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await recorder.seek_start(self.page, '1', timeout=.1)
 
+    async def test_profile_header_without_posts_can_save_session(self):
+        context = self.page.context
+        await self.page.route('https://app.agencykey.com/**', lambda route: route.fulfill(
+            content_type='text/html', body='<h1>Mi perfil</h1><p>Cabecera de la modelo</p>'))
+        await self.page.goto('https://app.agencykey.com/models/479099623')
+        await self.page.evaluate("localStorage.setItem('test-session', 'fixture-only')")
+        self.assertEqual(await self.page.locator('[id^="postId_"]').count(), 0)
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / 'private' / 'session.json'
+            with patch.object(recorder, 'STATE', state):
+                await recorder.save_login_session(self.page, context, 'https://app.agencykey.com/models/479099623')
+            self.assertTrue(state.exists())
+            saved = json.loads(state.read_text(encoding='utf-8'))
+            self.assertTrue(any(origin['origin'] == 'https://app.agencykey.com' for origin in saved['origins']))
+            self.assertFalse(state.with_suffix('.tmp').exists())
+
+    async def test_posts_inside_an_iframe_are_found_and_scrolled(self):
+        from html import escape
+        source = (recorder.RESOURCE_ROOT / 'tests/feed.html').read_text(encoding='utf-8')
+        await self.page.set_content('<style>body{margin:0}iframe{position:absolute;left:0;top:130px;width:1280px;height:560px;border:0}</style>'
+                                    + '<h1>AgencyKey fixture</h1><iframe srcdoc="' + escape(source, quote=True) + '"></iframe>')
+        await self.page.frames[1].wait_for_selector('[id^="postId_"]')
+        self.assertEqual(await self.page.locator('[id^="postId_"]').count(), 0)
+        first = await recorder.seek_start(self.page, '300', timeout=5)
+        self.assertIsNot(first['_frame'], self.page.main_frame)
+        seen = await recorder.capture_walk(self.page, ['300', '200', '100'], dwell=.01, timeout=20, frame=first['_frame'])
+        self.assertEqual(seen, ['300', '200', '100'])
+
 
 class TelegramTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_uses_challenge_chat_and_keeps_token_out_of_report(self):
@@ -125,6 +153,27 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(ValueError):
                     await recorder.send(path)
                 prompt.assert_not_called()
+
+
+class SessionValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_wrong_model_does_not_overwrite_saved_session(self):
+        page = Mock(url='https://app.agencykey.com/models/999')
+        context = Mock(storage_state=AsyncMock())
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / 'session.json'
+            state.write_text('original', encoding='utf-8')
+            with patch.object(recorder, 'STATE', state):
+                with self.assertRaisesRegex(ValueError, 'modelo configurada'):
+                    await recorder.save_login_session(page, context, 'https://app.agencykey.com/models/123')
+            self.assertEqual(state.read_text(), 'original')
+        context.storage_state.assert_not_awaited()
+
+    async def test_login_page_or_foreign_domain_is_not_saved(self):
+        for url in ['https://app.agencykey.com/login', 'https://example.com/models/123']:
+            context = Mock(storage_state=AsyncMock())
+            with self.assertRaises(ValueError):
+                await recorder.save_login_session(Mock(url=url), context, 'https://app.agencykey.com/models/123')
+            context.storage_state.assert_not_awaited()
 
 
 class BrowserSetupTests(unittest.IsolatedAsyncioTestCase):

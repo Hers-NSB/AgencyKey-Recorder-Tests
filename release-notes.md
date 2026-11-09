@@ -1,12 +1,10 @@
-Versión para Windows de 64 bits que usa **Google Chrome instalado**.
+Corrección del guardado de sesión y de la detección de publicaciones.
 
-- Descarga **AgencyKeyRecorderTests.exe** y ábrelo con doble clic.
-- No descarga Chromium ni codificadores en el primer uso. No necesita Python ni OBS.
-- Primero selecciona **5. Generar demo**: usa publicaciones ficticias locales.
-- Codificador MP4 reducido a las funciones necesarias; mantiene H.264 a 480p.
-- Chrome usa una sesión separada del grabador; no modifica tu perfil personal.
-- Conserva los datos en `%LOCALAPPDATA%\AgencyKeyRecorderTests`.
+- Ahora puedes guardar la sesión desde la cabecera de la modelo, sin posts cargados.
+- Se comprueba que estés en el perfil configurado; si estás en otro, permite corregirlo sin cerrar Chrome.
+- La grabación busca posts también dentro de paneles iframe.
+- Mantiene Chrome instalado, MP4 continuo a 480p y las configuraciones existentes.
 
-Usa este EXE en lugar del anterior. Dropper permanece intacto. La prueba con tu sesión real de AgencyKey sigue pendiente.
+Descarga únicamente **AgencyKeyRecorderTests.exe**. Vuelve a elegir **2. Conectar AgencyKey**, abre la modelo configurada y pulsa Enter en la consola. Después usa **3. Grabar prueba local**.
 
-El archivo opcional `encoder-sources.tar.gz` contiene las fuentes exactas y licencias del codificador; no es necesario descargarlo para usar la aplicación.
+Dropper permanece intacto. La sesión y el recorrido reales se verifican en tu PC. El archivo opcional `encoder-sources.tar.gz` contiene las fuentes y licencias del codificador; no se necesita para ejecutar la app.
