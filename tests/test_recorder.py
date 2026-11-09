@@ -47,7 +47,43 @@ class WheelPlanTests(unittest.TestCase):
                 self.assertEqual(sum(delta for delta, _ in steps), pixels)
                 self.assertTrue(all(delta * pixels > 0 and pause > 0 for delta, pause in steps))
                 if pixels:
-                    self.assertLess(sum(pause for _, pause in steps), 1500)
+                    self.assertLess(sum(pause for _, pause in steps), 600)
+                    self.assertTrue(all(pause <= 31 for _, pause in steps))
+
+
+class RecordingBoundaryTests(unittest.TestCase):
+    def test_markers_define_content_not_browser_startup_time(self):
+        ordinary = bytes((24, 43, 73, 24, 43, 73))
+        marker = bytes((249, 3, 249, 3, 249, 80))
+        raw = ordinary*100 + marker*12 + ordinary*200 + marker*12 + ordinary*3
+        start, end = recorder.boundary_intervals(raw)
+        self.assertAlmostEqual(start, 113/25)
+        self.assertAlmostEqual(end, 311/25)
+
+    def test_missing_marker_refuses_complete_video(self):
+        with self.assertRaises(ValueError):
+            recorder.boundary_intervals(bytes((0,0,0,0,0,0))*100)
+
+
+class TokenInputTests(unittest.TestCase):
+    def test_windows_dialog_keeps_secret_out_of_arguments(self):
+        import subprocess
+        token = '12345:FAKE_TOKEN'
+        response = subprocess.CompletedProcess([], 0, token, '')
+        with patch.object(recorder.sys, 'platform', 'win32'), patch.object(recorder.shutil, 'which', return_value='powershell.exe'), \
+             patch.object(recorder.subprocess, 'run', return_value=response) as run:
+            self.assertEqual(recorder.read_bot_token(), token)
+        self.assertNotIn(token, str(run.call_args))
+        self.assertIn('ShortcutsEnabled = $true', run.call_args.args[0][-1])
+        self.assertIn('UseSystemPasswordChar = $true', run.call_args.args[0][-1])
+
+    def test_cancel_does_not_use_partial_token(self):
+        import subprocess
+        response = subprocess.CompletedProcess([], 2, 'partial', '')
+        with patch.object(recorder.sys, 'platform', 'win32'), patch.object(recorder.shutil, 'which', return_value='powershell.exe'), \
+             patch.object(recorder.subprocess, 'run', return_value=response):
+            with self.assertRaisesRegex(ValueError, 'cancelado'):
+                recorder.read_bot_token()
 
 
 class BrowserTests(unittest.IsolatedAsyncioTestCase):
@@ -136,6 +172,17 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(left <= right for left, right in zip(positions, positions[1:])))
         self.assertAlmostEqual(await self.page.evaluate('scrollY'), 190, delta=3)
 
+    async def test_start_is_selected_post_not_first_feed_post(self):
+        await self.page.goto((recorder.RESOURCE_ROOT / 'tests/feed.html').as_uri())
+        first = await recorder.seek_start(self.page, '200', timeout=10)
+        self.assertEqual(first['id'], '200')
+        cards = await first['_frame'].evaluate(recorder.SNAPSHOT)
+        selected = next(card for card in cards if card['id'] == '200')
+        self.assertTrue(95 <= selected['top'] <= 145)
+        self.assertFalse(any(card['id'] == '300' and card['bottom'] > 100 for card in cards))
+        seen = await recorder.capture_walk(self.page, ['200', '100'], timeout=15, frame=first['_frame'])
+        self.assertEqual(seen, ['200', '100'])
+
 
 class TelegramTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_uses_challenge_chat_and_keeps_token_out_of_report(self):
@@ -167,7 +214,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
             video.write_bytes(b'test video')
             recorder.save_json(path, {'status': 'complete', 'seen': ['1'], 'post_ids': ['1'],
                                      'sha256': hashlib.sha256(video.read_bytes()).hexdigest()})
-            with patch('getpass.getpass', return_value=token), patch('builtins.input', side_effect=['test_recorder_bot', '']), \
+            with patch.object(recorder, 'read_bot_token', return_value=token), patch('builtins.input', side_effect=['test_recorder_bot', '']), \
                  patch('builtins.print', side_effect=fake_print), \
                  patch.object(httpx, 'AsyncClient', side_effect=lambda **kw: actual_client(transport=httpx.MockTransport(handler), **kw)):
                 await recorder.send(path)
@@ -180,7 +227,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'report.json'
             recorder.save_json(path, {'status': 'incomplete'})
-            with patch('getpass.getpass') as prompt:
+            with patch.object(recorder, 'read_bot_token') as prompt:
                 with self.assertRaises(ValueError):
                     await recorder.send(path)
                 prompt.assert_not_called()

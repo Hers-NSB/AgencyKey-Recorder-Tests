@@ -19,9 +19,9 @@ mkdir -p "$encoder_root" "$prefix_root"
     --enable-cross-compile --pkg-config=pkg-config --pkg-config-flags=--static \
     --prefix="$encoder_root" --disable-autodetect --disable-everything \
     --disable-doc --disable-debug --disable-network --disable-ffprobe --disable-ffplay \
-    --enable-small --enable-gpl --enable-libx264 --enable-encoder=libx264 \
-    --enable-decoder=vp8 --enable-demuxer=matroska --enable-muxer=mp4 \
-    --enable-protocol=file,pipe --enable-filter=scale,format,fps,trim,setpts,null \
+    --enable-small --enable-gpl --enable-libx264 --enable-encoder=libx264,rawvideo \
+    --enable-decoder=vp8 --enable-demuxer=matroska --enable-muxer=mp4,rawvideo \
+    --enable-protocol=file,pipe --enable-filter=scale,format,fps,trim,setpts,null,crop \
     --extra-cflags="-Os -I$prefix_root/include" --extra-ldflags="-static -L$prefix_root/lib"
   make -j2 ffmpeg.exe
   x86_64-w64-mingw32-strip ffmpeg.exe

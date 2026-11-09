@@ -71,7 +71,7 @@ def configure() -> None:
         ids.append(post_id(value))
     config = validate_config({'profile_url': url, 'post_ids_newest_first': ids})
     save_json(CONFIG, config)
-    print(f'Configurados {len(ids)} posts. Resolución 854×480, mínimo 3 segundos por post.')
+    print(f'Configurados {len(ids)} posts. Video 854×480, recorrido continuo sin pausas fijas.')
 
 
 def find_chrome() -> str | None:
@@ -211,13 +211,13 @@ async def images_ready(page, timeout: int = 30000, *, frame=None) -> None:
 
 
 def wheel_steps(pixels: int, *, rng=None) -> list[tuple[int, int]]:
-    """Small wheel events with gradual acceleration and deceleration."""
+    """Continuous wheel events, without a rest between gestures."""
     rng = rng or random
     distance = abs(round(pixels))
     if not distance:
         return []
-    count = min(distance, max(8, math.ceil(distance / 12)))
-    weights = [math.sin(math.pi * (i + .5) / count) * rng.uniform(.92, 1.08) for i in range(count)]
+    count = min(distance, max(6, math.ceil(distance / 16)))
+    weights = [(1 + .12 * math.sin(math.pi * (i + .5) / count)) * rng.uniform(.96, 1.04) for i in range(count)]
     total = sum(weights)
     sign = 1 if pixels > 0 else -1
     result = []
@@ -227,10 +227,8 @@ def wheel_steps(pixels: int, *, rng=None) -> list[tuple[int, int]]:
         position = round(distance * accumulated / total)
         delta = position - previous
         if delta:
-            result.append((sign * delta, rng.randint(28, 40)))
+            result.append((sign * delta, rng.randint(25, 31)))
         previous = position
-    delta, pause = result[-1]
-    result[-1] = delta, pause + rng.randint(100, 150)
     return result
 
 
@@ -257,13 +255,21 @@ async def seek_start(page, newest: str, timeout: float = 120) -> dict:
             await page.mouse.wheel(0, -115)
             await page.wait_for_timeout(500)
             await images_ready(page, frame=frame)
+            # A selector match is not sufficient: verify the requested post is actually framed.
+            for _ in range(3):
+                top = await locator.evaluate('e => e.getBoundingClientRect().top')
+                if 95 <= top <= 145:
+                    break
+                await scroll_down(page, round(top - 115), frame=frame)
+            else:
+                raise ValueError(f'No se pudo encuadrar el post {newest}. No se inició el comprobante.')
             target['_frame'] = frame
             return target
         await scroll_down(page, 260, frame=frame)
     raise ValueError('No se localizó el primer post. Revisa los IDs, la modelo y si la sesión sigue iniciada.')
 
 
-async def capture_walk(page, ids: list[str], dwell: float = 3, timeout: float = 600, *, frame=None) -> list[str]:
+async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 600, *, frame=None) -> list[str]:
     frame = frame or await post_frame(page) or page.main_frame
     seen: list[str] = []
     deadline = monotonic() + timeout
@@ -303,6 +309,57 @@ def ffmpeg_path() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
+BOUNDARY_JS = r"""async (visible) => {
+    document.getElementById('agencykey-recorder-boundary')?.remove();
+    if (visible) {
+        const marker=document.createElement('div'); marker.id='agencykey-recorder-boundary';
+        marker.style.cssText='all:initial!important;position:fixed!important;left:0!important;top:0!important;width:96px!important;height:48px!important;z-index:2147483647!important;pointer-events:none!important;background:linear-gradient(to right,rgb(251,0,251) 50%,rgb(0,251,80) 50%)!important;';
+        document.documentElement.appendChild(marker);
+    }
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}"""
+
+
+async def video_boundary(page) -> None:
+    # These synchronization frames are excluded from the exported video.
+    await page.evaluate(BOUNDARY_JS, True)
+    await page.wait_for_timeout(550)
+    await page.evaluate(BOUNDARY_JS, False)
+    await page.wait_for_timeout(120)
+
+
+def boundary_intervals(samples: bytes) -> tuple[float, float]:
+    if len(samples) % 6:
+        raise ValueError('No se pudo comprobar el inicio y fin del video.')
+    runs = []
+    first = None
+    for index in range(len(samples) // 6 + 1):
+        pixel = samples[index*6:index*6+6]
+        marker = (len(pixel) == 6 and pixel[0] > 210 and pixel[1] < 45 and pixel[2] > 210
+                  and pixel[3] < 45 and pixel[4] > 210 and 35 < pixel[5] < 135)
+        if marker and first is None:
+            first = index
+        elif not marker and first is not None:
+            if index - first >= 4:
+                runs.append((first, index))
+            first = None
+    if len(runs) != 2:
+        raise ValueError(f'No se verificaron los límites de grabación ({len(runs)}/2). No se enviará un video incompleto.')
+    start = (runs[0][1] + 1) / 25
+    end = (runs[1][0] - 1) / 25
+    if end <= start:
+        raise ValueError('El recorrido grabado no tiene una duración válida.')
+    return start, end
+
+
+def video_bounds(source: Path) -> tuple[float, float]:
+    result = subprocess.run([ffmpeg_path(), '-hide_banner', '-loglevel', 'error', '-i', str(source),
+                             '-an', '-vf', 'fps=25,crop=64:32:0:0,scale=2:1:flags=area,format=rgb24',
+                             '-pix_fmt', 'rgb24', '-threads', '1', '-c:v', 'rawvideo', '-f', 'rawvideo', 'pipe:1'],
+                            check=True, capture_output=True)
+    return boundary_intervals(result.stdout)
+
+
 def encode(source: Path, target: Path, start: float, duration: float) -> None:
     command = [ffmpeg_path(), '-hide_banner', '-loglevel', 'error', '-y', '-i', str(source),
                '-ss', str(max(0, start)), '-t', str(duration), '-an', '-vf', 'scale=854:480',
@@ -313,7 +370,7 @@ def encode(source: Path, target: Path, start: float, duration: float) -> None:
         raise ValueError('No se pudo generar un video válido.')
 
 
-async def record(config: dict, *, fixture: Path | None = None, headless: bool = False, dwell: float = 3) -> Path:
+async def record(config: dict, *, fixture: Path | None = None, headless: bool = True, dwell: float = 0) -> Path:
     from playwright.async_api import async_playwright
     if not fixture and not STATE.exists():
         raise ValueError('Ejecuta primero Conectar AgencyKey.')
@@ -322,9 +379,10 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
     output.mkdir(parents=True)
     report_path = output / 'report.json'
     report = {'status': 'incomplete', 'simulation': bool(fixture), 'post_ids': config['post_ids_newest_first'],
-              'profile_url': config['profile_url'], 'resolution': '854x480', 'seen': [], 'created_at_utc': run_id}
+              'profile_url': config['profile_url'], 'resolution': '854x480', 'seen': [], 'created_at_utc': run_id,
+              'first_post_id': config['post_ids_newest_first'][0], 'headless': headless, 'post_hold_seconds': dwell}
     save_json(report_path, report)
-    started = ended = epoch = 0.0
+    started = ended = 0.0
     raw = None
     error = None
     async with async_playwright() as pw:
@@ -334,20 +392,20 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         if not fixture:
             options['storage_state'] = str(STATE)
         context = await browser.new_context(**options)
-        # Browser video starts as the page is created. Trim setup/search from the exported MP4.
-        epoch = monotonic()
         page = await context.new_page()
         try:
             url = fixture.resolve().as_uri() if fixture else config['profile_url']
             await page.goto(url, wait_until='domcontentloaded', timeout=60000)
             first = await seek_start(page, config['post_ids_newest_first'][0], timeout=10 if fixture else 120)
-            started = max(0, monotonic() - epoch - .5)
+            print(f'Inicio del comprobante: post {config["post_ids_newest_first"][0]} · segundo plano: {headless}', flush=True)
+            await video_boundary(page)
             report['seen'] = await capture_walk(page, config['post_ids_newest_first'], dwell=dwell,
                                                  timeout=30 if fixture else 600, frame=first['_frame'])
-            ended = monotonic() - epoch
+            await page.wait_for_timeout(120)
+            await video_boundary(page)
         except Exception as exc:
             error = exc
-            report['error'] = 'No se completó el recorrido. Revisa sesión, IDs, orden y carga de imágenes.'
+            report['error'] = str(exc) if isinstance(exc, ValueError) else 'No se completó el recorrido. Revisa sesión, IDs, orden y carga de imágenes.'
         finally:
             await context.close()
             if page.video:
@@ -356,6 +414,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
     try:
         if error:
             raise ValueError(report['error']) from error
+        started, ended = await asyncio.to_thread(video_bounds, raw)
         video = output / 'comprobante.mp4'
         await asyncio.to_thread(encode, raw, video, started, ended - started)
         report.update(status='complete', duration_seconds=round(ended-started, 2),
@@ -384,11 +443,65 @@ def verified_video(report_path: Path) -> tuple[dict, Path]:
     return report, video
 
 
+TOKEN_DIALOG_SCRIPT = r"""
+Add-Type -AssemblyName System.Windows.Forms
+$form = New-Object System.Windows.Forms.Form
+$form.Text = 'AgencyKey Recorder Tests - Telegram'
+$form.ClientSize = New-Object System.Drawing.Size(470,155)
+$form.StartPosition = 'CenterScreen'
+$form.FormBorderStyle = 'FixedDialog'
+$form.MaximizeBox = $false
+$form.MinimizeBox = $false
+$form.TopMost = $true
+$label = New-Object System.Windows.Forms.Label
+$label.Text = 'Pega el token del BOT DE PRUEBAS con Ctrl+V. No se guarda.'
+$label.SetBounds(15,15,440,30)
+$entry = New-Object System.Windows.Forms.TextBox
+$entry.SetBounds(15,50,440,26)
+$entry.UseSystemPasswordChar = $true
+$entry.ShortcutsEnabled = $true
+$ok = New-Object System.Windows.Forms.Button
+$ok.Text = 'Usar token'
+$ok.SetBounds(235,100,105,30)
+$ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+$cancel = New-Object System.Windows.Forms.Button
+$cancel.Text = 'Cancelar'
+$cancel.SetBounds(350,100,105,30)
+$cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+$form.Controls.AddRange(@($label,$entry,$ok,$cancel))
+$form.AcceptButton = $ok
+$form.CancelButton = $cancel
+$form.Add_Shown({[void]$entry.Focus()})
+try {
+    $result = $form.ShowDialog()
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        [Console]::Out.Write($entry.Text.Trim())
+    } else { exit 2 }
+} finally { $entry.Clear(); $form.Dispose() }
+"""
+
+
+def read_bot_token() -> str:
+    if sys.platform != 'win32':
+        from getpass import getpass
+        return getpass('Token del BOT DE PRUEBAS (oculto, no se guarda): ').strip()
+    powershell = shutil.which('powershell.exe')
+    if not powershell:
+        raise ValueError('No se encontró Windows PowerShell para abrir el campo de token.')
+    result = subprocess.run([powershell, '-NoProfile', '-STA', '-Command', TOKEN_DIALOG_SCRIPT],
+                            capture_output=True, text=True, encoding='utf-8',
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    if result.returncode == 2:
+        raise ValueError('Envío cancelado.')
+    if result.returncode:
+        raise ValueError('No se pudo abrir el campo de token de Telegram.')
+    return result.stdout.strip()
+
+
 async def send(report_path: Path) -> None:
-    from getpass import getpass
     import httpx
     report, video = verified_video(report_path)
-    token = getpass('Token de tu BOT DE PRUEBAS (no se guarda): ').strip()
+    token = read_bot_token()
     if not re.fullmatch(r'[0-9]+:[A-Za-z0-9_-]+', token):
         raise ValueError('Formato de token inválido.')
     async with httpx.AsyncClient(base_url=f'https://api.telegram.org/bot{token}/', timeout=180) as client:
@@ -436,7 +549,7 @@ def latest_report() -> Path:
 
 
 def menu() -> None:
-    print('Navegador: Google Chrome instalado (sesión separada del grabador).')
+    print('Chrome instalado · grabación en segundo plano · movimiento continuo.')
     print(f'Carpeta de datos y videos: {ROOT}')
     while True:
         print('\nAgencyKey Recorder Tests — independiente de Dropper\n'
@@ -455,7 +568,7 @@ def menu() -> None:
             elif choice == '4':
                 asyncio.run(send(latest_report()))
             elif choice == '5':
-                asyncio.run(record({'profile_url': 'SIMULACIÓN', 'post_ids_newest_first': ['300', '200', '100']},
+                asyncio.run(record({'profile_url': 'SIMULACIÓN', 'post_ids_newest_first': ['200', '100']},
                                    fixture=RESOURCE_ROOT / 'tests' / 'feed.html'))
         except KeyboardInterrupt:
             print('\nOperación interrumpida.')
@@ -469,8 +582,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'configure', 'login', 'record', 'send', 'demo', 'check-chrome'])
     parser.add_argument('--report', type=Path)
-    parser.add_argument('--headless', action='store_true')
+    visibility = parser.add_mutually_exclusive_group()
+    visibility.add_argument('--headless', action='store_true', help='Grabar sin ventana (predeterminado).')
+    visibility.add_argument('--show-browser', action='store_true', help='Mostrar Chrome durante una prueba.')
+    parser.add_argument('--check-token-input', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.check_token_input:
+        token = read_bot_token()
+        if not re.fullmatch(r'[0-9]+:[A-Za-z0-9_-]+', token):
+            raise ValueError('Formato de token inválido.')
+        print('Token recibido correctamente (oculto).')
+        return
     if args.command == 'check-chrome':
         asyncio.run(check_chrome())
     elif args.command == 'menu':
@@ -480,12 +602,12 @@ def main() -> None:
     elif args.command == 'login':
         asyncio.run(login())
     elif args.command == 'record':
-        asyncio.run(record(load_config(), headless=args.headless))
+        asyncio.run(record(load_config(), headless=not args.show_browser))
     elif args.command == 'send':
         asyncio.run(send(args.report or latest_report()))
     elif args.command == 'demo':
-        asyncio.run(record({'profile_url': 'SIMULACIÓN', 'post_ids_newest_first': ['300', '200', '100']},
-                           fixture=RESOURCE_ROOT / 'tests' / 'feed.html', headless=args.headless))
+        asyncio.run(record({'profile_url': 'SIMULACIÓN', 'post_ids_newest_first': ['200', '100']},
+                           fixture=RESOURCE_ROOT / 'tests' / 'feed.html', headless=not args.show_browser))
 
 
 if __name__ == '__main__':

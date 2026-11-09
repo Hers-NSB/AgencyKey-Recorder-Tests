@@ -8,10 +8,10 @@ Grabador independiente para comprobar publicaciones existentes en AgencyKey. **N
 2. Descarga **AgencyKeyRecorderTests.exe** y ábrelo con doble clic. Requiere Windows de 64 bits y **Google Chrome instalado**; no necesita Python ni OBS.
 3. Primero selecciona **5. Generar demo**. Usa posts ficticios locales. **No descarga Chromium, otro navegador ni codificadores durante el primer uso.**
 4. Usa **1. Configurar posts** para indicar el perfil de AgencyKey y todos los enlaces o IDs de 3–5 publicaciones existentes consecutivas, del más reciente al más antiguo. Un enlace por línea; línea vacía para terminar. Evita posts fijados en la prueba inicial.
-5. Usa **2. Conectar AgencyKey**. Inicia sesión en la ventana de Chrome que abre el grabador; después regresa a la consola y pulsa Enter. Esta ventana usa una sesión separada y no abre el perfil personal habitual de Chrome. Puedes confirmar desde la cabecera del perfil: no es necesario tener posts visibles para guardar la sesión. Los IDs se comprueban después, al grabar.
-6. Usa **3. Grabar prueba local**. Espera sin navegar manualmente en esa ventana. El programa recorre el feed hacia abajo, verifica el orden de los IDs, espera las imágenes visibles y muestra cada post al menos 3 segundos. Los posts largos se recorren por segmentos.
+5. Usa **2. Conectar AgencyKey**. Inicia sesión en la ventana de Chrome que abre únicamente la opción de conectar; después regresa a la consola y pulsa Enter. Esta ventana usa una sesión separada y no abre el perfil personal habitual de Chrome. Puedes confirmar desde la cabecera del perfil: no es necesario tener posts visibles para guardar la sesión. Los IDs se comprueban después, al grabar.
+6. Usa **3. Grabar prueba local**. Chrome graba sin abrir una ventana y puedes seguir usando tu PC. El programa recorre el feed hacia abajo, verifica el orden de los IDs, espera las imágenes visibles y se desplaza continuamente, sin pausas fijas por post. Los posts largos se recorren por segmentos.
 7. Revisa `comprobante.mp4` y `report.json` en la carpeta del resultado. El MP4 es continuo, H.264, **854×480**, sin audio.
-8. Usa **4. Enviar último video** cuando quieras enviarlo al bot de pruebas. Introduce el token en la consola, confirma el usuario del bot y envíale desde Telegram el código que se muestra. Solo el chat privado que envió ese código recibirá el video. El token no se guarda. El bot debe estar sin webhook ni otro receptor activo; no se cambian esos ajustes.
+8. Usa **4. Enviar último video** cuando quieras enviarlo al bot de pruebas. En Windows se abre un campo oculto: pega el token con **Ctrl+V** y pulsa **Usar token**. Después confirma el usuario del bot y envíale desde Telegram el código que se muestra. Solo el chat privado que envió ese código recibirá el video. El token no se guarda. El bot debe estar sin webhook ni otro receptor activo; no se cambian esos ajustes.
 9. Repite con unos 30 posts existentes. **0** cierra la app.
 
 Solo la carga de publicaciones reales y el envío a Telegram requieren Internet. Chrome puede realizar su propio tráfico de actualización; el grabador no descarga navegadores. Si falta Chrome, muestra el error y no instala otro.
@@ -20,7 +20,7 @@ Solo la carga de publicaciones reales y el envío a Telegram requieren Internet.
 
 El EXE conserva configuración, sesión y videos en `%LOCALAPPDATA%\AgencyKeyRecorderTests`, fuera de su carpeta temporal. La ruta aparece en el menú. Cambiar el EXE conserva esos datos. Para cerrar la sesión local, cierra el programa y elimina `private/session.json` dentro de esa carpeta.
 
-Usa el EXE nuevo en lugar del anterior. La carpeta `browsers` de la versión anterior no se utiliza ni se elimina automáticamente. Las sesiones, resultados, tokens y videos no se suben a GitHub. El inicio de sesión no se graba. La demo se etiqueta como simulación si decides enviarla.
+Usa el EXE nuevo en lugar del anterior. La carpeta `browsers` de la versión anterior no se utiliza ni se elimina automáticamente. Las sesiones, resultados, tokens y videos no se suben a GitHub. La búsqueda inicial y los fotogramas de sincronización se recortan comprobando el video, de modo que el comprobante empieza en el primer ID configurado. El inicio de sesión no se graba. La demo se etiqueta como simulación si decides enviarla.
 
 El ejecutable incluye una herramienta pequeña para grabar y un codificador FFmpeg mínimo para convertir VP8/WebM a H.264/MP4. Se excluyen del empaquetado el FFmpeg general de imageio y los módulos de instalación de navegadores. No hay descarga oculta de dependencias en el primer uso. Las fuentes exactas y licencias del codificador se publican como descarga opcional `encoder-sources.tar.gz`.
 
@@ -44,7 +44,7 @@ python -m unittest discover -s tests -v
 python recorder.py demo --headless
 ```
 
-Comandos: `configure`, `login`, `record`, `send`, `demo`, `check-chrome`; sin comando abre el menú. `--headless` sirve para pruebas sin ventana. `send --report RUTA/report.json` selecciona un comprobante concreto. Para aislar datos de pruebas puede definirse `AGENCYKEY_RECORDER_DATA_DIR`.
+Comandos: `configure`, `login`, `record`, `send`, `demo`, `check-chrome`; sin comando abre el menú. La grabación es sin ventana de forma predeterminada; `--show-browser` permite mostrar Chrome para una prueba. `--headless` sigue siendo compatible. `send --report RUTA/report.json` selecciona un comprobante concreto. Para aislar datos de pruebas puede definirse `AGENCYKEY_RECORDER_DATA_DIR`.
 
 ## Compilar
 
