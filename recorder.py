@@ -21,7 +21,7 @@ DEFAULT_DATA_ROOT = (Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppDa
                      / 'AgencyKeyRecorderTests') if FROZEN else RESOURCE_ROOT
 ROOT = Path(os.environ.get('AGENCYKEY_RECORDER_DATA_DIR', DEFAULT_DATA_ROOT)).expanduser().resolve()
 if FROZEN:
-    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(ROOT / 'browsers')
+    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(RESOURCE_ROOT / 'browser-tools')
 CONFIG = ROOT / 'config.local.json'
 STATE = ROOT / 'private' / 'session.json'
 
@@ -72,30 +72,35 @@ def configure() -> None:
     print(f'Configurados {len(ids)} posts. Resolución 854×480, mínimo 3 segundos por post.')
 
 
-def install_browser() -> None:
-    print('Preparando el navegador de grabación. La primera descarga puede tardar varios minutos.', flush=True)
-    command = ([sys.executable, '--install-browser-internal'] if FROZEN else
-               [sys.executable, '-m', 'playwright', 'install', 'chromium'])
-    environment = os.environ.copy()
-    environment.setdefault('PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT', '120000')
-    for fallback in (False, True):
-        if fallback:
-            environment['PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST'] = 'https://storage.googleapis.com/chrome-for-testing-public'
-        result = subprocess.run(command, env=environment)
-        if result.returncode == 0:
-            print('Navegador preparado.', flush=True)
-            return
-    raise ValueError('No se pudo descargar Chromium. Revisa Internet y vuelve a intentarlo.')
+def find_chrome() -> str | None:
+    if sys.platform == 'win32':
+        for variable in ('PROGRAMFILES', 'PROGRAMFILES(X86)', 'LOCALAPPDATA'):
+            base = os.environ.get(variable)
+            if base:
+                path = Path(base) / 'Google' / 'Chrome' / 'Application' / 'chrome.exe'
+                if path.is_file():
+                    return str(path)
+    return shutil.which('google-chrome') or shutil.which('google-chrome-stable')
 
 
 async def launch_browser(playwright, *, headless: bool):
     try:
-        return await playwright.chromium.launch(headless=headless)
+        return await playwright.chromium.launch(channel='chrome', headless=headless)
     except Exception as error:
-        if "Executable doesn't exist" not in str(error):
+        if not any(message in str(error) for message in ("Executable doesn't exist", "is not found", "not found at")):
             raise
-    await asyncio.to_thread(install_browser)
-    return await playwright.chromium.launch(headless=headless)
+    executable = find_chrome()
+    if executable:
+        return await playwright.chromium.launch(executable_path=executable, headless=headless)
+    raise ValueError('No se encontró Google Chrome instalado. Instálalo o revisa su ubicación. No se descargó ningún navegador.')
+
+
+async def check_chrome() -> None:
+    from playwright.async_api import async_playwright
+    async with async_playwright() as pw:
+        browser = await launch_browser(pw, headless=True)
+        print(f'Chrome instalado disponible: {browser.version}')
+        await browser.close()
 
 
 async def login() -> None:
@@ -194,6 +199,11 @@ async def capture_walk(page, ids: list[str], dwell: float = 3, timeout: float = 
 
 
 def ffmpeg_path() -> str:
+    if FROZEN:
+        path = RESOURCE_ROOT / 'encoder' / 'ffmpeg.exe'
+        if not path.is_file():
+            raise ValueError('Falta el codificador incluido. Vuelve a descargar el EXE completo.')
+        return str(path)
     found = shutil.which('ffmpeg') if not FROZEN else None
     if found:
         return found
@@ -334,6 +344,7 @@ def latest_report() -> Path:
 
 
 def menu() -> None:
+    print('Navegador: Google Chrome instalado (sesión separada del grabador).')
     print(f'Carpeta de datos y videos: {ROOT}')
     while True:
         print('\nAgencyKey Recorder Tests — independiente de Dropper\n'
@@ -364,12 +375,12 @@ def menu() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'configure', 'login', 'record', 'send', 'demo', 'install-browser'])
+    parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'configure', 'login', 'record', 'send', 'demo', 'check-chrome'])
     parser.add_argument('--report', type=Path)
     parser.add_argument('--headless', action='store_true')
     args = parser.parse_args()
-    if args.command == 'install-browser':
-        install_browser()
+    if args.command == 'check-chrome':
+        asyncio.run(check_chrome())
     elif args.command == 'menu':
         menu()
     elif args.command == 'configure':
@@ -387,10 +398,6 @@ def main() -> None:
 
 if __name__ == '__main__':
     try:
-        if sys.argv[1:] == ['--install-browser-internal']:
-            from playwright.__main__ import main as playwright_main
-            sys.argv = ['playwright', 'install', 'chromium']
-            playwright_main()
         main()
     except KeyboardInterrupt:
         print('Interrumpido.')

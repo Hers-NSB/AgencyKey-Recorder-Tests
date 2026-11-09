@@ -1,81 +1,64 @@
-# AgencyKey Recorder Tests
+# AgencyKey Recorder Tests — Chrome
 
-Proyecto independiente para probar comprobantes de publicaciones existentes en AgencyKey. **No modifica Dropper, no utiliza su configuración, no publica posts y no solicita su API.** No hay integración automática con Drops en esta fase.
+Grabador independiente para comprobar publicaciones existentes en AgencyKey. **No modifica Dropper, no publica posts y no utiliza sus claves.** La activación automática al finalizar un Drop sigue fuera de esta prueba.
 
-## Qué hace
+## Ejecutable Windows
 
-- Localiza publicaciones por `id="postId_NUMERO"`, observado en AgencyKey.
-- Recorre el feed hacia abajo del post más reciente al más antiguo.
-- Comprueba el orden de todos los IDs indicados, incluso con un feed que recicla elementos.
-- Espera las imágenes `<img>` visibles y muestra cada post al menos 3 segundos; recorre los posts largos por segmentos.
-- Exporta un único MP4 continuo H.264 de **854×480**, sin audio. Elimina del MP4 la preparación y búsqueda inicial; conserva las esperas de carga durante el recorrido.
-- Genera un informe con IDs, duración, peso y hash del video.
-- Permite enviar un comprobante completo al chat privado de un bot de pruebas, con confirmación del usuario del bot y código de identificación del chat.
+1. Abre [la última versión privada](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/releases/latest), con tu sesión de GitHub iniciada.
+2. Descarga **AgencyKeyRecorderTests.exe** y ábrelo con doble clic. Requiere Windows de 64 bits y **Google Chrome instalado**; no necesita Python ni OBS.
+3. Primero selecciona **5. Generar demo**. Usa posts ficticios locales. **No descarga Chromium, otro navegador ni codificadores durante el primer uso.**
+4. Usa **1. Configurar posts** para indicar el perfil de AgencyKey y todos los enlaces o IDs de 3–5 publicaciones existentes consecutivas, del más reciente al más antiguo. Un enlace por línea; línea vacía para terminar. Evita posts fijados en la prueba inicial.
+5. Usa **2. Conectar AgencyKey**. Inicia sesión en la ventana de Chrome que abre el grabador; después regresa a la consola y pulsa Enter. Esta ventana usa una sesión separada y no abre el perfil personal habitual de Chrome.
+6. Usa **3. Grabar prueba local**. Espera sin navegar manualmente en esa ventana. El programa recorre el feed hacia abajo, verifica el orden de los IDs, espera las imágenes visibles y muestra cada post al menos 3 segundos. Los posts largos se recorren por segmentos.
+7. Revisa `comprobante.mp4` y `report.json` en la carpeta del resultado. El MP4 es continuo, H.264, **854×480**, sin audio.
+8. Usa **4. Enviar último video** cuando quieras enviarlo al bot de pruebas. Introduce el token en la consola, confirma el usuario del bot y envíale desde Telegram el código que se muestra. Solo el chat privado que envió ese código recibirá el video. El token no se guarda. El bot debe estar sin webhook ni otro receptor activo; no se cambian esos ajustes.
+9. Repite con unos 30 posts existentes. **0** cierra la app.
 
-## Windows — ejecutable sin Python
+Solo la carga de publicaciones reales y el envío a Telegram requieren Internet. Chrome puede realizar su propio tráfico de actualización; el grabador no descarga navegadores. Si falta Chrome, muestra el error y no instala otro.
 
-1. Abre [la última versión publicada](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/releases/latest) con tu sesión de GitHub.
-2. En **Assets**, descarga **AgencyKeyRecorderTests.exe**. El repositorio y sus descargas son privados.
-3. Guarda el EXE en su propia carpeta y ábrelo con doble clic. Verás el mismo menú de consola; no requiere instalar Python ni OBS.
-4. Primero selecciona **5. Generar demo**. La primera operación que necesita navegador descarga Chromium automáticamente; espera a que termine y mantén Internet conectado.
-5. Después usa **1** para configurar los posts existentes, **2** para iniciar sesión en AgencyKey, **3** para grabar y **4** para enviar el video al bot de pruebas. **0** cierra la app.
+## Datos y actualizaciones
 
-El EXE guarda configuración, sesión, navegador y videos en `%LOCALAPPDATA%\AgencyKeyRecorderTests`. La ruta exacta aparece al abrir el menú. Los datos se conservan al cerrar o cambiar el EXE: no se guardan en la carpeta temporal del empaquetado. El token de Telegram sigue sin guardarse. Para desconectar la versión EXE elimina únicamente `private/session.json` dentro de esa carpeta.
+El EXE conserva configuración, sesión y videos en `%LOCALAPPDATA%\AgencyKeyRecorderTests`, fuera de su carpeta temporal. La ruta aparece en el menú. Cambiar el EXE conserva esos datos. Para cerrar la sesión local, cierra el programa y elimina `private/session.json` dentro de esa carpeta.
 
-La descarga de Chromium puede ocupar varios cientos de MB la primera vez; es independiente del tamaño de los videos. El EXE mantiene las funciones del piloto y no activa grabaciones por finalización de Drops.
+Usa el EXE nuevo en lugar del anterior. La carpeta `browsers` de la versión anterior no se utiliza ni se elimina automáticamente. Las sesiones, resultados, tokens y videos no se suben a GitHub. El inicio de sesión no se graba. La demo se etiqueta como simulación si decides enviarla.
 
-## Windows — ejecutar el código Python
+El ejecutable incluye una herramienta pequeña para grabar y un codificador FFmpeg mínimo para convertir VP8/WebM a H.264/MP4. Se excluyen del empaquetado el FFmpeg general de imageio y los módulos de instalación de navegadores. No hay descarga oculta de dependencias en el primer uso. Las fuentes exactas y licencias del codificador se publican como descarga opcional `encoder-sources.tar.gz`.
 
-Esta alternativa requiere Python 3.12 (incluido el lanzador `py`) y acceso a Internet.
+## Comprobaciones y límites
 
-1. Descarga el repositorio con **Code → Download ZIP**, extráelo en su propia carpeta, separada de Dropper.
-2. Ejecuta **instalar.bat** una vez. Instala dependencias, Chromium y el codificador incluido con imageio-ffmpeg. No requiere OBS.
-3. Abre **iniciar.bat**.
-4. Primero usa **5. Generar demo**. Crea tres posts ficticios y un video local: no entra en AgencyKey ni envía nada.
-5. Usa **1. Configurar posts**. Pega el perfil y los enlaces de 3–5 posts consecutivos existentes, **del más reciente al más antiguo**, uno por línea. Termina con una línea vacía. No uses solo los extremos: hacen falta todos los IDs para detectar omisiones. Los posts de prueba deben estar sin fijar y en ese orden en el feed.
-6. Usa **2. Conectar AgencyKey**. Inicia sesión en el navegador que se abre, entra al feed y vuelve a la consola para pulsar Enter. La conexión no graba el login.
-7. Usa **3. Grabar prueba local**. No muevas ni navegues manualmente la ventana durante el recorrido. La grabación usa su propia ventana, no captura tu escritorio. Los resultados están en `output/FECHA-ID/` dentro de la carpeta de datos indicada al abrir.
-8. Abre `comprobante.mp4` y verifica texto, fotos completas, dirección y límites. `report.json` indica si se completó. El tamaño no se puede garantizar antes de grabar.
-9. Si el video está correcto, usa **4. Enviar último video**. Introduce el token del **bot de pruebas** en la consola (no se guarda ni se muestra), confirma su usuario y envíale desde Telegram el código que aparece. Regresa y pulsa Enter. El video va exclusivamente al chat privado que envió ese código. El bot debe estar sin webhook ni otro proceso de recepción activo. El programa no elimina webhooks ni cambia ajustes.
-10. Repite con 30 posts existentes. Si vence la sesión, vuelve a la opción 2.
+La automatización prueba el feed reciclado, las imágenes de carga tardía, los posts largos, el orden incorrecto, los posts faltantes/fijados, el rechazo de videos incompletos o modificados y el uso de Chrome sin instalar navegadores. GitHub Actions comprueba también el EXE real en Windows: menú, configuración persistente, Chrome instalado, codificador incluido y MP4 completo. Solo entonces publica la descarga. El tamaño final debe ser menor que los 87.121.379 bytes de la primera versión.
 
-Si la opción 4 selecciona una grabación incompleta, vuelve a grabar o usa `python recorder.py send --report output/FECHA-ID/report.json` para indicar otro comprobante. Nunca se envía automáticamente desde la opción de grabar. La demo se etiqueta como SIMULACIÓN si decides enviarla.
+La sesión real de AgencyKey debe probarse en tu PC. La interfaz observada usa `postId_ID` y un feed que recicla elementos. El piloto reserva 115 px para el encabezado y desplaza la rueda sobre el centro del feed. Un cambio de interfaz puede requerir ajustes. Solo espera elementos `<img>` visibles; fondos CSS/canvas, reproducción de video y botones para expandir texto no se verifican automáticamente.
 
-## Pruebas y límites
+Los posts fijados no definen los límites y los posts ajenos intercalados aparecen en el video continuo. La búsqueda inicial tiene límite de 120 segundos y el recorrido de 10 minutos. Una imagen que no carga en 30 segundos aborta el comprobante. No se envían videos incompletos; un fallo no vuelve a publicar nada. El límite local conservador de envío es 49 MB. Antes de repetir un envío con resultado incierto, comprueba Telegram.
 
-```bash
+## Ejecutar el código fuente
+
+Requiere Python 3.12 y Chrome instalado. `instalar.bat` prepara el entorno y la pequeña herramienta de grabación de Playwright; no descarga Chromium. `iniciar.bat` abre el menú. Para usar el código fuente se conserva imageio-ffmpeg como codificador de respaldo; ese paquete grande **no se incluye en el EXE**.
+
+```powershell
 python -m pip install -r requirements.txt
-python -m playwright install chromium
+python -m playwright install ffmpeg
+python recorder.py check-chrome
 python -m unittest discover -s tests -v
 python recorder.py demo --headless
 ```
 
-Las pruebas automáticas no usan cuentas reales. Cubren un feed reciclado con imágenes de carga tardía, posts altos, orden incorrecto, posts faltantes/fijados y rechazo de videos incompletos o modificados. GitHub Actions ejecuta las pruebas en Windows y Ubuntu. La compilación de Windows comprueba además el EXE real: arranque del menú, configuración persistente, descarga de Chromium desde el propio ejecutable y generación de un MP4 con el codificador incluido; solo después publica la descarga privada.
+Comandos: `configure`, `login`, `record`, `send`, `demo`, `check-chrome`; sin comando abre el menú. `--headless` sirve para pruebas sin ventana. `send --report RUTA/report.json` selecciona un comprobante concreto. Para aislar datos de pruebas puede definirse `AGENCYKEY_RECORDER_DATA_DIR`.
 
-La compatibilidad real con AgencyKey todavía debe verificarse en tu PC. La captura aportada confirma el identificador de un post, no todos los detalles de navegación. El piloto asume que la rueda del ratón sobre el centro del feed desplaza las publicaciones y reserva 115 px para el encabezado. Un cambio de interfaz puede exigir ajustar estos valores. Imágenes como fondos CSS/canvas y medios que requieren pulsar para cargar no se validan automáticamente. No se reproduce video ni se expanden textos con botones. Si la interfaz requiere esas acciones se ajustará el piloto después de observarlo.
+## Compilar
 
-Los posts fijados se excluyen como límites. Los posts ajenos intercalados aparecen en el video continuo. La búsqueda inicial tiene límite de 120 s y el recorrido de 10 minutos; una imagen visible que no carga en 30 s aborta el comprobante. Un fallo borra el video crudo y conserva un informe incompleto; no repite publicaciones. Un error de envío deja el archivo local disponible. Antes de reintentar un envío con resultado incierto, comprueba Telegram.
+`.github/workflows/windows-exe.yml` compila el codificador mínimo desde fuentes fijadas, lo transfiere a Windows, prepara la pequeña herramienta de grabación, ejecuta las pruebas, empaqueta el EXE y publica una versión privada. No descarga otro navegador: los runners usan su Chrome instalado.
 
-La sesión se guarda localmente en `private/session.json`; trátala como acceso a tu cuenta. Sesión, configuración local, videos y resultados están excluidos de Git. No añadas tokens al código o a commits. Para desconectar localmente, cierra el programa y elimina `private/session.json`. El token de Telegram se pide solo al enviar y no se persiste. El límite local conservador de envío es 49 MB; no divide un comprobante en varios archivos.
-
-## Comandos
-
-`python recorder.py` abre el menú. También existen `configure`, `login`, `record`, `send` y `demo`. `record --headless` graba sin ventana cuando ya hay sesión válida. El inicio manual es intencional para este piloto; el disparo al finalizar un Drop y la cola entre bots no están implementados.
-
-## Compilar el EXE
-
-Solo en Windows, ejecuta `compilar_windows.bat`, o:
+Para compilar localmente, descarga el artefacto `minimal-windows-encoder` de una ejecución y extrae su contenido en `vendor/encoder/`. Ejecuta `compilar_windows.bat`, o:
 
 ```powershell
 python -m pip install -r requirements-build.txt
+python -m playwright install ffmpeg
 python -m PyInstaller --clean --noconfirm AgencyKeyRecorderTests.spec
 python scripts/smoke_exe.py dist/AgencyKeyRecorderTests.exe
 ```
 
-El resultado es `dist/AgencyKeyRecorderTests.exe`. El navegador no se incluye en el archivo: se descarga al usarlo. `.github/workflows/windows-exe.yml` compila, prueba, conserva un artefacto y publica una versión nueva con su EXE en Releases. Si falla una prueba, no publica el ejecutable.
+El codificador de Windows se construye con MinGW en Ubuntu mediante `scripts/build_minimal_ffmpeg.sh`. Sus fuentes fijadas están declaradas en el workflow; el paquete de fuentes publicado incluye ambas bibliotecas, licencias y el script de compilación. El resultado es `dist/AgencyKeyRecorderTests.exe`.
 
-Para automatización de pruebas puede definirse `AGENCYKEY_RECORDER_DATA_DIR` con una carpeta de datos separada. `AgencyKeyRecorderTests.exe install-browser` prepara explícitamente el navegador. `AgencyKeyRecorderTests.exe demo --headless` ejecuta la demo sin abrir una ventana de navegador.
-
-## Alcance de cambios
-
-Todo pertenece a **Hers-NSB/AgencyKey-Recorder-Tests**. No existe importación, edición, despliegue ni escritura sobre el repositorio Dropper.
+Todo el trabajo pertenece a **Hers-NSB/AgencyKey-Recorder-Tests**.

@@ -1,23 +1,24 @@
-AGENCYKEY RECORDER TESTS - WINDOWS 64 BITS
+AGENCYKEY RECORDER TESTS - CHROME - WINDOWS 64 BITS
 
-1. Descarga AgencyKeyRecorderTests.exe desde Releases de este repositorio privado.
+1. Descarga AgencyKeyRecorderTests.exe desde Releases del repositorio privado.
 2. Guardalo en una carpeta propia y abrelo con doble clic.
-3. Se abre un menu de consola. No requiere Python ni OBS.
-4. Primero selecciona 5 (Generar demo). Chromium se descarga automaticamente
-   si todavia no esta instalado para esta aplicacion. Requiere Internet.
-5. Despues usa 1 para configurar posts existentes, 2 para iniciar sesion,
-   3 para grabar y 4 para enviar el ultimo video al bot de pruebas.
-6. Usa 0 para cerrar.
+3. Requiere Google Chrome ya instalado. No necesita Python ni OBS.
+4. Selecciona 5 para generar una demo local. No descarga Chromium ni
+   otro navegador, ni descarga codificadores durante el primer uso.
+5. Usa 1 para configurar posts existentes, 2 para iniciar sesion en AgencyKey,
+   3 para grabar y 4 para enviar el video al bot de pruebas. 0 cierra la app.
 
-Datos, sesion, navegador y videos:
-%LOCALAPPDATA%\AgencyKeyRecorderTests
-El programa muestra la ruta exacta al abrir. No se guardan dentro del EXE ni
-se pierden al actualizarlo. La sesion permanece local. El token de Telegram
-se pide al enviar y no se guarda.
+Chrome se abre en una ventana con una sesion separada del grabador.
+No utiliza ni modifica el perfil personal de tu Chrome habitual.
+El video sigue siendo un MP4 continuo a 480p.
 
-Este ejecutable es independiente de Dropper. No publica posts, no cambia
-bots, no utiliza claves de Dropper ni incorpora activacion automatica por Drop.
-El recorrido real en AgencyKey todavia requiere probarse con tu sesion.
+Datos y videos: %LOCALAPPDATA%\AgencyKeyRecorderTests
+El programa muestra la ruta exacta al abrir. Se conservan al actualizar el EXE.
+El token de Telegram se pide al enviar y no se guarda.
 
-El EXE usa el mismo menu que el programa Python; no es una interfaz grafica.
-Puedes descargar otra version del EXE conservando la carpeta de datos.
+Usa el nuevo EXE en lugar de la version anterior para evitar sus descargas.
+Esta version no utiliza la carpeta browsers descargada por el EXE anterior;
+no la borra automaticamente.
+
+Dropper permanece intacto. La prueba real de AgencyKey requiere tu sesion.
+Este EXE mantiene el menu de consola y no incluye activacion por fin de Drop.

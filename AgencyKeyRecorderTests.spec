@@ -1,27 +1,24 @@
-# Build a single Windows executable; browsers are downloaded into the user's data folder.
-from PyInstaller.utils.hooks import collect_all
+# Keep the Chrome driver and only the video encoders actually used by this app.
+import json
+import os
+from pathlib import Path
+import playwright
 
-pw_datas, pw_binaries, pw_hidden = collect_all('playwright')
-ff_datas, ff_binaries, ff_hidden = collect_all('imageio_ffmpeg')
+package = Path(playwright.__file__).parent / 'driver' / 'package'
+browsers = json.loads((package / 'browsers.json').read_text())['browsers']
+revision = next(b['revision'] for b in browsers if b['name'] == 'ffmpeg')
+recorder_ffmpeg = Path(os.environ['LOCALAPPDATA']) / 'ms-playwright' / f'ffmpeg-{revision}' / 'ffmpeg-win64.exe'
+encoder = Path('vendor/encoder/ffmpeg.exe')
+if not recorder_ffmpeg.is_file() or not encoder.is_file():
+    raise RuntimeError('Prepare Playwright ffmpeg and the minimal Windows encoder before building.')
 
 a = Analysis(
-    ['recorder.py'],
-    pathex=[],
-    binaries=pw_binaries + ff_binaries,
-    datas=pw_datas + ff_datas + [('tests/feed.html', 'tests')],
-    hiddenimports=pw_hidden + ff_hidden + ['playwright.__main__'],
-    hookspath=[],
-    runtime_hooks=[],
-    excludes=[],
-    noarchive=False,
+    ['recorder.py'], pathex=[], binaries=[],
+    datas=[('tests/feed.html', 'tests'), (str(encoder), 'encoder'),
+           (str(recorder_ffmpeg), f'browser-tools/ffmpeg-{revision}')],
+    hiddenimports=[], hookspath=[], runtime_hooks=[],
+    excludes=['imageio_ffmpeg', 'playwright.sync_api', 'playwright.__main__'], noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(
-    pyz, a.scripts, a.binaries, a.datas, [],
-    name='AgencyKeyRecorderTests',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    console=True,
-)
+exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name='AgencyKeyRecorderTests',
+          debug=False, bootloader_ignore_signals=False, strip=False, upx=False, console=True)

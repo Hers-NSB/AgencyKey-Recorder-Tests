@@ -42,7 +42,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from playwright.async_api import async_playwright
         self.pw = await async_playwright().start()
-        self.browser = await self.pw.chromium.launch()
+        self.browser = await recorder.launch_browser(self.pw, headless=True)
         self.page = await self.browser.new_page(viewport={'width': 1280, 'height': 720})
 
     async def asyncTearDown(self):
@@ -128,31 +128,37 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BrowserSetupTests(unittest.IsolatedAsyncioTestCase):
-    async def test_missing_browser_installs_and_retries(self):
-        browser = object()
-        playwright = Mock()
-        playwright.chromium.launch = AsyncMock(side_effect=[RuntimeError("Executable doesn't exist"), browser])
-        with patch.object(recorder, 'install_browser') as install:
-            result = await recorder.launch_browser(playwright, headless=True)
-        self.assertIs(result, browser)
-        self.assertEqual(playwright.chromium.launch.await_count, 2)
-        install.assert_called_once()
-
-    async def test_other_launch_errors_do_not_download(self):
-        playwright = Mock()
-        playwright.chromium.launch = AsyncMock(side_effect=RuntimeError('Operating system failure'))
-        with patch.object(recorder, 'install_browser') as install:
-            with self.assertRaisesRegex(RuntimeError, 'Operating system failure'):
-                await recorder.launch_browser(playwright, headless=True)
-        install.assert_not_called()
-
-    async def test_existing_browser_does_not_download(self):
+    async def test_installed_chrome_channel_is_used(self):
         browser = object()
         playwright = Mock()
         playwright.chromium.launch = AsyncMock(return_value=browser)
-        with patch.object(recorder, 'install_browser') as install:
-            self.assertIs(await recorder.launch_browser(playwright, headless=False), browser)
-        install.assert_not_called()
+        self.assertIs(await recorder.launch_browser(playwright, headless=False), browser)
+        playwright.chromium.launch.assert_awaited_once_with(channel='chrome', headless=False)
+
+    async def test_missing_chrome_fails_without_installing(self):
+        playwright = Mock()
+        playwright.chromium.launch = AsyncMock(side_effect=RuntimeError("Executable doesn't exist"))
+        with patch.object(recorder, 'find_chrome', return_value=None), patch.object(recorder.subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'No se encontró Google Chrome'):
+                await recorder.launch_browser(playwright, headless=True)
+        run.assert_not_called()
+        self.assertEqual(playwright.chromium.launch.await_count, 1)
+
+    async def test_user_installed_chrome_fallback(self):
+        browser = object()
+        playwright = Mock()
+        playwright.chromium.launch = AsyncMock(side_effect=[RuntimeError("is not found"), browser])
+        with patch.object(recorder, 'find_chrome', return_value='C:/Users/Test/Chrome/chrome.exe'):
+            self.assertIs(await recorder.launch_browser(playwright, headless=True), browser)
+        playwright.chromium.launch.assert_awaited_with(executable_path='C:/Users/Test/Chrome/chrome.exe', headless=True)
+
+    async def test_other_errors_do_not_trigger_fallback(self):
+        playwright = Mock()
+        playwright.chromium.launch = AsyncMock(side_effect=RuntimeError('Operating system failure'))
+        with patch.object(recorder, 'find_chrome') as find:
+            with self.assertRaisesRegex(RuntimeError, 'Operating system failure'):
+                await recorder.launch_browser(playwright, headless=True)
+        find.assert_not_called()
 
 
 if __name__ == '__main__':

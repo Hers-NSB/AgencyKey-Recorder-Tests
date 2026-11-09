@@ -1,10 +1,12 @@
-Grabador de pruebas independiente para Windows de 64 bits.
+Versión para Windows de 64 bits que usa **Google Chrome instalado**.
 
 - Descarga **AgencyKeyRecorderTests.exe** y ábrelo con doble clic.
-- No requiere Python ni OBS. Conserva el menú de consola.
-- La primera vez que elijas conectar o grabar, descarga Chromium automáticamente.
-- Primero selecciona **5. Generar demo** para comprobar el video sin entrar en AgencyKey.
-- Configuración, sesión, navegador y videos se conservan en `%LOCALAPPDATA%\AgencyKeyRecorderTests`.
-- MP4 continuo a 480p; envío manual al bot de pruebas.
+- No descarga Chromium ni codificadores en el primer uso. No necesita Python ni OBS.
+- Primero selecciona **5. Generar demo**: usa publicaciones ficticias locales.
+- Codificador MP4 reducido a las funciones necesarias; mantiene H.264 a 480p.
+- Chrome usa una sesión separada del grabador; no modifica tu perfil personal.
+- Conserva los datos en `%LOCALAPPDATA%\AgencyKeyRecorderTests`.
 
-Dropper permanece intacto. La compatibilidad con la sesión real de AgencyKey se verifica en tu PC.
+Usa este EXE en lugar del anterior. Dropper permanece intacto. La prueba con tu sesión real de AgencyKey sigue pendiente.
+
+El archivo opcional `encoder-sources.tar.gz` contiene las fuentes exactas y licencias del codificador; no es necesario descargarlo para usar la aplicación.

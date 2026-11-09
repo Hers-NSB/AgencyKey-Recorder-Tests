@@ -11,3 +11,7 @@ config.local.json
 *.webm
 dist/
 build/
+
+vendor/
+third_party/
+encoder-sources/
