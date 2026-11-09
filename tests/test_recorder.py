@@ -38,6 +38,18 @@ class ValidationTests(unittest.TestCase):
                 recorder.verified_video(path)
 
 
+class WheelPlanTests(unittest.TestCase):
+    def test_distance_and_direction_are_preserved(self):
+        import random
+        for pixels in (0, 1, -1, 190, 260, -115):
+            for seed in range(10):
+                steps = recorder.wheel_steps(pixels, rng=random.Random(seed))
+                self.assertEqual(sum(delta for delta, _ in steps), pixels)
+                self.assertTrue(all(delta * pixels > 0 and pause > 0 for delta, pause in steps))
+                if pixels:
+                    self.assertLess(sum(pause for _, pause in steps), 1500)
+
+
 class BrowserTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from playwright.async_api import async_playwright
@@ -104,6 +116,25 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(first['_frame'], self.page.main_frame)
         seen = await recorder.capture_walk(self.page, ['300', '200', '100'], dwell=.01, timeout=20, frame=first['_frame'])
         self.assertEqual(seen, ['300', '200', '100'])
+
+    async def test_wheel_scroll_has_visible_intermediate_positions(self):
+        await self.page.set_content('<div style="height:3000px;background:linear-gradient(white,blue)">Prueba rueda</div>')
+        await self.page.evaluate("""() => {
+            window.wheelEvents=[];window.scrollSamples=[];
+            addEventListener('wheel',e=>wheelEvents.push({delta:e.deltaY,time:performance.now(),trusted:e.isTrusted}));
+            addEventListener('scroll',()=>scrollSamples.push(scrollY));
+        }""")
+        await recorder.scroll_down(self.page, 190)
+        await self.page.wait_for_timeout(180)
+        events = await self.page.evaluate('wheelEvents')
+        positions = await self.page.evaluate('scrollSamples')
+        self.assertGreater(len(events), 6)
+        self.assertTrue(all(event['trusted'] and 0 < event['delta'] < 40 for event in events))
+        self.assertAlmostEqual(sum(event['delta'] for event in events), 190, delta=1)
+        self.assertGreater(events[-1]['time'] - events[0]['time'], 250)
+        self.assertGreater(len(set(positions)), 4)
+        self.assertTrue(all(left <= right for left, right in zip(positions, positions[1:])))
+        self.assertAlmostEqual(await self.page.evaluate('scrollY'), 190, delta=3)
 
 
 class TelegramTests(unittest.IsolatedAsyncioTestCase):

@@ -1,10 +1,10 @@
-Corrección del guardado de sesión y de la detección de publicaciones.
+Desplazamiento más natural durante la grabación.
 
-- Ahora puedes guardar la sesión desde la cabecera de la modelo, sin posts cargados.
-- Se comprueba que estés en el perfil configurado; si estás en otro, permite corregirlo sin cerrar Chrome.
-- La grabación busca posts también dentro de paneles iframe.
-- Mantiene Chrome instalado, MP4 continuo a 480p y las configuraciones existentes.
+- Movimientos de rueda cortos con aceleración y frenado graduales.
+- Pequeñas variaciones de ritmo y pausas entre movimientos.
+- Conserva los 3 segundos por post y la espera de las imágenes.
+- Mantiene Chrome instalado, sesión guardada, MP4 a 480p y los posts configurados.
 
-Descarga únicamente **AgencyKeyRecorderTests.exe**. Vuelve a elegir **2. Conectar AgencyKey**, abre la modelo configurada y pulsa Enter en la consola. Después usa **3. Grabar prueba local**.
+Descarga solo **AgencyKeyRecorderTests.exe**, sustituye el anterior y prueba **5. Generar demo**. Para grabar tus posts usa **3** si tu sesión sigue válida.
 
-Dropper permanece intacto. La sesión y el recorrido reales se verifican en tu PC. El archivo opcional `encoder-sources.tar.gz` contiene las fuentes y licencias del codificador; no se necesita para ejecutar la app.
+Dropper permanece intacto. Las fuentes del codificador son una descarga opcional y no se necesitan para ejecutar la app.

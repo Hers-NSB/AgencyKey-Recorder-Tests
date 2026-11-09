@@ -5,6 +5,8 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
+import random
 import os
 import re
 import shutil
@@ -208,12 +210,37 @@ async def images_ready(page, timeout: int = 30000, *, frame=None) -> None:
     await (frame or page.main_frame).wait_for_function(IMAGES_READY, timeout=timeout)
 
 
+def wheel_steps(pixels: int, *, rng=None) -> list[tuple[int, int]]:
+    """Small wheel events with gradual acceleration and deceleration."""
+    rng = rng or random
+    distance = abs(round(pixels))
+    if not distance:
+        return []
+    count = min(distance, max(8, math.ceil(distance / 12)))
+    weights = [math.sin(math.pi * (i + .5) / count) * rng.uniform(.92, 1.08) for i in range(count)]
+    total = sum(weights)
+    sign = 1 if pixels > 0 else -1
+    result = []
+    accumulated = previous = 0
+    for weight in weights:
+        accumulated += weight
+        position = round(distance * accumulated / total)
+        delta = position - previous
+        if delta:
+            result.append((sign * delta, rng.randint(28, 40)))
+        previous = position
+    delta, pause = result[-1]
+    result[-1] = delta, pause + rng.randint(100, 150)
+    return result
+
+
 async def scroll_down(page, pixels: int = 190, *, frame=None) -> None:
     frame = frame or page.main_frame
     x, y, _ = await frame_geometry(page, frame)
     await page.mouse.move(x, y)
-    await page.mouse.wheel(0, pixels)
-    await page.wait_for_timeout(500)
+    for delta, pause in wheel_steps(pixels):
+        await page.mouse.wheel(0, delta)
+        await page.wait_for_timeout(pause)
 
 
 async def seek_start(page, newest: str, timeout: float = 120) -> dict:

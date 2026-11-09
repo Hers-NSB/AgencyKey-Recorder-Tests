@@ -41,6 +41,10 @@ def main():
         subprocess.run([str(exe)], input='0\n', text=True, encoding='utf-8',
                        env=environment, cwd=root, check=True, timeout=180)
         assert (data / 'config.local.json').exists() and video.exists()
+        if destination := os.environ.get('AGENCYKEY_RECORDER_DEMO_EXPORT'):
+            exported = Path(destination).resolve()
+            exported.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(video, exported)
         print('EXE verificado: menú, configuración persistente, Chrome instalado sin descargas y MP4 480p completos.')
 
 
