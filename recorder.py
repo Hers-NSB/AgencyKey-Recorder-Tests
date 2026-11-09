@@ -461,10 +461,14 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             if not headless and not fixture:
                 await pause_failed_test(page)
         finally:
-            await context.close()
-            if page.video:
-                raw = Path(await page.video.path())
-            await browser.close()
+            try:
+                await context.close()
+                # Failed runs discard raw capture; asking for its path can itself
+                # fail when Chrome closed before the video artifact was created.
+                if not error and page.video:
+                    raw = Path(await page.video.path())
+            finally:
+                await browser.close()
     try:
         if error:
             raise ValueError(report['error']) from error
