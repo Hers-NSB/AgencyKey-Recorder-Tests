@@ -1,11 +1,11 @@
-Grabación continua en segundo plano y correcciones de inicio y token.
+Inicio verificado en el primer post del panel visible.
 
-- Movimiento más rápido, sin pausas fijas por post; solo espera las imágenes que faltan.
-- Chrome graba sin ventana. La opción 2 sigue abriendo Chrome para iniciar sesión.
-- Comprueba el ID inicial y recorta la búsqueda usando límites verificados en los fotogramas.
-- El campo oculto del token permite pegar con Ctrl+V en Windows.
+- Ignora publicaciones de pestañas y paneles ocultos de AgencyKey.
+- Revalida el primer ID y sus imágenes justo antes de marcar el inicio del comprobante.
+- Rechaza el recorrido si se oculta el panel que se está grabando.
+- Conserva Chrome visible en modo prueba y el diagnóstico de fallos.
 - Conserva configuración, sesión y MP4 a 480p.
 
-Descarga solo **AgencyKeyRecorderTests.exe**, sustituye el anterior y prueba **5. Generar demo**. Esa demo empieza en el post 200, aunque el feed contiene antes el 300. Para tus posts usa **3**.
+Descarga **AgencyKeyRecorderTests.exe**, sustituye el anterior y usa **3. Grabar prueba local**. El informe incorpora `start_verified`. La búsqueda inicial se excluye del MP4 mediante los límites del video.
 
 Dropper permanece intacto. Solo se conserva la versión más reciente. Las fuentes del codificador son opcionales para ejecutar el programa.

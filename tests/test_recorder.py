@@ -141,6 +141,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
             await self.page.context.storage_state(path=str(state))
             with patch.object(recorder, 'ROOT', Path(directory)), patch.object(recorder, 'STATE', state), \
                  patch.object(recorder, 'seek_start', new=AsyncMock(return_value={'_frame': None})), \
+                 patch.object(recorder, 'confirm_start', new=AsyncMock(return_value={'post_id': '300', 'visible': True})), \
                  patch.object(recorder, 'video_boundary', new=AsyncMock()), \
                  patch.object(recorder, 'capture_walk', side_effect=fail_walk), \
                  patch.object(recorder, 'pause_failed_test', side_effect=inspect_open_browser) as pause, \
@@ -201,6 +202,61 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(first['_frame'], self.page.main_frame)
         seen = await recorder.capture_walk(self.page, ['300', '200', '100'], dwell=.01, timeout=20, frame=first['_frame'])
         self.assertEqual(seen, ['300', '200', '100'])
+
+    async def test_hidden_tab_and_hidden_main_cards_do_not_select_recording_panel(self):
+        from html import escape
+        source = (recorder.RESOURCE_ROOT / 'tests/feed.html').read_text(encoding='utf-8')
+        await self.page.set_content('<style>body{margin:0}iframe{position:absolute;left:0;top:0;width:1280px;height:720px;border:0}</style>'
+            '<div style="visibility:hidden"><article id="postId_200" style="height:500px">stale main tab</article></div>'
+            '<iframe style="visibility:hidden" srcdoc="' + escape(source, quote=True) + '"></iframe>'
+            '<iframe srcdoc="' + escape(source, quote=True) + '"></iframe>')
+        hidden, visible = self.page.frames[1:]
+        await visible.wait_for_selector('#postId_300')
+        self.assertFalse(await recorder.frame_is_visible(self.page, hidden))
+        self.assertIs(await recorder.post_frame(self.page), visible)
+        first = await recorder.seek_start(self.page, '200', timeout=10)
+        self.assertIs(first['_frame'], visible)
+        self.assertEqual(await hidden.evaluate('scrollY'), 0)
+        verified = await recorder.confirm_start(self.page, visible, '200')
+        self.assertTrue(verified['visible'] and verified['images_ready'])
+        with self.assertRaisesRegex(ValueError, 'panel oculto'):
+            await recorder.confirm_start(self.page, hidden, '200')
+        await self.page.locator('iframe').nth(1).evaluate('e => e.style.visibility="hidden"')
+        with self.assertRaisesRegex(ValueError, 'quedó oculto'):
+            await recorder.capture_walk(self.page, ['200', '100'], frame=visible)
+
+    async def test_start_revalidation_rejects_recycled_or_moved_post(self):
+        await self.page.goto((recorder.RESOURCE_ROOT / 'tests/feed.html').as_uri())
+        first = await recorder.seek_start(self.page, '200', timeout=10)
+        await self.page.locator('#postId_200').evaluate('e => e.id="postId_999"')
+        with self.assertRaisesRegex(ValueError, 'ya no está encuadrado'):
+            await recorder.confirm_start(self.page, first['_frame'], '200')
+
+    async def test_export_starts_on_requested_post_in_visible_iframe(self):
+        from html import escape
+        import subprocess
+        source = (recorder.RESOURCE_ROOT / 'tests/feed.html').read_text(encoding='utf-8')
+        # Hidden frame has the same IDs; the visible panel starts one post too early.
+        wrapper = ('<style>body{margin:0}iframe{position:absolute;left:0;top:0;width:1280px;height:720px;border:0}</style>'
+                   '<iframe style="visibility:hidden" srcdoc="' + escape(source, quote=True) + '"></iframe>'
+                   '<iframe srcdoc="' + escape(source, quote=True) + '"></iframe>')
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory) / 'nested-feed.html'
+            fixture.write_text(wrapper, encoding='utf-8')
+            with patch.object(recorder, 'ROOT', Path(directory)):
+                report_path = await recorder.record({'profile_url': 'SIMULACIÓN', 'post_ids_newest_first': ['200', '100']},
+                                                    fixture=fixture, headless=True)
+            report = json.loads(report_path.read_text())
+            self.assertEqual(report['start_verified']['post_id'], '200')
+            self.assertEqual(report['start_verified']['frame_index'], 2)
+            self.assertEqual(report['status'], 'complete')
+            decoded = subprocess.run([recorder.ffmpeg_path(), '-hide_banner', '-loglevel', 'error',
+                '-i', str(report_path.parent / 'comprobante.mp4'), '-frames:v', '1', '-threads', '1',
+                '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1'], check=True, capture_output=True).stdout
+            offset = (250 * 854 + 400) * 3
+            red, green, blue = decoded[offset:offset+3]
+            self.assertGreater(green, red + 40)
+            self.assertGreater(green, blue + 12)
 
     async def test_wheel_scroll_has_visible_intermediate_positions(self):
         await self.page.set_content('<div style="height:3000px;background:linear-gradient(white,blue)">Prueba rueda</div>')

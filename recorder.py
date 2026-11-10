@@ -148,7 +148,6 @@ async def login() -> None:
 # A recycled feed removes off-screen cards. Read only currently attached nodes.
 SNAPSHOT = r'''() => [...document.querySelectorAll('[id^="postId_"]')].map(e => {
  const r=e.getBoundingClientRect();
- const p=e.closest('.b-post__wrapper');
  return {id:e.id.slice(7),top:r.top,bottom:r.bottom,height:r.height,
  pinned:e.classList.contains('m-pinned'),
  visible:r.bottom>100 && r.top<innerHeight && r.width>0 && r.height>0};
@@ -168,9 +167,31 @@ IMAGES_READY = r'''() => {
 }'''
 
 
+async def frame_is_visible(page, frame) -> bool:
+    """A card's local rectangle does not tell whether its iframe tab is visible."""
+    while frame is not page.main_frame:
+        if frame.is_detached() or frame.parent_frame is None:
+            return False
+        element = await frame.frame_element()
+        visible = await element.evaluate(r'''e => {
+            const r=e.getBoundingClientRect();
+            if(!e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) ||
+               r.width<1 || r.height<1 || r.bottom<=0 || r.right<=0 ||
+               r.top>=innerHeight || r.left>=innerWidth) return false;
+            const x=(Math.max(0,r.left)+Math.min(innerWidth,r.right))/2;
+            const y=(Math.max(0,r.top)+Math.min(innerHeight,r.bottom))/2;
+            return document.elementFromPoint(x,y)===e;
+        }''')
+        if not visible:
+            return False
+        frame = frame.parent_frame
+    return not frame.is_detached()
+
+
 async def post_frame(page):
     for frame in page.frames:
-        if not frame.is_detached() and await frame.locator('[id^="postId_"]').count():
+        if await frame_is_visible(page, frame) and await frame.locator('[id^="postId_"]').evaluate_all(
+                'cards => cards.some(e => e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && e.getBoundingClientRect().height>0)'):
             return frame
     return None
 
@@ -182,7 +203,7 @@ async def scroll_frame(page):
     # A profile header can fill a visible iframe before the recycled posts are mounted.
     largest, area = page.main_frame, 0
     for frame in page.frames:
-        if frame is page.main_frame or frame.is_detached():
+        if frame is page.main_frame or not await frame_is_visible(page, frame):
             continue
         box = await (await frame.frame_element()).bounding_box()
         if box and box['width'] >= 400 and box['height'] >= 250:
@@ -208,6 +229,21 @@ async def frame_geometry(page, frame):
 
 async def images_ready(page, timeout: int = 30000, *, frame=None) -> None:
     await (frame or page.main_frame).wait_for_function(IMAGES_READY, timeout=timeout)
+
+
+async def confirm_start(page, frame, newest: str) -> dict:
+    # Recheck after images settle: a recycled feed can replace the node while awaiting.
+    await images_ready(page, frame=frame)
+    if not await frame_is_visible(page, frame):
+        raise ValueError('El primer post está en un panel oculto. No se inició el comprobante.')
+    await frame.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    cards = await frame.evaluate(SNAPSHOT)
+    target = next((card for card in cards if card['id'] == newest and not card['pinned']
+                   and 95 <= card['top'] <= 145), None)
+    if not target:
+        raise ValueError(f'El post {newest} ya no está encuadrado en el panel visible. No se inició el comprobante.')
+    return {'post_id': newest, 'frame_index': page.frames.index(frame),
+            'top': round(target['top'], 2), 'images_ready': True, 'visible': True}
 
 
 def wheel_steps(pixels: int, *, rng=None) -> list[tuple[int, int]]:
@@ -263,6 +299,7 @@ async def seek_start(page, newest: str, timeout: float = 120) -> dict:
                 await scroll_down(page, round(top - 115), frame=frame)
             else:
                 raise ValueError(f'No se pudo encuadrar el post {newest}. No se inició el comprobante.')
+            await confirm_start(page, frame, newest)
             target['_frame'] = frame
             return target
         await scroll_down(page, 260, frame=frame)
@@ -276,6 +313,8 @@ async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 
     while monotonic() < deadline:
         if frame.is_detached():
             raise ValueError('El panel de publicaciones se recargó. Repite únicamente la grabación.')
+        if not await frame_is_visible(page, frame):
+            raise ValueError('El panel de publicaciones quedó oculto durante el recorrido. Repite la grabación.')
         await images_ready(page, frame=frame)
         _, _, height = await frame_geometry(page, frame)
         cards = await frame.evaluate(SNAPSHOT)
@@ -389,7 +428,8 @@ async def failure_diagnostics(page) -> list[dict]:
                     return r.width>0 && r.height>0 && r.bottom>100 && r.top<innerHeight; })
                 .map(img => ({post_id:img.closest('[id^="postId_"]').id.slice(7),
                     complete:img.complete, loaded:img.naturalWidth>0}))''')
-            result.append({'frame_index': index, 'cards': cards, 'images': images})
+            result.append({'frame_index': index, 'visible': await frame_is_visible(page, frame),
+                           'cards': cards, 'images': images})
         except Exception:
             result.append({'frame_index': index, 'unavailable': True})
     return result
@@ -438,6 +478,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             first = await seek_start(page, config['post_ids_newest_first'][0], timeout=10 if fixture else 120)
             print(f'Inicio del comprobante: post {config["post_ids_newest_first"][0]} · segundo plano: {headless}', flush=True)
             report['stage'] = 'marcar inicio del video'
+            report['start_verified'] = await confirm_start(page, first['_frame'], report['first_post_id'])
             await video_boundary(page)
             report['stage'] = 'recorrer posts / cargar imágenes'
             await capture_walk(page, config['post_ids_newest_first'], dwell=dwell,
