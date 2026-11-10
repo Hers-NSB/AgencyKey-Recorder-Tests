@@ -77,6 +77,23 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
             bot.send_video.assert_not_awaited()
             self.assertEqual(json.loads(coordinator.job_path(42).read_text())['status'],'error')
 
+    async def test_integrated_telegram_error_uses_safe_network_diagnosis(self):
+        import httpx
+        from telegram.error import NetworkError
+        with tempfile.TemporaryDirectory() as folder, patch.object(recorder,'ROOT',Path(folder)):
+            batch=self.batch();coordinator=RecordingCoordinator(batch.creator)
+            video=Path(folder)/'video.mp4';video.write_bytes(b'fixture')
+            failure=NetworkError('private details')
+            failure.__cause__=httpx.ConnectTimeout('PRIVATE_TOKEN')
+            bot=SimpleNamespace(send_message=AsyncMock(),send_video=AsyncMock(side_effect=failure))
+            with patch.object(recorder,'record',new=AsyncMock(return_value=Path(folder)/'report.json')), \
+                 patch.object(recorder,'verified_video',return_value=({'seen':['103','102','101']},video)), \
+                 patch.object(coordinator,'emit') as emit:
+                await coordinator.run(batch,bot,42)
+            self.assertEqual(json.loads(coordinator.job_path(42).read_text())['status'],'error')
+            self.assertIn('no se pudo establecer',str(emit.call_args_list))
+            self.assertNotIn('PRIVATE_TOKEN',str(emit.call_args_list))
+
     async def test_batch_retains_ids_across_pause_and_manual_recovery(self):
         from agencykey import AgencyKeyError
         batch=Batch(Creator(52,'Modelo',None));batch.order=[1,2]

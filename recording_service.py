@@ -5,7 +5,7 @@ from pathlib import Path
 import queue
 from types import SimpleNamespace
 
-from telegram.error import BadRequest, Forbidden, TelegramError
+from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 
 import recorder
 from config import log
@@ -111,8 +111,11 @@ class RecordingCoordinator:
             if report_path is None:
                 job['status'] = 'recording'
                 recorder.save_json(path, job)
-                await bot.send_message(chat_id, '🎥 Drop finalizado. Grabando el comprobante en segundo plano; '
-                                       'puedes ver la vista previa y el progreso en la app.')
+                try:
+                    await bot.send_message(chat_id, '🎥 Drop finalizado. Grabando el comprobante en segundo plano; '
+                                           'puedes ver la vista previa y el progreso en la app.')
+                except TelegramError:
+                    log.warning('Comprobante | No se pudo entregar el aviso inicial; la grabación continúa.')
                 ids = [recorder.post_id(batch.published_ids[n]) for n in range(len(batch.order), 0, -1)]
                 config = recorder.validate_config({'profile_url': f'https://app.agencykey.com/models/{self.creator.external_id}',
                                                    'post_ids_newest_first': ids})
@@ -130,10 +133,23 @@ class RecordingCoordinator:
             job.update(status='sent', message_id=message.message_id)
             self.progress({'stage': 'enviado', 'completed': len(report['seen']), 'total': len(report['seen'])})
         except TelegramError as error:
-            uncertain = job.get('status') == 'sending' and not isinstance(error, (BadRequest, Forbidden))
+            uncertain = job.get('status') == 'sending' and not isinstance(error, (BadRequest, Forbidden, RetryAfter))
+            detail = 'Telegram: ' + type(error).__name__
+            import httpx
+            from recorder_network import network_failure
+            current = error
+            for _ in range(8):
+                if isinstance(current, httpx.RequestError):
+                    diagnosed = network_failure('sendVideo', current)
+                    detail = str(diagnosed)
+                    uncertain = job.get('status') == 'sending' and diagnosed.uncertain
+                    break
+                current = current.__cause__ or current.__context__ if current is not None else None
+                if current is None:
+                    break
             job.update(status='delivery_unknown' if uncertain else 'error', error_type=type(error).__name__)
-            self.emit('recording', {'stage': 'error de Telegram' + (' · entrega incierta' if uncertain else ''), 'completed': 0, 'total': len(batch.order)})
-            log.error('Comprobante | Telegram | %s | Entrega incierta: %s', type(error).__name__, uncertain)
+            self.emit('recording', {'stage': detail, 'completed': 0, 'total': len(batch.order)})
+            log.error('Comprobante | %s | Entrega incierta: %s', detail, uncertain)
             try:
                 await bot.send_message(chat_id, '⚠️ No se confirmó el envío del comprobante. '
                                        'Revisa la app y el chat antes de usar /video reenviar.')
