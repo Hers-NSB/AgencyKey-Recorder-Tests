@@ -1,7 +1,7 @@
 name: Ejecutable Windows
 on:
   push:
-    branches: [main]
+    branches: [main, feat/independent-publisher-recorder]
   workflow_dispatch:
 permissions:
   contents: read
@@ -91,6 +91,12 @@ jobs:
         run: python -m playwright install ffmpeg
       - run: python recorder.py check-chrome
       - run: python -m unittest discover -s tests -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --prefix cloudflare
+      - run: node --test cloudflare/worker.test.mjs
+      - run: node --test cloudflare/admin.test.mjs
       - name: Build standalone executable
         run: python -m PyInstaller --clean --noconfirm AgencyKeyRecorderTests.spec
       - name: Test EXE without Python commands
@@ -108,6 +114,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Publish private download
+        if: github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -118,6 +125,7 @@ jobs:
             --title "AgencyKey Recorder Tests · Chrome ligero ${GITHUB_RUN_NUMBER}" \
             --notes-file release-notes.md --latest
       - name: Keep only the latest recorder release and tag
+        if: github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -131,3 +139,4 @@ jobs:
               gh release delete "$old" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
             fi
           done
+

@@ -1,0 +1,133 @@
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from time import monotonic
+from uuid import uuid4
+
+from agencykey import AgencyKey, AgencyKeyError, Creator, UnconfirmedPost
+from config import log
+
+
+@dataclass(frozen=True)
+class Post:
+    text: str
+    photo_id: str | None
+
+
+@dataclass
+class SessionStats:
+    automatic: int = 0
+    manual: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.automatic + self.manual
+
+
+@dataclass
+class Batch:
+    creator: Creator
+    id: str = field(default_factory=lambda: uuid4().hex)
+    rejected: set[int] = field(default_factory=set)
+    cleanup_ids: set[int] = field(default_factory=set)
+    received: dict[int, Post] = field(default_factory=dict)
+    order: list[int] = field(default_factory=list)
+    cursor: int = 0
+    attempt: int = 0
+    status: str = "collecting"
+    error: str = ""
+    uncertain: bool = False
+    manual: list[int] = field(default_factory=list)
+    published_ids: dict[int, str] = field(default_factory=dict)
+    failed: bool = False
+    recovery_delivered: bool = False
+    started_at: float | None = None
+    finished_at: float | None = None
+
+    def start_timer(self) -> None:
+        if self.started_at is None:
+            self.started_at = monotonic()
+
+    @property
+    def elapsed_text(self) -> str:
+        if self.started_at is None:
+            return "0 min 00 s"
+        end = self.finished_at if self.finished_at is not None else monotonic()
+        total = max(0, int(end - self.started_at))
+        minutes, seconds = divmod(total, 60)
+        hours, minutes = divmod(minutes, 60)
+        prefix = f"{hours} h " if hours else ""
+        return f"{prefix}{minutes} min {seconds:02d} s"
+
+    @property
+    def confirmed(self) -> int:
+        return self.cursor - len(self.manual)
+
+    def confirm_manual(self) -> None:
+        if self.status != "paused" or not self.failed or self.cursor >= len(self.order):
+            raise ValueError("No hay una publicación fallida para confirmar.")
+        self.manual.append(self.cursor + 1)
+        log.info("Drop %s | Post #%d confirmado manualmente por el usuario.", self.id, self.cursor + 1)
+        self.cursor += 1
+        self.failed = False
+        self.recovery_delivered = False
+
+    async def publish(
+        self, agencykey: AgencyKey, download_photo: Callable[[str], Awaitable[bytes]],
+        notify: Callable[[str], Awaitable[None]] | None = None,
+        session: SessionStats | None = None,
+    ) -> None:
+        self.start_timer()
+        self.attempt += 1
+        self.status = "publishing"
+        self.error = ""
+        self.uncertain = False
+        self.failed = False
+        self.recovery_delivered = False
+        log.info("Drop %s | Intento %d | %d automáticos | %d manuales | %d en total.",
+                 self.id, self.attempt, self.confirmed, len(self.manual), len(self.order))
+        while self.cursor < len(self.order):
+            if getattr(agencykey, "stop_requested", lambda: False)():
+                self.status = "paused"
+                self.error = "Parada solicitada desde la ventana. Los posts pendientes no se enviarán."
+                log.warning("Drop %s | %s", self.id, self.error)
+                return
+            post = self.received[self.order[self.cursor]]
+            if notify:
+                await notify(f"📤 Publicando post #{self.cursor + 1} de {len(self.order)} · {self.creator.name}")
+            try:
+                if post.photo_id:
+                    log.info("Drop %s | Post #%d | Descargando foto de Telegram.", self.id, self.cursor + 1)
+                    photo = await download_photo(post.photo_id)
+                    post_id = await agencykey.publish_photo(self.creator.external_id, post.text, photo)
+                else:
+                    post_id = await agencykey.publish_text(self.creator.external_id, post.text)
+            except AgencyKeyError as error:
+                self.status = "paused"
+                self.failed = True
+                self.error = str(error)
+                self.uncertain = isinstance(error, UnconfirmedPost)
+                log.error("Drop %s | Post #%d | %s", self.id, self.cursor + 1, self.error)
+                if self.uncertain:
+                    log.warning("Drop %s | Resultado sin confirmar: revisa el feed antes de continuar.", self.id)
+                return
+            except Exception as error:
+                self.status = "paused"
+                self.failed = True
+                self.error = f"Error inesperado ({type(error).__name__}). Revisa la consola."
+                self.uncertain = True
+                log.exception("Drop %s | Post #%d | Error inesperado.", self.id, self.cursor + 1)
+                return
+            self.published_ids[self.cursor + 1] = str(post_id)
+            self.cursor += 1
+            if session is not None:
+                session.automatic += 1
+            log.info("Drop %s | Post #%d confirmado | ID %s.", self.id, self.cursor, post_id)
+            if notify:
+                await notify(f"✅ Post #{self.cursor} confirmado")
+        self.status = "done"
+        self.finished_at = monotonic()
+        log.info("Drop %s completado | %d automáticas | %d manuales | Tiempo total: %s.",
+                 self.id, self.confirmed, len(self.manual), self.elapsed_text)
+
+
+

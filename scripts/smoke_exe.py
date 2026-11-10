@@ -67,6 +67,7 @@ def main():
                                     text=True, encoding='utf-8', env=environment, cwd=root, timeout=180)
         configured.check_returncode()
         subprocess.run([str(exe), 'check-chrome'], env=environment, cwd=root, check=True, timeout=180)
+        subprocess.run([str(exe), '--check-telegram-support'], env=environment, cwd=root, check=True, timeout=180)
         assert (data / 'config.local.json').exists(), 'Frozen app did not persist its configuration'
         subprocess.run([str(exe), 'demo', '--headless'], env=environment, cwd=root, check=True, timeout=900)
         reports = list((data / 'output').glob('*/report.json'))
@@ -92,8 +93,9 @@ def main():
         assert exe.stat().st_size < 87_121_379, 'The executable must be smaller than the original release'
         check_token_paste(exe, environment, root)
         # Open the actual default menu, then exit; this also checks restart persistence.
-        subprocess.run([str(exe)], input='0\n', text=True, encoding='utf-8',
+        subprocess.run([str(exe), 'menu'], input='0\n', text=True, encoding='utf-8',
                        env=environment, cwd=root, check=True, timeout=180)
+        subprocess.run([str(exe), '--smoke-test'], env=environment, cwd=root, check=True, timeout=180)
         assert (data / 'config.local.json').exists() and video.exists()
         if destination := os.environ.get('AGENCYKEY_RECORDER_DEMO_EXPORT'):
             exported = Path(destination).resolve()

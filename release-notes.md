@@ -1,11 +1,10 @@
-Inicio verificado en el primer post del panel visible.
+Web, app y bots independientes con comprobantes automáticos.
 
-- Ignora publicaciones de pestañas y paneles ocultos de AgencyKey.
-- Revalida el primer ID y sus imágenes justo antes de marcar el inicio del comprobante.
-- Rechaza el recorrido si se oculta el panel que se está grabando.
-- Conserva Chrome visible en modo prueba y el diagnóstico de fallos.
-- Conserva configuración, sesión y MP4 a 480p.
+- Interfaz de escritorio y funciones de publicación de Dropper adaptadas a AgencyKey Recorder Tests.
+- Worker, base de datos, credenciales de acceso y sesiones locales separados.
+- Grabación en segundo plano al finalizar el Drop, con progreso, vista previa y errores en la app.
+- IDs confirmados por AgencyKey y comprobante enviado al chat que inició el Drop.
+- Conexión Telegram con certificados y proxy de Windows; reintentos explícitos para entregas inciertas.
+- La herramienta manual de grabación sigue disponible con el comando `menu`.
 
-Descarga **AgencyKeyRecorderTests.exe**, sustituye el anterior y usa **3. Grabar prueba local**. El informe incorpora `start_verified`. La búsqueda inicial se excluye del MP4 mediante los límites del video.
-
-Dropper permanece intacto. Solo se conserva la versión más reciente. Las fuentes del codificador son opcionales para ejecutar el programa.
+Configura la web nueva, conecta la sesión de AgencyKey por modelo y luego inicia su bot. Usa tokens propios de los bots independientes. Consulta README.md para recuperación de posts manuales y comprobantes.

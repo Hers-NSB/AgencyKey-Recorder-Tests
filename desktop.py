@@ -1,0 +1,871 @@
+import argparse
+import asyncio
+import base64
+import logging
+import math
+import queue
+import sys
+import threading
+from time import monotonic
+import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog, messagebox, scrolledtext, ttk
+
+from cloud_client import CloudClient, CloudError, AccessDenied
+from credential_store import CredentialStore
+from desktop_runtime import BotController
+from config import ConsoleFormatter
+
+BG = '#10131a'
+SURFACE = '#181d27'
+PANEL = '#1f2633'
+BORDER = '#30394a'
+TEXT = '#eef2fa'
+MUTED = '#93a0b6'
+ACCENT = '#738bff'
+GREEN = '#52d9a6'
+MAX_LOG_LINES = 2000
+
+
+def initial_geometry(screen_width, screen_height, work_area=None):
+    left, top, right, bottom = work_area or (0, 0, screen_width, screen_height)
+    available_width, available_height = right - left, bottom - top
+    width = max(320, min(1040, available_width - 96))
+    height = max(300, min(680, available_height - 120))
+    x = left + max(0, (available_width - width) // 2)
+    y = top + max(0, (available_height - height - 32) // 2)
+    return width, height, x, y
+
+
+def work_area():
+    if sys.platform != 'win32':
+        return None
+    import ctypes
+    from ctypes import wintypes
+    rectangle = wintypes.RECT()
+    if ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(rectangle), 0):
+        return rectangle.left, rectangle.top, rectangle.right, rectangle.bottom
+    return None
+
+
+class WindowLogHandler(logging.Handler):
+    def __init__(self, events, thread_name=None):
+        super().__init__()
+        self.events = events
+        self.thread_name = thread_name
+        self.setFormatter(ConsoleFormatter('%(asctime)s  %(levelname)s  %(message)s', datefmt='%H:%M:%S'))
+
+    def emit(self, record):
+        if self.thread_name and record.threadName != self.thread_name:
+            return
+        try:
+            self.events.put_nowait(('log', (record.levelname, self.format(record))))
+        except queue.Full:
+            pass
+
+
+def label(parent, text='', color=TEXT, size=10, bold=False, bg=SURFACE, **kwargs):
+    return tk.Label(parent, text=text, bg=bg, fg=color, font=('Segoe UI', size, 'bold' if bold else 'normal'), **kwargs)
+
+
+class StatusBadge(tk.Canvas):
+    def __init__(self, parent, background=SURFACE):
+        super().__init__(parent, width=142, height=34, bg=background, highlightthickness=0)
+        self.mode = 'stopped'
+        self.phase = 0
+        self.timer = None
+        self.tick()
+
+    def set(self, mode):
+        self.mode = mode
+
+    def tick(self):
+        if not self.winfo_exists():
+            return
+        self.delete('all')
+        modes = {'stopped': ('Detenido', MUTED), 'starting': ('Conectando', ACCENT),
+                 'running': ('En línea', GREEN), 'stopping': ('Deteniendo', '#edbe70'), 'error': ('Revisar error', '#f68d9d')}
+        text, color = modes[self.mode]
+        if self.mode == 'running':
+            intensity = (math.sin(self.phase / 10) + 1) / 2
+            halo = '#%02x%02x%02x' % (28, int(48 + 12 * intensity), int(48 + 8 * intensity))
+            self.create_oval(6, 7, 26, 27, fill=halo, outline='')
+            self.create_oval(12, 13, 20, 21, fill=color, outline='')
+        elif self.mode in {'starting', 'stopping'}:
+            self.create_oval(9, 10, 23, 24, outline=BORDER, width=2)
+            self.create_arc(9, 10, 23, 24, start=self.phase * 12 % 360, extent=100, outline=color, width=2, style='arc')
+        else:
+            self.create_oval(12, 13, 20, 21, fill=color, outline='')
+        self.create_text(34, 17, text=text, fill=color, anchor='w', font=('Segoe UI', 10, 'bold'))
+        self.phase += 1
+        self.timer = self.after(80, self.tick)
+
+    def destroy(self):
+        if self.timer:
+            self.after_cancel(self.timer)
+        super().destroy()
+
+
+class BotPanel:
+    def __init__(self, manager, profile, runner=None):
+        self.manager = manager
+        self.profile = profile
+        self.events = queue.Queue(maxsize=5000)
+        self.controller = BotController(self.events, runner, credential_loader=self.load_credentials)
+        self.mode = 'stopped'
+        self.pending_profile = None
+        self.removed = False
+        self.frame = tk.Frame(manager.content, bg=SURFACE)
+        self.frame.grid_columnconfigure(0, weight=1)
+        self.frame.grid_rowconfigure(5, weight=1)
+        header = tk.Frame(self.frame, bg=SURFACE)
+        header.grid(row=0, column=0, sticky='ew', padx=28, pady=(24, 4))
+        self.title = label(header, profile['name'], size=23, bold=True)
+        self.title.pack(side='left')
+        header.bind('<Configure>', lambda event: self.title.configure(wraplength=max(160, event.width - 170), justify='left'))
+        self.badge = StatusBadge(header)
+        self.badge.pack(side='right')
+        self.subtitle = label(self.frame, color=MUTED)
+        self.subtitle.grid(row=1, column=0, sticky='w', padx=28, pady=(0, 22))
+        actions = tk.Frame(self.frame, bg=SURFACE)
+        actions.grid(row=3, column=0, sticky='ew', padx=28, pady=22)
+        self.start_button = ttk.Button(actions, text='Iniciar bot', style='Accent.TButton', command=self.start)
+        self.start_button.pack(side='left')
+        self.stop_button = ttk.Button(actions, text='Detener', command=self.stop, state='disabled')
+        self.stop_button.pack(side='left', padx=8)
+        self.connect_button = ttk.Button(actions, text='Conectar AgencyKey', command=self.connect_recording)
+        self.connect_button.pack(side='right')
+        proof = tk.Frame(self.frame, bg=SURFACE)
+        proof.grid(row=2, column=0, sticky='ew', padx=28)
+        proof.grid_columnconfigure(0, weight=1)
+        self.recording_text = tk.StringVar(value='Comprobante automático · Chrome en segundo plano')
+        tk.Label(proof, textvariable=self.recording_text, bg=SURFACE, fg=ACCENT, anchor='w',
+                 wraplength=230, justify='left', font=('Segoe UI', 10)).grid(row=0, column=0, sticky='ew', padx=(0, 12))
+        self.recording_progress = ttk.Progressbar(proof, maximum=1)
+        self.recording_progress.grid(row=1, column=0, sticky='ew', padx=(0, 12), pady=8)
+        self.preview = tk.Label(proof, text='Vista previa en vivo', bg=PANEL, fg=MUTED, width=28, height=7)
+        self.preview.grid(row=0, column=1, rowspan=2)
+        self.preview_image = None
+        self.session_cancel = threading.Event()
+        self.session_thread = None
+        log_title = tk.Frame(self.frame, bg=SURFACE)
+        log_title.grid(row=4, column=0, sticky='ew', padx=28, pady=(0, 8))
+        label(log_title, 'ACTIVIDAD DEL BOT', color=MUTED, size=9, bold=True).pack(side='left')
+        ttk.Button(log_title, text='Guardar registro', style='Small.TButton', command=self.save_log).pack(side='right')
+        self.activity = scrolledtext.ScrolledText(self.frame, wrap='word', state='disabled', font=('Consolas', 9),
+            bg='#121721', fg='#c2ccdc', insertbackground=TEXT, relief='flat', padx=16, pady=14,
+            selectbackground='#394875', borderwidth=0, height=7)
+        self.activity.vbar.pack_forget()
+        activity_scroll = ttk.Scrollbar(self.activity.frame, orient='vertical', command=self.activity.yview)
+        activity_scroll.pack(side='right', fill='y')
+        self.activity.configure(yscrollcommand=activity_scroll.set)
+        self.activity.grid(row=5, column=0, sticky='nsew', padx=28, pady=(0, 22))
+        self.activity.tag_config('ERROR', foreground='#f68d9d')
+        self.activity.tag_config('WARNING', foreground='#edbe70')
+        self.handler = WindowLogHandler(self.events, self.controller.thread_name)
+        logging.getLogger().addHandler(self.handler)
+        self.refresh_profile(profile)
+        self.append('INFO', 'Listo para iniciar')
+
+    def load_credentials(self):
+        try:
+            data = self.manager.client.credentials(self.profile['id'])
+        except CloudError as error:
+            self.manager.events.put((self.manager.cloud_failed, error))
+            raise
+        self.manager.events.put((self.manager.mark_online, None))
+        metadata = {key: value for key, value in data.items() if key not in {'telegram_token', 'api_key'}}
+        self.manager.events.put((self.apply_loaded_profile, metadata))
+        return data
+
+    def apply_loaded_profile(self, profile):
+        self.refresh_profile(profile)
+        self.pending_profile = None
+        self.manager.refresh_sidebar()
+
+    def refresh_profile(self, profile):
+        self.profile = profile
+        self.title.configure(text=profile['name'])
+        username = profile['creator'].get('username')
+        self.subtitle.configure(text=f'@{username}' if username else '')
+
+    def set_mode(self, mode):
+        self.mode = mode
+        self.badge.set(mode)
+        active = mode in {'starting', 'running', 'stopping'}
+        self.start_button.configure(state='disabled' if active or self.manager.closing or self.removed else 'normal')
+        self.stop_button.configure(state='normal' if mode in {'starting', 'running'} else 'disabled')
+        self.manager.refresh_sidebar()
+
+    def start(self):
+        if self.controller.running or self.manager.closing:
+            return
+        if self.manager.runner is None:
+            from recording_service import session_path
+            if not session_path(self.profile['creator']['external_id']).is_file():
+                messagebox.showinfo('Conectar AgencyKey', 'Conecta y guarda la sesión de esta modelo antes de iniciar el bot.', parent=self.manager.root)
+                self.connect_recording()
+                return
+        for panel in self.manager.panels.values():
+            if panel is not self and panel.controller.running and panel.profile['bot_id'] == self.profile['bot_id']:
+                messagebox.showerror('Bot activo', 'Este bot ya está funcionando', parent=self.manager.root)
+                return
+        self.set_mode('starting')
+        self.controller.start()
+
+    def connect_recording(self):
+        if self.controller.running or self.manager.closing or (self.session_thread and self.session_thread.is_alive()):
+            self.append('WARNING', 'Detén el bot antes de conectar su sesión de AgencyKey.')
+            return
+        from recording_service import connect_session
+        confirm = threading.Event()
+        self.session_cancel.clear()
+        dialog = tk.Toplevel(self.manager.root)
+        dialog.title('Conectar AgencyKey · ' + self.profile['name'])
+        dialog.configure(bg=SURFACE)
+        label(dialog, 'Inicia sesión y abre el perfil en Chrome.\nDespués pulsa Guardar sesión.', bg=SURFACE).pack(padx=24, pady=20)
+        ttk.Button(dialog, text='Guardar sesión', command=confirm.set).pack(pady=(0, 20))
+        def cancel():
+            self.session_cancel.set()
+            dialog.destroy()
+        dialog.protocol('WM_DELETE_WINDOW', cancel)
+        def emit(level, message):
+            self.events.put(('log', (level, message)))
+        def work():
+            try:
+                asyncio.run(connect_session(self.profile['creator']['external_id'], confirm, self.session_cancel, emit))
+            except Exception as error:
+                emit('ERROR', str(error) if isinstance(error, ValueError) else 'No se pudo conectar Chrome: ' + type(error).__name__)
+            finally:
+                self.events.put(('session_closed', dialog))
+        self.session_thread = threading.Thread(target=work, daemon=True)
+        self.session_thread.start()
+
+    def stop(self):
+        if not self.controller.running:
+            return
+        self.set_mode('stopping')
+        self.controller.stop()
+        self.append('WARNING', 'Esperando el envío en curso · No se iniciarán nuevas publicaciones')
+
+    def append(self, level, text):
+        self.activity.configure(state='normal')
+        self.activity.insert('end', text + '\n', level)
+        lines = int(self.activity.index('end-1c').split('.')[0])
+        if lines > MAX_LOG_LINES:
+            self.activity.delete('1.0', f'{lines - MAX_LOG_LINES + 1}.0')
+        self.activity.see('end')
+        self.activity.configure(state='disabled')
+
+    def poll(self):
+        for _ in range(150):
+            try:
+                event, value = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if event == 'log':
+                self.append(*value)
+            elif event == 'recording':
+                self.recording_text.set(f'{value["stage"]} · {value["completed"]}/{value["total"]}'
+                                        + (f' · ID {value["post_id"]}' if value.get('post_id') else ''))
+                self.recording_progress.configure(maximum=max(1, value['total']), value=value['completed'])
+            elif event == 'preview':
+                try:
+                    self.preview_image = tk.PhotoImage(data=base64.b64encode(value)).subsample(6, 6)
+                    self.preview.configure(image=self.preview_image, text='', width=0, height=0)
+                except tk.TclError:
+                    pass
+            elif event == 'session_closed':
+                if value.winfo_exists():
+                    value.destroy()
+            elif event == 'ready' and self.mode != 'stopping':
+                self.set_mode('running')
+            elif event == 'stopped':
+                self.set_mode('error' if value else 'stopped')
+                self.append('ERROR' if value else 'INFO', 'El bot se detuvo con error' if value else 'Bot detenido')
+
+    def save_log(self):
+        path = filedialog.asksaveasfilename(parent=self.manager.root, title='Guardar registro',
+                                          defaultextension='.txt', initialfile='recorder-registro.txt')
+        if path:
+            try:
+                Path(path).write_text(self.activity.get('1.0', 'end-1c'), encoding='utf-8')
+            except OSError as error:
+                messagebox.showerror('No se pudo guardar', str(error), parent=self.manager.root)
+
+    def destroy(self):
+        self.session_cancel.set()
+        logging.getLogger().removeHandler(self.handler)
+        self.badge.destroy()
+        self.frame.destroy()
+
+
+class DropperWindow:
+    def __init__(self, root, runner=None, client=None):
+        self.root = root
+        self.runner = runner
+        self.client = client
+        self.events = queue.Queue()
+        self.panels = {}
+        self.selected = None
+        self.closing = False
+        self.refreshing = False
+        self.cloud_online = False
+        self.next_sync = monotonic() + 30
+        self.access_dialog = None
+        self.auth_required = False
+        self.connecting = False
+        self.vault = CredentialStore()
+        root.title('AgencyKey Recorder Tests · Centro de bots')
+        root.configure(bg=BG)
+        width, height, x, y = initial_geometry(root.winfo_screenwidth(), root.winfo_screenheight(), work_area())
+        root.geometry(f'{width}x{height}+{x}+{y}')
+        root.minsize(min(820, width), min(540, height))
+        root.state('normal')
+        root.protocol('WM_DELETE_WINDOW', self.close)
+        self.styles()
+        top = tk.Frame(root, bg=BG, padx=26, pady=22)
+        top.pack(fill='x')
+        label(top, 'AgencyKey Recorder Tests', size=18, bold=True, bg=BG).pack(side='left')
+        self.sync_button = ttk.Button(top, text='Actualizar configuraciones', command=self.refresh)
+        self.sync_button.pack(side='right')
+        shell = tk.Frame(root, bg=BG)
+        shell.pack(fill='both', expand=True, padx=22)
+        sidebar = tk.Frame(shell, bg=BG, width=242)
+        sidebar.pack(side='left', fill='y', padx=(0, 18))
+        sidebar.pack_propagate(False)
+        title = tk.Frame(sidebar, bg=BG)
+        title.pack(fill='x', pady=(6, 14))
+        label(title, 'TUS BOTS', size=9, color=MUTED, bold=True, bg=BG).pack(side='left')
+        self.count = label(title, '0', color=MUTED, size=9, bg=BG)
+        self.count.pack(side='right')
+        canvas_holder = tk.Frame(sidebar, bg=BG)
+        canvas_holder.pack(fill='both', expand=True)
+        self.side_canvas = tk.Canvas(canvas_holder, bg=BG, highlightthickness=0, width=236)
+        self.side_scroll = ttk.Scrollbar(canvas_holder, orient='vertical', command=self.side_canvas.yview)
+        self.side_canvas.configure(yscrollcommand=self.side_scroll.set)
+        self.side_canvas.pack(side='left', fill='both', expand=True)
+        self.list_frame = tk.Frame(self.side_canvas, bg=BG)
+        self.list_window = self.side_canvas.create_window((0, 0), window=self.list_frame, anchor='nw')
+        self.list_frame.bind('<Configure>', self.layout_sidebar)
+        self.side_canvas.bind('<Configure>', self.layout_sidebar)
+        self.content = tk.Frame(shell, bg=SURFACE, highlightbackground=BORDER, highlightthickness=1)
+        self.content.pack(side='left', fill='both', expand=True)
+        self.empty = tk.Frame(self.content, bg=SURFACE)
+        self.empty.pack(fill='both', expand=True)
+        empty_inner = tk.Frame(self.empty, bg=SURFACE)
+        empty_inner.place(relx=.5, rely=.45, anchor='center')
+        label(empty_inner, 'Acceso a los bots', size=21, bold=True).pack()
+        label(empty_inner, 'Introduce la contraseña para descargar las configuraciones', color=MUTED).pack(pady=12)
+        self.empty_note = label(empty_inner, '', color=ACCENT)
+        self.empty_note.pack(pady=8)
+        footer = tk.Frame(root, bg=BG, padx=26, pady=14)
+        footer.pack(side='bottom', fill='x', before=shell)
+        self.status = tk.StringVar(value='Sin configuraciones')
+        tk.Label(footer, textvariable=self.status, bg=BG, fg=MUTED, font=('Segoe UI', 9)).pack(side='left')
+        logging.getLogger().setLevel(logging.INFO)
+        root.after(100, self.poll)
+        if client:
+            self.connected()
+            self.refresh()
+        else:
+            root.after(200, self.auto_connect)
+
+    def styles(self):
+        style = ttk.Style(self.root)
+        style.theme_use('clam')
+        style.configure('.', font=('Segoe UI', 10), background=SURFACE, foreground=TEXT)
+        style.configure('TButton', background=PANEL, foreground=TEXT, padding=(15, 10), borderwidth=0, focuscolor=PANEL)
+        style.map('TButton', background=[('active', '#2c3548'), ('disabled', '#1c2230')], foreground=[('disabled', '#5e6b80')])
+        style.configure('Accent.TButton', background=ACCENT, foreground='#ffffff', font=('Segoe UI', 10, 'bold'))
+        style.map('Accent.TButton', background=[('active', '#859bff'), ('disabled', '#2d3651')])
+        style.configure('Danger.TButton', foreground='#e694a3')
+        style.configure('Small.TButton', padding=(10, 5), font=('Segoe UI', 9))
+        style.configure('TEntry', fieldbackground=PANEL, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER,
+                        foreground=TEXT, insertcolor=TEXT, padding=9)
+        style.configure('TCombobox', fieldbackground=PANEL, background=PANEL, foreground=TEXT, padding=8, arrowcolor=MUTED)
+        style.map('TCombobox', fieldbackground=[('readonly', PANEL)], selectbackground=[('readonly', PANEL)],
+                  selectforeground=[('readonly', TEXT)], foreground=[('readonly', TEXT)])
+        self.root.option_add('*TCombobox*Listbox.background', PANEL)
+        self.root.option_add('*TCombobox*Listbox.foreground', TEXT)
+        self.root.option_add('*TCombobox*Listbox.selectBackground', '#394875')
+        style.layout('Vertical.TScrollbar', [('Vertical.Scrollbar.trough', {'sticky': 'ns', 'children': [
+            ('Vertical.Scrollbar.thumb', {'sticky': 'nswe'})]})])
+        style.configure('Vertical.TScrollbar', background=BORDER, troughcolor=BG, darkcolor=BORDER,
+                        lightcolor=BORDER, bordercolor=BG, borderwidth=0, width=7, gripcount=0)
+        style.map('Vertical.TScrollbar', background=[('active', '#46546b')])
+
+    def background(self, work, complete, failed=None):
+        def run():
+            try:
+                result = work()
+            except Exception as error:
+                self.events.put((failed or self.show_error, error))
+            else:
+                self.events.put((complete, result))
+        threading.Thread(target=run, name='dropper-config', daemon=True).start()
+
+    def show_error(self, error):
+        messagebox.showerror('No se pudo completar', str(error), parent=self.root)
+
+    def auto_connect(self):
+        try:
+            token = self.vault.read()
+        except OSError:
+            token = None
+        if token:
+            self.try_connect(token)
+        else:
+            self.connect_dialog()
+
+    def connected(self):
+        self.sync_button.configure(state='normal')
+        self.status.set('Configuraciones actualizadas')
+        self.auth_required = False
+        self.empty_note.configure(text='No hay bots configurados')
+        self.cloud_online = True
+
+    def try_connect(self, token, remember=False, dialog=None):
+        if self.connecting:
+            return
+        token = token.strip()
+        if not token:
+            return
+        self.connecting = True
+        client = CloudClient(token)
+        self.status.set('Descargando configuraciones…')
+        def done(profiles):
+            self.connecting = False
+            self.client = client
+            if remember:
+                try:
+                    self.vault.write(token)
+                except OSError:
+                    messagebox.showinfo('Acceso conectado', 'No se pudo recordar el acceso en Windows', parent=self.root)
+            elif dialog:
+                try:
+                    self.vault.delete()
+                except OSError:
+                    pass
+            self.connected()
+            self.apply_profiles(profiles)
+            self.close_access_dialog(dialog)
+        def failed(error):
+            self.connecting = False
+            self.cloud_failed(error)
+            if dialog and dialog.winfo_exists():
+                self.show_error(error)
+        self.background(client.list_profiles, done, failed)
+
+    def close_access_dialog(self, dialog=None):
+        current = self.access_dialog
+        self.access_dialog = None
+        for window in {item for item in (current, dialog) if item is not None}:
+            if window.winfo_exists():
+                window.grab_release()
+                window.destroy()
+        self.root.lift()
+        self.root.focus_set()
+
+    def connect_dialog(self):
+        if self.access_dialog and self.access_dialog.winfo_exists():
+            self.access_dialog.lift()
+            return
+        dialog = tk.Toplevel(self.root)
+        self.access_dialog = dialog
+        dialog.title('Acceso a los bots')
+        dialog.configure(bg=SURFACE)
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        outer = tk.Frame(dialog, bg=SURFACE, padx=26, pady=24)
+        outer.pack()
+        label(outer, 'Contraseña nueva' if self.auth_required else 'Acceso a los bots', size=19, bold=True).pack(anchor='w')
+        label(outer, 'Introduce la contraseña actual para descargar las configuraciones', color=MUTED, size=9).pack(anchor='w', pady=(6, 18))
+        label(outer, 'Contraseña', bold=True).pack(anchor='w', pady=(8, 5))
+        field = ttk.Entry(outer, width=48, show='•')
+        field.pack(fill='x', pady=(0, 6))
+        remember = tk.BooleanVar(value=sys.platform == 'win32')
+        tk.Checkbutton(outer, text='Recordar acceso en este equipo', variable=remember, bg=SURFACE, fg=MUTED,
+                       activebackground=SURFACE, activeforeground=TEXT, selectcolor=PANEL,
+                       state='normal' if sys.platform == 'win32' else 'disabled').pack(anchor='w', pady=10)
+        buttons = tk.Frame(outer, bg=SURFACE)
+        buttons.pack(fill='x', pady=(10, 0))
+        ttk.Button(buttons, text='Descargar configuraciones', style='Accent.TButton', command=lambda: self.try_connect(field.get(), remember.get(), dialog)).pack(side='right')
+        field.bind('<Return>', lambda event: self.try_connect(field.get(), remember.get(), dialog))
+        def forget():
+            if any(panel.controller.running for panel in self.panels.values()):
+                messagebox.showinfo('Bots activos', 'Detén los bots antes de olvidar el acceso', parent=dialog)
+                return
+            try:
+                self.vault.delete()
+            except OSError:
+                pass
+            self.client = None
+            self.cloud_online = False
+            for panel in self.panels.values():
+                panel.destroy()
+            self.panels.clear()
+            self.selected = None
+            self.empty.pack(fill='both', expand=True)
+            self.refresh_sidebar()
+            self.sync_button.configure(state='normal')
+            self.status.set('Acceso olvidado en este equipo')
+            dialog.destroy()
+        ttk.Button(buttons, text='Olvidar acceso', command=forget).pack(side='left')
+        self.center_dialog(dialog)
+        dialog.grab_set()
+        field.focus_set()
+
+    def center_dialog(self, dialog):
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width()-dialog.winfo_reqwidth())//2
+        y = self.root.winfo_y() + (self.root.winfo_height()-dialog.winfo_reqheight())//2
+        dialog.geometry(f'+{max(0,x)}+{max(0,y)}')
+
+    def refresh(self):
+        if self.refreshing or self.closing:
+            return
+        if not self.client or self.auth_required:
+            self.connect_dialog()
+            return
+        self.refreshing = True
+        self.next_sync = monotonic()+30
+        self.sync_button.configure(state='disabled')
+        def complete(profiles):
+            self.refreshing = False
+            self.sync_button.configure(state='normal')
+            self.cloud_online = True
+            self.apply_profiles(profiles)
+        def failed(error):
+            self.refreshing = False
+            self.sync_button.configure(state='normal')
+            self.cloud_failed(error)
+        self.background(self.client.list_profiles, complete, failed)
+
+    def apply_profiles(self, profiles):
+        remote = {profile['id']: profile for profile in profiles}
+        for key in list(self.panels):
+            panel = self.panels[key]
+            if key not in remote:
+                if panel.controller.running:
+                    panel.removed = True
+                    panel.stop()
+                    panel.append('WARNING', 'Configuración eliminada desde el panel privado')
+                else:
+                    panel.destroy()
+                    del self.panels[key]
+                    if self.selected == key:
+                        self.selected = None
+        for profile in profiles:
+            self.upsert(profile)
+        self.select_available()
+
+    def select_available(self):
+        if self.selected in self.panels:
+            self.select(self.selected)
+        elif self.panels:
+            self.select(next(iter(self.panels)))
+        else:
+            self.empty.pack(fill='both', expand=True)
+            self.refresh_sidebar()
+
+    def upsert(self, profile):
+        panel = self.panels.get(profile['id'])
+        if panel:
+            if panel.controller.running:
+                if profile['revision'] != panel.profile['revision']:
+                    panel.pending_profile = profile
+                    if profile['creator']['external_id'] != panel.profile['creator']['external_id']:
+                        panel.stop()
+                        panel.append('WARNING', 'Modelo cambiada en el panel · Reinicia el bot cuando se detenga')
+            else:
+                panel.refresh_profile(profile)
+        else:
+            self.panels[profile['id']] = BotPanel(self, profile, self.runner)
+        self.refresh_sidebar()
+
+    def select(self, key):
+        self.empty.pack_forget()
+        for profile_id, panel in self.panels.items():
+            if profile_id == key:
+                panel.frame.pack(fill='both', expand=True)
+            else:
+                panel.frame.pack_forget()
+        self.selected = key
+        self.refresh_sidebar()
+
+    def refresh_sidebar(self):
+        for item in self.list_frame.winfo_children():
+            item.destroy()
+        for key, panel in self.panels.items():
+            active = key == self.selected
+            background = PANEL if active else BG
+            row = tk.Frame(self.list_frame, bg=background, padx=13, pady=12,
+                           highlightbackground=ACCENT if active else BG, highlightthickness=1)
+            row.pack(fill='x', pady=(0, 7))
+            color = GREEN if panel.mode == 'running' else ACCENT if panel.mode in {'starting','stopping'} else '#f68d9d' if panel.mode == 'error' else MUTED
+            name = label(row, f'●  {panel.profile["name"]}', color=color, bold=True, bg=background, anchor='w', wraplength=185)
+            name.pack(fill='x')
+            model = label(row, '@' + panel.profile['creator']['username'] if panel.profile['creator'].get('username') else '', color=MUTED, size=9, bg=background, anchor='w', wraplength=185)
+            model.pack(fill='x', padx=(17,0), pady=(4,0))
+            for widget in (row, name, model):
+                widget.bind('<Button-1>', lambda event, selected=key: self.select(selected))
+        self.count.configure(text=str(len(self.panels)))
+
+    def layout_sidebar(self, event=None):
+        self.side_canvas.itemconfigure(self.list_window, width=self.side_canvas.winfo_width())
+        region = self.side_canvas.bbox('all')
+        self.side_canvas.configure(scrollregion=region)
+        overflow = bool(region and region[3] - region[1] > self.side_canvas.winfo_height() + 1)
+        if overflow and not self.side_scroll.winfo_manager():
+            self.side_scroll.pack(side='right', fill='y', before=self.side_canvas)
+        elif not overflow and self.side_scroll.winfo_manager():
+            self.side_scroll.pack_forget()
+            self.side_canvas.yview_moveto(0)
+
+    def mark_online(self, value=None):
+        self.cloud_online = True
+
+    def cloud_failed(self, error):
+        self.cloud_online = False
+        self.status.set(str(error))
+        if isinstance(error, AccessDenied):
+            self.auth_required = True
+            try:
+                self.vault.delete()
+            except OSError:
+                pass
+            self.connect_dialog()
+
+    def poll(self):
+        for _ in range(50):
+            try:
+                callback, value = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if not self.closing:
+                try:
+                    callback(value)
+                except Exception:
+                    logging.getLogger('dropper').exception('No se pudo actualizar la interfaz')
+                    messagebox.showerror('Error de interfaz', 'No se pudo actualizar la vista', parent=self.root)
+        for key, panel in list(self.panels.items()):
+            panel.poll()
+            if not panel.controller.running:
+                if panel.removed:
+                    panel.destroy()
+                    del self.panels[key]
+                    if self.selected == key:
+                        self.selected = None
+                    self.select_available()
+                elif panel.pending_profile:
+                    panel.refresh_profile(panel.pending_profile)
+                    panel.pending_profile = None
+                    self.refresh_sidebar()
+        active = sum(panel.controller.running for panel in self.panels.values())
+        if self.client and self.cloud_online and not self.refreshing:
+            self.status.set(f'Configuraciones actualizadas · {active} bots activos')
+        if self.closing and not active:
+            self.destroy()
+            return
+        if self.client and not self.auth_required and monotonic() >= self.next_sync and not self.closing:
+            self.refresh()
+        self.root.after(100, self.poll)
+
+    def close(self):
+        if any(panel.controller.running for panel in self.panels.values()):
+            if not messagebox.askyesno('Cerrar AgencyKey Recorder Tests', '¿Detener los bots y cerrar? Los Drops pendientes se perderán', parent=self.root):
+                return
+            self.closing = True
+            for panel in self.panels.values():
+                panel.stop()
+        else:
+            self.destroy()
+
+    def destroy(self):
+        for panel in self.panels.values():
+            panel.destroy()
+        self.client = None
+        self.root.destroy()
+
+
+def smoke_test(screenshot=None):
+    from uuid import uuid4
+    failures = []
+    class FakeCloud:
+        def __init__(self):
+            self.records = {str(i): dict(id=str(i), name=model, bot_id=str(i), revision=1,
+                creator=dict(external_id=i, name=model, username=model.lower()))
+                for i, model in [(1, 'Lilith'), (2, 'Lola')]}
+        def list_profiles(self):
+            from copy import deepcopy
+            return deepcopy(list(self.records.values()))
+    def fake_bot(stop_event, ready):
+        logging.getLogger('dropper').info('Bot conectado · Modelo asignada desde el panel privado')
+        ready()
+        if not stop_event.wait(15):
+            failures.append('No se recibió la orden de parada')
+    root = tk.Tk()
+    cloud = FakeCloud()
+    window = DropperWindow(root, fake_bot, cloud)
+
+    def finish():
+        for panel in window.panels.values():
+            if panel.controller.running:
+                failures.append('No se detuvo el bot')
+                panel.controller.stop()
+        if sys.platform == 'win32':
+            vault = CredentialStore('AgencyKeyRecorderTests/smoke/' + uuid4().hex)
+            try:
+                vault.write('smoke-test-access')
+                if vault.read() != 'smoke-test-access':
+                    failures.append('Windows no recuperó el acceso guardado')
+            finally:
+                vault.delete()
+        window.destroy()
+
+    def wait_for(condition, complete, failure):
+        deadline = monotonic()+8
+        def check():
+            try:
+                if condition():
+                    complete()
+                elif monotonic() < deadline:
+                    root.after(100, check)
+                else:
+                    failures.append(failure)
+                    finish()
+            except Exception as error:
+                failures.append(failure+': '+str(error))
+                finish()
+        root.after(100, check)
+
+    def start():
+        root.update_idletasks()
+        window.layout_sidebar()
+        if window.side_scroll.winfo_manager():
+            failures.append('La lista de dos modelos no debe mostrar barra de desplazamiento')
+        window.connect_dialog()
+        dialog = window.access_dialog
+        window.close_access_dialog()
+        if dialog.winfo_exists():
+            failures.append('No se cerró la ventana de contraseña')
+        # Verify the scrollbar in the real Tk layout, then restore the two bots.
+        profiles = cloud.list_profiles()
+        extras = [dict(profiles[0], id=str(i), name=f'Modelo {i}') for i in range(3, 20)]
+        window.apply_profiles(profiles + extras)
+        root.update_idletasks()
+        window.layout_sidebar()
+        if not window.side_scroll.winfo_manager():
+            failures.append('La lista extensa necesita barra de desplazamiento')
+        window.apply_profiles(profiles)
+        root.update_idletasks()
+        window.layout_sidebar()
+        if window.side_scroll.winfo_manager():
+            failures.append('La barra no se ocultó al reducir la lista')
+        if root.state() != 'normal':
+            failures.append('La ventana debe abrirse en tamaño normal')
+        for panel in window.panels.values():
+            panel.start()
+        window.select('1')
+        wait_for(lambda: all(panel.mode == 'running' for panel in window.panels.values()),
+                 lambda: root.after(200, check_parallel), 'Los dos bots deben estar activos')
+
+    def check_parallel():
+        panel = window.panels['1']
+        sample = tk.PhotoImage(width=1280, height=720)
+        sample.put('#479b83', to=(0, 0, 1280, 720))
+        png = sample.tk.call(str(sample), 'data', '-format', 'png')
+        panel.events.put(('recording', {'stage':'grabando', 'completed':2, 'total':3, 'post_id':'102'}))
+        panel.events.put(('preview', png))
+        panel.poll()
+        root.update_idletasks()
+        if '2/3' not in panel.recording_text.get() or panel.preview_image is None:
+            failures.append('La app no mostró el progreso o la vista previa de la grabación')
+        if screenshot:
+            capture_window(root, screenshot)
+        window.panels['1'].stop()
+        wait_for(lambda: not window.panels['1'].controller.running and window.panels['1'].mode == 'stopped',
+                 stop_second, 'No se detuvo el primer bot')
+
+    def stop_second():
+        if not window.panels['2'].controller.running:
+            failures.append('La parada debe afectar solo al bot seleccionado')
+        window.panels['2'].stop()
+        wait_for(lambda: not window.panels['2'].controller.running and window.panels['2'].mode == 'stopped',
+                 update_from_server, 'No se detuvo el segundo bot')
+
+    def update_from_server():
+        cloud.records['1']['name'] = 'Lilith actualizada'
+        cloud.records['1']['creator']['name'] = 'Lilith actualizada'
+        cloud.records['1']['revision'] = 2
+        del cloud.records['2']
+        window.refresh()
+        wait_for(lambda: len(window.panels) == 1 and window.panels['1'].profile['name'] == 'Lilith actualizada',
+                 finish, 'La app no sincronizó los cambios del panel privado')
+
+    wait_for(lambda: len(window.panels) == 2, start, 'No se cargaron las configuraciones')
+    root.mainloop()
+    for panel in window.panels.values():
+        if panel.controller.thread:
+            panel.controller.thread.join(timeout=1)
+    if failures:
+        raise RuntimeError('; '.join(failures))
+
+
+def capture_window(root, target):
+    if sys.platform != 'win32':
+        return
+    import subprocess
+    x, y, width, height = root.winfo_rootx(), root.winfo_rooty(), root.winfo_width(), root.winfo_height()
+    path = str(Path(target).resolve()).replace("'", "''")
+    script = ("Add-Type -AssemblyName System.Drawing; "
+              f"$b=New-Object System.Drawing.Bitmap({width},{height}); "
+              "$g=[System.Drawing.Graphics]::FromImage($b); "
+              f"$g.CopyFromScreen({x},{y},0,0,$b.Size); "
+              f"$b.Save('{path}',[System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $b.Dispose()")
+    subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script], check=True, timeout=15,
+                   creationflags=subprocess.CREATE_NO_WINDOW)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--version', action='version', version='AgencyKey Recorder Tests 1.0')
+    parser.add_argument('--smoke-test', action='store_true')
+    parser.add_argument('--screenshot')
+    parser.add_argument('--connection-test', metavar='REPORT')
+    args = parser.parse_args()
+    if args.connection_test:
+        import json
+        result = {'version':'4.0.1'}
+        try:
+            client = CloudClient('dropper-connectivity-check')
+            health = client.request('GET','/health')
+            if health.get('service') != 'agencykey-recorder-tests':
+                raise CloudError('Respuesta de configuración inválida')
+            try:
+                client.list_profiles()
+            except AccessDenied:
+                pass
+            else:
+                raise CloudError('La descarga no está protegida por contraseña')
+            result['status']='ok'
+        except Exception as error:
+            result['status']='error'
+            result['error']=str(error) if isinstance(error,CloudError) else type(error).__name__
+        Path(args.connection_test).write_text(json.dumps(result,ensure_ascii=False),encoding='utf-8')
+        sys.exit(0 if result['status']=='ok' else 1)
+    if args.smoke_test:
+        smoke_test(args.screenshot)
+    else:
+        root = tk.Tk()
+        DropperWindow(root)
+        root.mainloop()
+
+
+if __name__ == '__main__':
+    main()
+
+
+
+

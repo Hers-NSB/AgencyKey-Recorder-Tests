@@ -1,0 +1,8 @@
+{
+  "worker": "agencykey-recorder-tests",
+  "url": "https://agencykey-recorder-tests.datosenviados07.workers.dev",
+  "database_name": "agencykey-recorder-tests-v1",
+  "database_id": "af967841-8448-4b5d-8663-bc04b31d6669",
+  "compatibility_date": "2026-11-10",
+  "binding": "DB"
+}
