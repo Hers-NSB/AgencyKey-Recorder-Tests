@@ -11,6 +11,7 @@ from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 
 import recorder
 from config import log
+from cloud_client import CloudError
 
 
 def session_path(creator_id):
@@ -201,7 +202,7 @@ class RecordingCoordinator:
                 pass
         except Exception as error:
             job.update(status='error', error_type=type(error).__name__)
-            detail = str(error) if isinstance(error, ValueError) else type(error).__name__
+            detail = str(error) if isinstance(error, (ValueError, CloudError)) else type(error).__name__
             self.emit('recording', {'stage': 'error · ' + detail, 'completed': 0, 'total': len(batch.order)})
             log.error('Comprobante | %s', detail)
             try:
