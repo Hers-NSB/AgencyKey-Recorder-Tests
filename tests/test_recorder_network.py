@@ -119,6 +119,7 @@ class TelegramNetworkTests(unittest.IsolatedAsyncioTestCase):
             video.write_bytes(b'video')
             report = {'status': 'complete', 'seen': ['1'], 'post_ids': ['1']}
             with patch.object(recorder, 'verified_video', return_value=(report, video)), \
+                 patch.object(network, 'telegram_connection_options', return_value={'verify': True}), \
                  patch.object(recorder, 'read_bot_token', return_value='12345:SECRET'), \
                  patch('builtins.input', side_effect=['test_recorder_bot', '']), \
                  patch('builtins.print', side_effect=capture), \

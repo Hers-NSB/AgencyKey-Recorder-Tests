@@ -320,6 +320,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
             recorder.save_json(path, {'status': 'complete', 'seen': ['1'], 'post_ids': ['1'],
                                      'sha256': hashlib.sha256(video.read_bytes()).hexdigest()})
             with patch.object(recorder, 'read_bot_token', return_value=token), patch('builtins.input', side_effect=['test_recorder_bot', '']), \
+                 patch('recorder_network.telegram_connection_options', return_value={'verify': True}), \
                  patch('builtins.print', side_effect=fake_print), \
                  patch.object(httpx, 'AsyncClient', side_effect=lambda **kw: actual_client(transport=httpx.MockTransport(handler), **kw)):
                 await recorder.send(path)
