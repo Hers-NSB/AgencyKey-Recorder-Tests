@@ -135,6 +135,9 @@ class BotPanel:
         self.stop_button.pack(side='left', padx=8)
         self.connect_button = ttk.Button(actions, text='Conectar AgencyKey', command=self.connect_recording)
         self.connect_button.pack(side='right')
+        self.session_confirm = threading.Event()
+        self.save_session_button = ttk.Button(actions, text='Guardar sesión', command=self.session_confirm.set, state='disabled')
+        self.save_session_button.pack(side='right', padx=8)
         proof = tk.Frame(self.frame, bg=SURFACE)
         proof.grid(row=2, column=0, sticky='ew', padx=28)
         proof.grid_columnconfigure(0, weight=1)
@@ -195,10 +198,15 @@ class BotPanel:
         active = mode in {'starting', 'running', 'stopping'}
         self.start_button.configure(state='disabled' if active or self.manager.closing or self.removed else 'normal')
         self.stop_button.configure(state='normal' if mode in {'starting', 'running'} else 'disabled')
+        connecting = self.session_thread is not None and self.session_thread.is_alive()
+        self.connect_button.configure(state='disabled' if active or connecting or self.manager.closing else 'normal')
         self.manager.refresh_sidebar()
 
     def start(self):
         if self.controller.running or self.manager.closing:
+            return
+        if self.session_thread and self.session_thread.is_alive():
+            self.append('INFO', 'Espera a que termine de guardarse la sesión. No necesitas iniciar sesión otra vez.')
             return
         if self.manager.runner is None:
             from recording_service import session_path
@@ -214,30 +222,28 @@ class BotPanel:
         self.controller.start()
 
     def connect_recording(self):
-        if self.controller.running or self.manager.closing or (self.session_thread and self.session_thread.is_alive()):
+        if self.session_thread and self.session_thread.is_alive():
+            self.append('INFO', 'La conexión ya está abierta. Se guarda automáticamente o con Guardar sesión en esta ventana.')
+            return
+        if self.controller.running or self.manager.closing:
             self.append('WARNING', 'Detén el bot antes de conectar su sesión de AgencyKey.')
             return
         from recording_service import connect_session
-        confirm = threading.Event()
+        self.session_confirm.clear()
         self.session_cancel.clear()
-        dialog = tk.Toplevel(self.manager.root)
-        dialog.title('Conectar AgencyKey · ' + self.profile['name'])
-        dialog.configure(bg=SURFACE)
-        label(dialog, 'Inicia sesión y abre el perfil en Chrome.\nDespués pulsa Guardar sesión.', bg=SURFACE).pack(padx=24, pady=20)
-        ttk.Button(dialog, text='Guardar sesión', command=confirm.set).pack(pady=(0, 20))
-        def cancel():
-            self.session_cancel.set()
-            dialog.destroy()
-        dialog.protocol('WM_DELETE_WINDOW', cancel)
+        self.save_session_button.configure(state='normal')
+        self.connect_button.configure(state='disabled')
+        self.recording_text.set('Conectando sesión · guardado automático al detectar el feed')
         def emit(level, message):
             self.events.put(('log', (level, message)))
         def work():
+            saved = False
             try:
-                asyncio.run(connect_session(self.profile['creator']['external_id'], confirm, self.session_cancel, emit))
+                saved = asyncio.run(connect_session(self.profile['creator']['external_id'], self.session_confirm, self.session_cancel, emit))
             except Exception as error:
                 emit('ERROR', str(error) if isinstance(error, ValueError) else 'No se pudo conectar Chrome: ' + type(error).__name__)
             finally:
-                self.events.put(('session_closed', dialog))
+                self.events.put(('session_closed', saved))
         self.session_thread = threading.Thread(target=work, daemon=True)
         self.session_thread.start()
 
@@ -276,8 +282,10 @@ class BotPanel:
                 except tk.TclError:
                     pass
             elif event == 'session_closed':
-                if value.winfo_exists():
-                    value.destroy()
+                self.session_thread = None
+                self.save_session_button.configure(state='disabled')
+                self.recording_text.set('Sesión guardada · lista para iniciar' if value else 'Conexión sin guardar · revisa el registro')
+                self.set_mode(self.mode)
             elif event == 'ready' and self.mode != 'stopping':
                 self.set_mode('running')
             elif event == 'stopped':
@@ -793,7 +801,31 @@ def smoke_test(screenshot=None):
             failures.append('La parada debe afectar solo al bot seleccionado')
         window.panels['2'].stop()
         wait_for(lambda: not window.panels['2'].controller.running and window.panels['2'].mode == 'stopped',
-                 update_from_server, 'No se detuvo el segundo bot')
+                 check_session_controls, 'No se detuvo el segundo bot')
+
+    def check_session_controls():
+        import recording_service
+        original = recording_service.connect_session
+        calls = []
+        async def fake_connection(creator_id, confirm, cancel, emit):
+            calls.append(creator_id)
+            while not confirm.is_set() and not cancel.is_set():
+                await asyncio.sleep(.05)
+            return confirm.is_set()
+        recording_service.connect_session = fake_connection
+        panel = window.panels['1']
+        panel.connect_recording()
+        panel.connect_recording()
+        root.update_idletasks()
+        if not panel.save_session_button.winfo_ismapped() or panel.save_session_button.winfo_width() < 70:
+            failures.append('Guardar sesión no está visible en la ventana principal')
+        panel.save_session_button.invoke()
+        def complete():
+            recording_service.connect_session = original
+            if len(calls) != 1 or 'Sesión guardada' not in panel.recording_text.get():
+                failures.append('La sesión debe guardarse una sola vez sin otro diálogo de acceso')
+            update_from_server()
+        wait_for(lambda: panel.session_thread is None, complete, 'No se guardó la sesión desde el botón principal')
 
     def update_from_server():
         cloud.records['1']['name'] = 'Lilith actualizada'

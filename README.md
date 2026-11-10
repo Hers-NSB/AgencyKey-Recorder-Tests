@@ -7,7 +7,7 @@ Adaptación de Dropper con grabación automática al terminar cada Drop. Todo el
 1. Descarga **AgencyKeyRecorderTests.exe** desde la última versión privada. Requiere Windows de 64 bits y Google Chrome instalado; no necesita Python, OBS ni descargar otro navegador.
 2. Configura el entorno nuevo en https://agencykey-recorder-tests.datosenviados07.workers.dev/admin: contraseña de administrador, API de AgencyKey, contraseña de las apps y bots con sus modelos. Usa tokens propios de los bots de pruebas; el token de un mismo bot no puede ser atendido por dos apps a la vez. Puedes usar la misma API de AgencyKey y las mismas asignaciones de modelo.
 3. Abre el EXE e introduce la contraseña de las apps del entorno nuevo. Se puede recordar mediante Windows Credential Manager, en una entrada independiente de Dropper.
-4. Selecciona un bot y pulsa **Conectar AgencyKey**. Inicia sesión y abre el feed de esa modelo en Chrome; pulsa **Guardar sesión** en el diálogo de la app. La sesión se guarda por modelo en esta PC.
+4. Selecciona un bot y pulsa **Conectar AgencyKey**. La app carga primero la sesión ya guardada. Si AgencyKey pide acceso, inicia sesión y abre el feed de esa modelo: se guarda automáticamente al detectar el perfil correcto y sus posts. **Guardar sesión** también está disponible en la ventana principal para perfiles sin posts visibles. La sesión se guarda por modelo en esta PC; cada grabación la reutiliza y no vuelve a realizar el login. Después de un recorrido completo se guarda también el estado renovado que haya generado AgencyKey; una grabación fallida no sobrescribe la sesión anterior.
 5. Pulsa **Iniciar bot**. En Telegram envía `/start`, reenvía fotos individuales con sus textos y pulsa **Publicar**.
 6. Al finalizar el Drop, la app recoge los IDs confirmados, espera sus imágenes y graba el lote desde el post más reciente hasta el más antiguo. Chrome funciona **en segundo plano**. La app muestra etapa, progreso por post, vista previa en vivo y registro de errores.
 7. El MP4 completo a 480p se envía automáticamente al chat privado que inició el Drop, desde su propio bot. No se necesita introducir otro token ni consumir `getUpdates` desde un segundo receptor.
@@ -50,7 +50,7 @@ El modo original sigue disponible desde consola:
 .\AgencyKeyRecorderTests.exe demo --headless
 ```
 
-La app integrada graba sin ventana. La herramienta manual conserva `--show-browser` para depuración y permite configurar IDs, conectar una sesión y enviar un comprobante verificado.
+Al abrir el EXE con doble clic, la consola técnica se oculta automáticamente. El progreso y los errores se ven en la app. La app integrada graba sin ventana. La herramienta manual conserva `--show-browser` para depuración y permite configurar IDs, conectar una sesión y enviar un comprobante verificado.
 
 ## Desarrollo y compilación
 

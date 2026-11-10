@@ -1,10 +1,11 @@
-Web, app y bots independientes con comprobantes automáticos.
+Sesión reutilizable, guardado automático y consola oculta.
 
-- Interfaz de escritorio y funciones de publicación de Dropper adaptadas a AgencyKey Recorder Tests.
-- Worker, base de datos, credenciales de acceso y sesiones locales separados.
-- Grabación en segundo plano al finalizar el Drop, con progreso, vista previa y errores en la app.
-- IDs confirmados por AgencyKey y comprobante enviado al chat que inició el Drop.
-- Conexión Telegram con certificados y proxy de Windows; reintentos explícitos para entregas inciertas.
-- La herramienta manual de grabación sigue disponible con el comando `menu`.
+- Conectar AgencyKey carga primero la sesión guardada de la modelo, en vez de abrir un navegador vacío.
+- Al detectar el perfil correcto y sus posts visibles, guarda automáticamente la sesión y cierra Chrome.
+- Guardar sesión queda en la ventana principal como alternativa, sin un diálogo que pueda quedar detrás de Chrome.
+- No abre otra conexión ni muestra el aviso de detener el bot cuando ya hay una conexión en curso.
+- Oculta la consola técnica al abrir el EXE con doble clic; los errores y el progreso siguen en la app.
+- Después de una grabación completa conserva también las renovaciones de la sesión del CRM.
+- Conserva sesiones, configuración, grabación en segundo plano y envío del comprobante.
 
-Configura la web nueva, conecta la sesión de AgencyKey por modelo y luego inicia su bot. Usa tokens propios de los bots independientes. Consulta README.md para recuperación de posts manuales y comprobantes.
+Reemplaza el EXE anterior. Una sesión vigente se reutiliza; solo inicia sesión si AgencyKey te solicita acceso. No se modifica Dropper ni se cambian la web o sus contraseñas.

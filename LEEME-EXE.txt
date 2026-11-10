@@ -4,7 +4,9 @@ AGENCYKEY RECORDER TESTS - APP INDEPENDIENTE
    https://agencykey-recorder-tests.datosenviados07.workers.dev/admin
 2. Abre el EXE e introduce la contrasena de las apps.
 3. Selecciona un bot, pulsa Conectar AgencyKey, inicia sesion en Chrome
-   y pulsa Guardar sesion en la app. Hazlo para cada modelo.
+   si hace falta. Al ver el feed, se guarda automaticamente.
+   Guardar sesion tambien esta en la ventana principal. Se reutiliza
+   la sesion guardada; no se hace login por cada grabacion.
 4. Inicia el bot. En Telegram usa /start, envia posts y pulsa Publicar.
 5. La grabacion se hace en segundo plano al terminar el Drop.
    La app muestra progreso, vista previa y errores. El video llega al chat.

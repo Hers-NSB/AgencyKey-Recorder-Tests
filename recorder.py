@@ -529,6 +529,15 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             except asyncio.CancelledError:
                 pass
             try:
+                if not fixture and error is None:
+                    try:
+                        await save_login_session(page, context, config['profile_url'], state_path=state)
+                        report['session_refreshed'] = True
+                    except Exception as refresh_error:
+                        report['session_refresh_error'] = type(refresh_error).__name__
+                        if on_progress:
+                            on_progress({'stage': 'Aviso: no se pudo actualizar la sesión guardada',
+                                         'completed': len(report['seen']), 'total': len(report['post_ids'])})
                 await context.close()
                 # Failed runs discard raw capture; asking for its path can itself
                 # fail when Chrome closed before the video artifact was created.

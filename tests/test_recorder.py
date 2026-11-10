@@ -258,6 +258,29 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(green, red + 40)
             self.assertGreater(green, blue + 12)
 
+    async def test_successful_recording_keeps_refreshed_session_state(self):
+        source = (recorder.RESOURCE_ROOT / 'tests/feed.html').read_text(encoding='utf-8')
+        source += '<script>localStorage.setItem("recorder-refresh-fixture","yes")</script>'
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / 'session.json'
+            state.write_text('{"cookies":[],"origins":[]}')
+            original = self.browser.new_context
+            async def routed_context(**kwargs):
+                context = await original(**kwargs)
+                await context.route('https://app.agencykey.com/**', lambda route: route.fulfill(
+                    content_type='text/html', body=source))
+                return context
+            with patch.object(recorder,'ROOT',Path(directory)), \
+                 patch.object(recorder,'launch_browser',new=AsyncMock(return_value=self.browser)), \
+                 patch.object(self.browser,'new_context',side_effect=routed_context):
+                report_path = await recorder.record({'profile_url':'https://app.agencykey.com/models/52',
+                    'post_ids_newest_first':['200','100']},headless=True,session_path=state)
+            report=json.loads(report_path.read_text())
+            self.assertTrue(report['session_refreshed'])
+            saved=json.loads(state.read_text())
+            self.assertTrue(any(item['name']=='recorder-refresh-fixture' and item['value']=='yes'
+                                for origin in saved['origins'] for item in origin.get('localStorage',[])))
+
     async def test_wheel_scroll_has_visible_intermediate_positions(self):
         await self.page.set_content('<div style="height:3000px;background:linear-gradient(white,blue)">Prueba rueda</div>')
         await self.page.evaluate("""() => {
