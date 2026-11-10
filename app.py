@@ -3,6 +3,10 @@ import sys
 
 
 def main():
+    # Frozen Python can otherwise use the Windows ANSI code page for redirected logs.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     if len(sys.argv) == 1 or sys.argv[1] in {'--smoke-test', '--screenshot', '--version', '--connection-test'}:
         from desktop import main as desktop_main
         desktop_main()

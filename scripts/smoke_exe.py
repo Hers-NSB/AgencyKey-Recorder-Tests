@@ -19,20 +19,36 @@ def check_token_paste(exe, environment, cwd):
     try:
         script = r"""
 Add-Type -AssemblyName System.Windows.Forms
-$shell = New-Object -ComObject WScript.Shell
-$found = $false
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class RecorderClipboardSmoke {
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+    public static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+}
+'@
+$condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'AgencyKey Recorder Tests - Telegram')
+$dialog = $null
 for ($i=0; $i -lt 120; $i++) {
-    if ($shell.AppActivate('AgencyKey Recorder Tests - Telegram')) { $found=$true; break }
+    $dialog = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children, $condition)
+    if ($dialog) { break }
     Start-Sleep -Milliseconds 250
 }
-if (-not $found) { throw 'Token test dialog did not open' }
+if (-not $dialog) { throw 'Token test dialog did not open' }
+$editCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
+$entry = $dialog.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
+$buttonCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Usar token')
+$button = $dialog.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $buttonCondition)
+if (-not $entry -or -not $button) { throw 'Token input controls did not appear' }
 $previous = [System.Windows.Forms.Clipboard]::GetText()
 try {
     [System.Windows.Forms.Clipboard]::SetText('12345:RECORDER_QA_PASTE_ONLY')
-    Start-Sleep -Milliseconds 350
-    [System.Windows.Forms.SendKeys]::SendWait('^v')
-    Start-Sleep -Milliseconds 250
-    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+    # WM_PASTE exercises the actual password textbox clipboard handler without global focus races.
+    [void][RecorderClipboardSmoke]::SendMessage([IntPtr]$entry.Current.NativeWindowHandle, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)
+    $invoke = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    $invoke.Invoke()
 } finally {
     Start-Sleep -Milliseconds 350
     if ($previous) { [System.Windows.Forms.Clipboard]::SetText($previous) }
@@ -45,7 +61,7 @@ try {
         assert process.returncode == 0, f'Token input test failed: {stderr}'
         assert 'Token recibido correctamente' in stdout
         assert fake not in stdout + stderr, 'A token must not be printed'
-        print('Pegado Ctrl+V del token verificado en el campo oculto.')
+        print('Pegado del portapapeles verificado en el campo oculto.')
     finally:
         if process.poll() is None:
             subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True)
