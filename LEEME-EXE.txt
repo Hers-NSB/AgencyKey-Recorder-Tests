@@ -1,28 +1,17 @@
-AGENCYKEY RECORDER TESTS - CHROME - WINDOWS 64 BITS
+AGENCYKEY RECORDER TESTS - APP INDEPENDIENTE
 
-1. Descarga AgencyKeyRecorderTests.exe desde Releases del repositorio privado.
-2. Guardalo en una carpeta propia y abrelo con doble clic.
-3. Requiere Google Chrome ya instalado. No necesita Python ni OBS.
-4. Selecciona 5 para generar una demo local. No descarga Chromium ni
-   otro navegador, ni descarga codificadores durante el primer uso.
-5. Usa 1 para configurar posts existentes, 2 para iniciar sesion en AgencyKey,
-   3 para grabar y 4 para enviar el video al bot de pruebas. 0 cierra la app.
+1. Configura API, contrasenas y bots propios en:
+   https://agencykey-recorder-tests.datosenviados07.workers.dev/admin
+2. Abre el EXE e introduce la contrasena de las apps.
+3. Selecciona un bot, pulsa Conectar AgencyKey, inicia sesion en Chrome
+   y pulsa Guardar sesion en la app. Hazlo para cada modelo.
+4. Inicia el bot. En Telegram usa /start, envia posts y pulsa Publicar.
+5. La grabacion se hace en segundo plano al terminar el Drop.
+   La app muestra progreso, vista previa y errores. El video llega al chat.
 
-Chrome se abre en una ventana con una sesion separada del grabador.
-No utiliza ni modifica el perfil personal de tu Chrome habitual.
-Durante la prueba Chrome permanece visible. Si falla, revisa la consola y
-el navegador antes de pulsar Enter para cerrarlo. report.json conserva la
-etapa del fallo, los IDs comprobados y el estado de carga de las imagenes.
-El video sigue siendo un MP4 continuo a 480p.
-
-Datos y videos: %LOCALAPPDATA%\AgencyKeyRecorderTests
-El programa muestra la ruta exacta al abrir. Se conservan al actualizar el EXE.
-El token de Telegram se pide al enviar y no se guarda.
-
-Usa el nuevo EXE en lugar de la version anterior para evitar sus descargas.
-Esta version no utiliza la carpeta browsers descargada por el EXE anterior;
-no la borra automaticamente.
-
-Dropper permanece intacto. La prueba real de AgencyKey requiere tu sesion.
-Este EXE mantiene el menu de consola y no incluye activacion por fin de Drop.
-
+Conserva los ajustes de publicacion de Dropper, pero usa web, base,
+acceso y bots independientes. Requiere Chrome instalado. No necesita Python.
+Datos: %LOCALAPPDATA%\AgencyKeyRecorderTests.
+/video recupera el comprobante. Para un post manual usa /id NUMERO ID.
+Comprueba el chat antes de /video reenviar si la entrega quedo incierta.
+El comando menu abre las herramientas manuales de grabacion.

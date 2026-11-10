@@ -91,6 +91,12 @@ jobs:
         run: python -m playwright install ffmpeg
       - run: python recorder.py check-chrome
       - run: python -m unittest discover -s tests -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --prefix cloudflare
+      - run: node --test cloudflare/worker.test.mjs
+      - run: node --test cloudflare/admin.test.mjs
       - name: Build standalone executable
         run: python -m PyInstaller --clean --noconfirm AgencyKeyRecorderTests.spec
       - name: Test EXE without Python commands
@@ -131,3 +137,4 @@ jobs:
               gh release delete "$old" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
             fi
           done
+

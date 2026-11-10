@@ -105,18 +105,19 @@ async def check_chrome() -> None:
         await browser.close()
 
 
-async def save_login_session(page, context, profile_url: str) -> None:
+async def save_login_session(page, context, profile_url: str, *, state_path: Path | None = None) -> None:
+    state = state_path or STATE
     current, expected = urlparse(page.url), urlparse(profile_url)
     if (current.scheme != 'https' or current.netloc != 'app.agencykey.com'
             or current.path.rstrip('/') != expected.path.rstrip('/')):
         raise ValueError('Abre el perfil de la modelo configurada antes de guardar la sesión.')
     # The user has confirmed the profile is open. Virtual feeds may have no post nodes yet.
-    STATE.parent.mkdir(parents=True, exist_ok=True)
-    temporary = STATE.with_suffix('.tmp')
+    state.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state.with_suffix('.tmp')
     try:
         await context.storage_state(path=str(temporary), indexed_db=True)
         temporary.chmod(0o600)
-        temporary.replace(STATE)
+        temporary.replace(state)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -306,7 +307,7 @@ async def seek_start(page, newest: str, timeout: float = 120) -> dict:
     raise ValueError('No se localizó el primer post. Revisa los IDs, la modelo y si la sesión sigue iniciada.')
 
 
-async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 600, *, frame=None, seen=None) -> list[str]:
+async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 600, *, frame=None, seen=None, on_progress=None) -> list[str]:
     frame = frame or await post_frame(page) or page.main_frame
     seen = [] if seen is None else seen
     deadline = monotonic() + timeout
@@ -325,6 +326,8 @@ async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 
             if card['id'] != expected:
                 raise ValueError(f'Orden inesperado o post omitido: se esperaba {expected}, apareció {card["id"]}.')
             seen.append(card['id'])
+            if on_progress:
+                on_progress({'stage': 'grabando', 'completed': len(seen), 'total': len(ids), 'post_id': card['id']})
             print(f'Grabando {len(seen)}/{len(ids)} · ID {card["id"]}', flush=True)
             await page.wait_for_timeout(dwell * 1000)
         last = next((p for p in cards if p['id'] == ids[-1] and not p['pinned']), None)
@@ -445,9 +448,11 @@ async def pause_failed_test(page) -> None:
         pass
 
 
-async def record(config: dict, *, fixture: Path | None = None, headless: bool = False, dwell: float = 0) -> Path:
+async def record(config: dict, *, fixture: Path | None = None, headless: bool = False, dwell: float = 0,
+                 session_path: Path | None = None, on_progress=None, on_preview=None, stop_event=None) -> Path:
     from playwright.async_api import async_playwright
-    if not fixture and not STATE.exists():
+    state = session_path or STATE
+    if not fixture and not state.exists():
         raise ValueError('Ejecuta primero Conectar AgencyKey.')
     run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + __import__('uuid').uuid4().hex[:6]
     output = ROOT / 'output' / run_id
@@ -465,9 +470,25 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         options = {'viewport': {'width': 1280, 'height': 720},
                    'record_video_dir': str(output / 'raw'), 'record_video_size': {'width': 854, 'height': 480}}
         if not fixture:
-            options['storage_state'] = str(STATE)
+            options['storage_state'] = str(state)
         context = await browser.new_context(**options)
         page = await context.new_page()
+        async def monitor():
+            last = None
+            while not page.is_closed():
+                if stop_event and stop_event.is_set():
+                    await page.close()
+                    return
+                if on_progress and report.get('stage') != last:
+                    last = report.get('stage')
+                    on_progress({'stage': last or 'preparando', 'completed': len(report['seen']), 'total': len(report['post_ids'])})
+                if on_preview:
+                    try:
+                        on_preview(await page.screenshot(type='png', timeout=2000))
+                    except Exception:
+                        pass
+                await asyncio.sleep(1.5)
+        monitor_task = asyncio.create_task(monitor())
         try:
             report['stage'] = 'abrir perfil'
             print('Etapa: abrir perfil', flush=True)
@@ -482,7 +503,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             await video_boundary(page)
             report['stage'] = 'recorrer posts / cargar imágenes'
             await capture_walk(page, config['post_ids_newest_first'], dwell=dwell,
-                               timeout=30 if fixture else 600, frame=first['_frame'], seen=report['seen'])
+                               timeout=30 if fixture else 600, frame=first['_frame'], seen=report['seen'], on_progress=on_progress)
             await page.wait_for_timeout(120)
             report['stage'] = 'marcar fin del video'
             await video_boundary(page)
@@ -502,6 +523,11 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             if not headless and not fixture:
                 await pause_failed_test(page)
         finally:
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
             try:
                 await context.close()
                 # Failed runs discard raw capture; asking for its path can itself
@@ -521,6 +547,8 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         report.update(status='complete', stage='completo', duration_seconds=round(ended-started, 2),
                       bytes=video.stat().st_size, sha256=hashlib.sha256(video.read_bytes()).hexdigest(),
                       video='comprobante.mp4')
+        if on_progress:
+            on_progress({'stage': 'video listo', 'completed': len(report['seen']), 'total': len(report['post_ids'])})
         print(f'Video completo: {video}\nTamaño: {video.stat().st_size / 1_000_000:.2f} MB')
         return report_path
     finally:
