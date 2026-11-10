@@ -137,8 +137,10 @@ class BotPanel:
         self.recording_text = tk.StringVar(value='Comprobante automático · sesión compartida desde la web')
         self.session_label = label(proof, color=MUTED)
         self.session_label.grid(row=0, column=0, sticky='w', pady=(0, 12))
-        tk.Label(proof, textvariable=self.recording_text, bg=SURFACE, fg=ACCENT, anchor='w',
-                 wraplength=580, justify='left', font=('Segoe UI', 10)).grid(row=1, column=0, sticky='ew', padx=(0, 12))
+        self.recording_label = tk.Label(proof, textvariable=self.recording_text, bg=SURFACE, fg=ACCENT, anchor='w',
+                 wraplength=230, justify='left', font=('Segoe UI', 10))
+        self.recording_label.grid(row=1, column=0, sticky='ew', padx=(0, 12))
+        proof.bind('<Configure>', lambda event: self.recording_label.configure(wraplength=max(120, event.width-16)))
         self.recording_progress = ttk.Progressbar(proof, maximum=1)
         self.recording_progress.grid(row=2, column=0, sticky='ew', padx=(0, 12), pady=8)
         log_title = tk.Frame(self.frame, bg=SURFACE)
@@ -165,6 +167,7 @@ class BotPanel:
         self.append('INFO', 'Listo para iniciar')
 
     def load_credentials(self):
+        self.controller.session_client = self.manager.client
         try:
             data = self.manager.client.credentials(self.profile['id'])
         except CloudError as error:
