@@ -19,44 +19,68 @@ def check_token_paste(exe, environment, cwd):
     try:
         script = r"""
 Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
+$ErrorActionPreference = 'Stop'
 Add-Type @'
 using System;
+using System.Text;
 using System.Runtime.InteropServices;
 public static class RecorderClipboardSmoke {
+    public delegate bool ChildProc(IntPtr window, IntPtr parameter);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+    public static extern IntPtr FindWindow(string className, string title);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr window, StringBuilder text, int size);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr window, StringBuilder text, int size);
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr window, ChildProc callback, IntPtr parameter);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)]
     public static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    public static IntPtr FindControl(IntPtr parent, string prefix, string caption) {
+        IntPtr result = IntPtr.Zero;
+        EnumChildWindows(parent, delegate(IntPtr child, IntPtr parameter) {
+            var kind = new StringBuilder(256);
+            var text = new StringBuilder(256);
+            GetClassName(child, kind, kind.Capacity);
+            GetWindowText(child, text, text.Capacity);
+            if (kind.ToString().StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                && (caption == null || text.ToString() == caption)) {
+                result = child;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return result;
+    }
 }
 '@
-$condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'AgencyKey Recorder Tests - Telegram')
-$dialog = $null
+$dialog = [IntPtr]::Zero
 for ($i=0; $i -lt 120; $i++) {
-    $dialog = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children, $condition)
-    if ($dialog) { break }
+    $dialog = [RecorderClipboardSmoke]::FindWindow($null, 'AgencyKey Recorder Tests - Telegram')
+    if ($dialog -ne [IntPtr]::Zero) { break }
     Start-Sleep -Milliseconds 250
 }
-if (-not $dialog) { throw 'Token test dialog did not open' }
-$editCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
-$entry = $dialog.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
-$buttonCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Usar token')
-$button = $dialog.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $buttonCondition)
-if (-not $entry -or -not $button) { throw 'Token input controls did not appear' }
+if ($dialog -eq [IntPtr]::Zero) { throw 'Token test dialog did not open' }
+$entry = [RecorderClipboardSmoke]::FindControl($dialog, 'WindowsForms10.EDIT', $null)
+$button = [RecorderClipboardSmoke]::FindControl($dialog, 'WindowsForms10.BUTTON', 'Usar token')
+if ($entry -eq [IntPtr]::Zero -or $button -eq [IntPtr]::Zero) { throw 'Token input controls did not appear' }
 $previous = [System.Windows.Forms.Clipboard]::GetText()
 try {
     [System.Windows.Forms.Clipboard]::SetText('12345:RECORDER_QA_PASTE_ONLY')
     # WM_PASTE exercises the actual password textbox clipboard handler without global focus races.
-    [void][RecorderClipboardSmoke]::SendMessage([IntPtr]$entry.Current.NativeWindowHandle, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)
-    $invoke = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-    $invoke.Invoke()
+    [void][RecorderClipboardSmoke]::SendMessage($entry, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)
+    [void][RecorderClipboardSmoke]::SendMessage($button, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
 } finally {
     Start-Sleep -Milliseconds 350
     if ($previous) { [System.Windows.Forms.Clipboard]::SetText($previous) }
     else { [System.Windows.Forms.Clipboard]::Clear() }
 }
 """
-        subprocess.run([powershell, '-NoProfile', '-STA', '-Command', script], check=True, timeout=45,
-                       creationflags=subprocess.CREATE_NO_WINDOW)
+        check = subprocess.run([powershell, '-NoProfile', '-STA', '-Command', script], timeout=45,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace',
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+        if check.returncode:
+            raise AssertionError('Native clipboard test failed: ' + check.stderr)
         stdout, stderr = process.communicate(timeout=30)
         assert process.returncode == 0, f'Token input test failed: {stderr}'
         assert 'Token recibido correctamente' in stdout
@@ -65,6 +89,7 @@ try {
     finally:
         if process.poll() is None:
             subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True)
+            process.communicate(timeout=30)
 
 
 def main():
