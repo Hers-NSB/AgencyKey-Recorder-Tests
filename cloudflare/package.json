@@ -5,6 +5,9 @@
     "playwright": "1.62.1"
   },
   "scripts": {
-    "build": "esbuild worker.mjs --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/worker.mjs"
+    "build": "esbuild worker.mjs --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/worker.mjs --external:node:* --external:cloudflare:*"
+  },
+  "dependencies": {
+    "@cloudflare/playwright": "1.3.0"
   }
 }

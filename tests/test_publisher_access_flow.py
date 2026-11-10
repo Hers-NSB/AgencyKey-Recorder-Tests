@@ -11,6 +11,8 @@ class AccessFlowTests(unittest.TestCase):
         manager = DropperWindow.__new__(DropperWindow)
         manager.vault = Mock()
         manager.status = Mock()
+        manager.show_loading = Mock()
+        manager.hide_loading = Mock()
         manager.connect_dialog = Mock()
         manager.auth_required = False
         return manager
@@ -66,6 +68,8 @@ class AccessFlowTests(unittest.TestCase):
         with patch('desktop.CloudClient'):
             manager.try_connect('password')
         manager.apply_profiles.assert_called_once_with([{'id': 'one'}])
+        manager.show_loading.assert_called_once()
+        manager.hide_loading.assert_called_once()
         dialog.grab_release.assert_called_once()
         dialog.destroy.assert_called_once()
         self.assertIsNone(manager.access_dialog)
@@ -106,4 +110,5 @@ class AccessFlowTests(unittest.TestCase):
         manager.side_scroll.winfo_manager.return_value = ''
         manager.layout_sidebar()
         manager.side_scroll.pack.assert_called_once_with(side='right', fill='y', before=manager.side_canvas)
+
 

@@ -27,6 +27,8 @@ class DropperBot:
         self.creator = creator
         self.session = SessionStats()
         self.recording = recording
+        if recording:
+            recording.completion_markup = ReplyKeyboardMarkup([[NEW_BATCH]], resize_keyboard=True, is_persistent=True)
 
     async def authorize(self, update, context):
         if (
@@ -188,9 +190,12 @@ class DropperBot:
                     await context.bot.delete_message(chat_id, loading.message_id)
                 except TelegramError:
                     log.debug("No se pudo retirar el progreso", exc_info=True)
-        await self.report(update, context)
         if batch.status == 'done' and self.recording:
+            batch.session_total = self.session.total
+            await self.cleanup(context, chat_id, batch)
             await self.recording.start(batch, context.bot, chat_id, context.application)
+        else:
+            await self.report(update, context)
 
     async def video(self, update, context):
         batch = context.user_data.get('batch')
@@ -300,6 +305,11 @@ class DropperBot:
         confirmed = batch.confirmed
         if batch.status == "done":
             await self.cleanup(context, update.effective_chat.id, batch)
+            if self.recording:
+                await self.notify(context, update.effective_chat.id,
+                                  '🎥 Comprobante en proceso.' if self.recording.busy else '🎥 Usa /video para consultar el comprobante.',
+                                  reply_markup=self.keyboard(context))
+                return
             text = (f"✅ Drop finalizado · {batch.creator.name}\n"
                     f"📦 Total del Drop: {batch.cursor}\n"
                     f"⏱ Tiempo total: {batch.elapsed_text}\n\n"
@@ -403,6 +413,7 @@ def register(app, agencykey, creator, recording=None):
     app.add_handler(CommandHandler('id', bot.manual_id))
     app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, bot.menu))
     app.add_error_handler(on_error)
+
 
 
 

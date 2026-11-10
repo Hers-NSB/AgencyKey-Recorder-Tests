@@ -58,13 +58,26 @@ class CloudClient:
             raise CloudError('Respuesta de configuración inválida') from None
 
     def list_profiles(self):
-        result = self.request('GET', '/v1/profiles').get('profiles')
+        data = self.request('GET', '/v1/profiles')
+        result = data.get('profiles')
         if not isinstance(result, list):
             raise CloudError('No se pudo leer la configuración')
+        self.recording_configured = data.get('recording_session', {}).get('configured')
         return result
 
     def credentials(self, profile_id):
         result = self.request('POST', f'/v1/profiles/{profile_id}/credentials')
         register_secrets(result.get('telegram_token'), result.get('api_key'))
         return result
+
+    def recording_session(self):
+        result = self.request('GET', '/v1/recording-session')
+        state = result.get('state')
+        if not isinstance(state, dict) or not isinstance(state.get('cookies'), list) or not isinstance(state.get('origins'), list):
+            raise CloudError('Conecta la sesión compartida de AgencyKey desde la web')
+        return result
+
+    def refresh_recording_session(self, state, revision):
+        return self.request('PUT', '/v1/recording-session', json={'state': state, 'revision': revision})
+
 

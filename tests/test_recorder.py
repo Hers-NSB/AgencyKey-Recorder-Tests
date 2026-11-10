@@ -140,7 +140,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
             state = Path(directory) / 'session.json'
             await self.page.context.storage_state(path=str(state))
             with patch.object(recorder, 'ROOT', Path(directory)), patch.object(recorder, 'STATE', state), \
-                 patch.object(recorder, 'seek_start', new=AsyncMock(return_value={'_frame': None})), \
+                 patch.object(recorder, 'prepare_feed', new=AsyncMock(return_value={'_frame': None})), \
                  patch.object(recorder, 'confirm_start', new=AsyncMock(return_value={'post_id': '300', 'visible': True})), \
                  patch.object(recorder, 'video_boundary', new=AsyncMock()), \
                  patch.object(recorder, 'capture_walk', side_effect=fail_walk), \
@@ -439,4 +439,5 @@ class BrowserSetupTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
 

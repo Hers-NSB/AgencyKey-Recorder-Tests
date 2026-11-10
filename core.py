@@ -1,6 +1,6 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from time import monotonic
+from time import monotonic, time
 from uuid import uuid4
 
 from agencykey import AgencyKey, AgencyKeyError, Creator, UnconfirmedPost
@@ -42,10 +42,13 @@ class Batch:
     recovery_delivered: bool = False
     started_at: float | None = None
     finished_at: float | None = None
+    started_wall_at: float | None = None
+    session_total: int = 0
 
     def start_timer(self) -> None:
         if self.started_at is None:
             self.started_at = monotonic()
+            self.started_wall_at = time()
 
     @property
     def elapsed_text(self) -> str:
@@ -128,6 +131,7 @@ class Batch:
         self.finished_at = monotonic()
         log.info("Drop %s completado | %d automáticas | %d manuales | Tiempo total: %s.",
                  self.id, self.confirmed, len(self.manual), self.elapsed_text)
+
 
 
 

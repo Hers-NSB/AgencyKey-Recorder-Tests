@@ -1,4 +1,5 @@
 import {adminPage} from './admin-page.mjs';
+import {browserDriver, cleanStorageState} from './recording-session.mjs';
 
 const encoder = new TextEncoder();
 const columns = 'id, name, bot_id, creator_id, creator_name, creator_username, revision, updated_at';
@@ -83,7 +84,10 @@ async function key(env) {
 }
 
 function encode(bytes) {
-  return btoa(String.fromCharCode(...new Uint8Array(bytes)));
+  const data = new Uint8Array(bytes);
+  let result = '';
+  for (let i=0; i<data.length; i+=8192) result += String.fromCharCode(...data.subarray(i,i+8192));
+  return btoa(result);
 }
 
 function decode(text) {
@@ -105,7 +109,7 @@ async function decrypt(value, id, env) {
   return JSON.parse(new TextDecoder().decode(plaintext));
 }
 
-async function body(request) {
+async function body(request, maximum=16384) {
   const reader = request.body?.getReader();
   if (!reader) throw new ApiError(400, 'Configuración vacía');
   let size = 0;
@@ -114,7 +118,7 @@ async function body(request) {
     const part = await reader.read();
     if (part.done) break;
     size += part.value.byteLength;
-    if (size > 16384) {
+    if (size > maximum) {
       await reader.cancel();
       throw new ApiError(413, 'Configuración demasiado grande');
     }
@@ -335,7 +339,63 @@ async function verifyBot(token) {
 
 async function listProfiles(env) {
   const result = await env.DB.prepare(`SELECT ${columns} FROM profiles ORDER BY name COLLATE NOCASE`).all();
-  return json({profiles: result.results.map(profile)});
+  return json({profiles: result.results.map(profile), recording_session:await sharedSession(env)});
+}
+
+export async function sharedSession(env, includeState=false) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'recording_session'").first();
+  if (!row) return {configured:false, revision:null};
+  const value = JSON.parse(row.value);
+  return {configured:true, revision:value.revision, updated_at:value.updated_at,
+    ...(includeState ? {state:await decrypt(value.sealed,'recording_session',env)} : {})};
+}
+
+export async function saveSharedSession(env, state, revision) {
+  try {state=cleanStorageState(state);} catch {throw new ApiError(400,'Sesión de AgencyKey inválida');}
+  const value={revision:crypto.randomUUID(),updated_at:new Date().toISOString(),sealed:await encrypt(state,'recording_session',env)};
+  const saved=await env.DB.prepare(`INSERT INTO settings(key,value) VALUES ('recording_session',?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE json_extract(settings.value,'$.revision') = ? RETURNING key`)
+    .bind(JSON.stringify(value),revision).first();
+  if (!saved) throw new ApiError(409,'La sesión compartida cambió. Actualiza antes de volver a conectar');
+  return {configured:true,revision:value.revision,updated_at:value.updated_at};
+}
+
+async function recordingAdmin(request, env, path) {
+  if (path==='/v1/admin/recording-session' && request.method==='GET') return json(await sharedSession(env));
+  const loginKey='recording_login:'+await sessionId(sessionToken(request));
+  const row=await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(loginKey).first();
+  const pending=row ? await decrypt(row.value,loginKey,env) : null;
+  if (!env.BROWSER) throw new ApiError(503,'La conexión web de AgencyKey no está configurada');
+  const driver=await browserDriver(env.BROWSER);
+  if (path==='/v1/admin/recording-session/connect' && request.method==='POST') {
+    if (pending?.expires>Date.now()) throw new ApiError(409,'Ya hay una conexión abierta. Termínala o cancélala');
+    const profile=await env.DB.prepare('SELECT creator_id FROM profiles ORDER BY name COLLATE NOCASE LIMIT 1').first();
+    if (!profile) throw new ApiError(409,'Añade una modelo antes de conectar AgencyKey');
+    const profileUrl='https://app.agencykey.com/models/'+profile.creator_id;
+    const current=await sharedSession(env);
+    let connection;
+    try {connection=await driver.start(profileUrl);} catch {throw new ApiError(502,'No se pudo abrir AgencyKey. Intenta conectar de nuevo');}
+    const login={sessionId:connection.sessionId, profileUrl, revision:current.revision, expires:Date.now()+600000};
+    await env.DB.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+      .bind(loginKey,await encrypt(login,loginKey,env)).run();
+    return json({live_url:connection.live_url,expires:login.expires});
+  }
+  if (path==='/v1/admin/recording-session/cancel' && request.method==='POST') {
+    if (pending) await driver.close(pending.sessionId).catch(()=>{});
+    await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(loginKey).run();
+    return json({cancelled:true});
+  }
+  if (path==='/v1/admin/recording-session/check' && request.method==='POST') {
+    if (!pending || pending.expires<=Date.now()) throw new ApiError(410,'La conexión caducó. Vuelve a conectar AgencyKey');
+    let ready;
+    try {ready=await driver.check(pending.sessionId,pending.profileUrl);} catch {throw new ApiError(410,'La conexión se cerró. Vuelve a conectar AgencyKey');}
+    if (!ready) return json({ready:false});
+    const saved=await saveSharedSession(env,ready.state,pending.revision);
+    await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(loginKey).run();
+    await driver.close(pending.sessionId).catch(()=>{});
+    return json({ready:true,...saved});
+  }
+  throw new ApiError(405,'Método no permitido');
 }
 
 async function adminHandle(request, env, path) {
@@ -343,6 +403,7 @@ async function adminHandle(request, env, path) {
   if (path === '/v1/admin/setup' && request.method === 'POST') return adminLogin(request,env,true);
   await authorizeAdmin(request, env);
   if (request.method !== 'GET') originCheck(request);
+  if (path.startsWith('/v1/admin/recording-session')) return recordingAdmin(request,env,path);
   if (path === '/v1/admin/logout' && request.method === 'POST') {
     await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(await sessionId(sessionToken(request))).run();
     const response=json({authenticated:false});
@@ -439,9 +500,22 @@ async function handle(request, env) {
       'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
       'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`}});
   }
-  if (path === '/health' && request.method === 'GET') return json({service: 'agencykey-recorder-tests', version: 4});
+  if (path === '/health' && request.method === 'GET') return json({service: 'agencykey-recorder-tests', version: 5});
   if (path.startsWith('/v1/admin/')) return adminHandle(request, env, path);
   await authorize(request, env);
+  if (path==='/v1/recording-session') {
+    if (request.method==='GET') {
+      const session=await sharedSession(env,true);
+      if (!session.configured) throw new ApiError(409,'Conecta la sesión compartida de AgencyKey desde la web');
+      return json(session);
+    }
+    if (request.method==='PUT') {
+      const input=await body(request,524288);
+      if (typeof input.revision!=='string' || !(await sharedSession(env)).configured) throw new ApiError(409,'Conecta AgencyKey desde la web');
+      return json(await saveSharedSession(env,input.state,input.revision));
+    }
+    throw new ApiError(405,'Método no permitido');
+  }
   if (path === '/v1/profiles' && request.method === 'GET') return listProfiles(env);
   const match = path.match(/^\/v1\/profiles\/([a-f0-9-]{36})\/credentials$/);
   if (match && request.method === 'POST') {
@@ -467,4 +541,5 @@ export default {
     }
   },
 };
+
 

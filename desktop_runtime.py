@@ -34,10 +34,11 @@ async def run_application(application, startup, stop_event, on_ready):
 
 
 class BotController:
-    def __init__(self, events, runner=None, credentials=None, credential_loader=None, creator=None):
+    def __init__(self, events, runner=None, credentials=None, credential_loader=None, creator=None, session_client=None):
         self.credentials = credentials
         self.credential_loader = credential_loader
         self.creator = creator
+        self.session_client = session_client
         self.thread_name = f"dropper-{uuid4().hex[:10]}"
         self.events = events
         self.runner = runner or self._run_bot
@@ -84,4 +85,5 @@ class BotController:
             register_secrets(*self.credentials)
         if not stop_event.is_set():
             main(stop_event=stop_event, on_ready=on_ready, credentials=self.credentials, creator=self.creator,
-                 recording_events=self.events)
+                 recording_events=self.events, recording_session_client=self.session_client)
+

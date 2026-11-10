@@ -95,7 +95,7 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci --prefix cloudflare
-      - run: node --test cloudflare/worker.test.mjs
+      - run: node --test cloudflare/worker.test.mjs cloudflare/recording-session.test.mjs
       - run: node --test cloudflare/admin.test.mjs
       - name: Build standalone executable
         run: python -m PyInstaller --clean --noconfirm AgencyKeyRecorderTests.spec
@@ -139,4 +139,5 @@ jobs:
               gh release delete "$old" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
             fi
           done
+
 

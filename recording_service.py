@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import queue
 from types import SimpleNamespace
+from time import time, monotonic
 from urllib.parse import urlparse
 
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
@@ -65,9 +66,11 @@ async def session_ready(page, expected_url):
 
 
 class RecordingCoordinator:
-    def __init__(self, creator, *, events=None, stop_event=None):
+    def __init__(self, creator, *, events=None, stop_event=None, session_client=None):
         self.creator, self.events, self.stop_event = creator, events, stop_event
         self.busy = False
+        self.session_client = session_client
+        self.completion_markup = None
 
     def emit(self, event, value):
         if self.events is not None:
@@ -89,7 +92,7 @@ class RecordingCoordinator:
 
     async def start(self, batch, bot, chat_id, application, *, resend=False):
         if self.busy:
-            await bot.send_message(chat_id, '🎥 Ya hay un comprobante en proceso. Mira el progreso en la app.')
+            await bot.send_message(chat_id, '🎥 Video en proceso…')
             return
         missing = self.missing_ids(batch)
         if missing:
@@ -100,6 +103,8 @@ class RecordingCoordinator:
         previous = json.loads(path.read_text()) if path.exists() else {}
         if previous.get('batch_id') == batch.id:
             if previous.get('status') == 'sent':
+                if previous.get('delivered_wall_at') and not previous.get('summary_status'):
+                    await self.send_summary(previous, bot, chat_id, path)
                 await bot.send_message(chat_id, '✅ Este comprobante ya fue enviado.')
                 return
             if previous.get('status') in {'sending', 'delivery_unknown'} and not resend:
@@ -123,12 +128,17 @@ class RecordingCoordinator:
         if not isinstance(ids, list) or not ids:
             return None
         return SimpleNamespace(id=job['batch_id'], status='done', creator=self.creator,
-                               order=list(range(len(ids))), published_ids={i+1: value for i, value in enumerate(ids)})
+                               order=list(range(len(ids))), published_ids={i+1: value for i, value in enumerate(ids)},
+                               started_wall_at=job.get('started_wall_at'), session_total=job.get('session_total', len(ids)),
+                               rejected=job.get('rejected', []))
 
     async def run(self, batch, bot, chat_id, previous=None):
         job = dict(previous or {})
         job.update(batch_id=batch.id, chat_id=chat_id, creator_id=int(self.creator.external_id))
         job['post_ids_oldest_first'] = [batch.published_ids[n] for n in range(1, len(batch.order)+1)]
+        job.setdefault('started_wall_at', getattr(batch, 'started_wall_at', None) or time())
+        job.setdefault('session_total', getattr(batch, 'session_total', 0) or len(batch.order))
+        job.setdefault('rejected', list(getattr(batch, 'rejected', [])))
         path = self.job_path(chat_id)
         try:
             report_path = Path(job['report']) if job.get('report') else None
@@ -136,15 +146,21 @@ class RecordingCoordinator:
                 job['status'] = 'recording'
                 recorder.save_json(path, job)
                 try:
-                    await bot.send_message(chat_id, '🎥 Drop finalizado. Grabando el comprobante en segundo plano; '
-                                           'puedes ver la vista previa y el progreso en la app.')
+                    await bot.send_message(chat_id, '🎥 Preparando video…')
                 except TelegramError:
                     log.warning('Comprobante | No se pudo entregar el aviso inicial; la grabación continúa.')
                 ids = [recorder.post_id(batch.published_ids[n]) for n in range(len(batch.order), 0, -1)]
                 config = recorder.validate_config({'profile_url': f'https://app.agencykey.com/models/{self.creator.external_id}',
                                                    'post_ids_newest_first': ids})
+                options = {}
+                if self.session_client:
+                    shared = await asyncio.to_thread(self.session_client.recording_session)
+                    options['session_state'] = shared['state']
+                    async def refresh(state):
+                        await asyncio.to_thread(self.session_client.refresh_recording_session, state, shared['revision'])
+                    options['on_session_saved'] = refresh
                 report_path = await recorder.record(config, headless=True, session_path=session_path(self.creator.external_id),
-                    on_progress=self.progress, on_preview=lambda png: self.emit('preview', png), stop_event=self.stop_event)
+                    on_progress=self.progress, stop_event=self.stop_event, **options)
                 job['report'] = str(report_path)
             report, video = recorder.verified_video(report_path)
             self.progress({'stage': 'enviando video', 'completed': len(report['seen']), 'total': len(report['seen'])})
@@ -154,8 +170,12 @@ class RecordingCoordinator:
                 message = await bot.send_video(chat_id=chat_id, video=stream,
                     caption=f'✅ Comprobante · {len(report["seen"])} posts · {self.creator.name}',
                     supports_streaming=True, read_timeout=180, write_timeout=180, connect_timeout=30, pool_timeout=30)
-            job.update(status='sent', message_id=message.message_id)
+            job.update(status='sent', message_id=message.message_id, delivered_wall_at=time())
+            recorder.save_json(path, job)
+            if hasattr(batch, 'finished_at'):
+                batch.finished_at = monotonic()
             self.progress({'stage': 'enviado', 'completed': len(report['seen']), 'total': len(report['seen'])})
+            await self.send_summary(job, bot, chat_id, path)
         except TelegramError as error:
             uncertain = job.get('status') == 'sending' and not isinstance(error, (BadRequest, Forbidden, RetryAfter))
             detail = 'Telegram: ' + type(error).__name__
@@ -175,8 +195,8 @@ class RecordingCoordinator:
             self.emit('recording', {'stage': detail, 'completed': 0, 'total': len(batch.order)})
             log.error('Comprobante | %s | Entrega incierta: %s', detail, uncertain)
             try:
-                await bot.send_message(chat_id, '⚠️ No se confirmó el envío del comprobante. '
-                                       'Revisa la app y el chat antes de usar /video reenviar.')
+                await bot.send_message(chat_id, '⚠️ Envío sin confirmar. Revisa el chat antes de usar /video reenviar.'
+                                       if uncertain else '❌ No se pudo enviar el video. Usa /video para reintentar.')
             except TelegramError:
                 pass
         except Exception as error:
@@ -185,9 +205,32 @@ class RecordingCoordinator:
             self.emit('recording', {'stage': 'error · ' + detail, 'completed': 0, 'total': len(batch.order)})
             log.error('Comprobante | %s', detail)
             try:
-                await bot.send_message(chat_id, '⚠️ No se completó el comprobante. Revisa el error en la app; '
-                                       'las publicaciones no se volverán a enviar. Usa /video para repetir el comprobante.')
+                await bot.send_message(chat_id, '❌ No se pudo completar el video. Usa /video para reintentar.')
             except TelegramError:
                 pass
         finally:
             recorder.save_json(path, job)
+
+    async def send_summary(self, job, bot, chat_id, path):
+        if job.get('summary_status') in {'sent', 'delivery_unknown'}:
+            return
+        seconds = max(0, int(job['delivered_wall_at'] - job['started_wall_at']))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        elapsed = (f'{hours} h ' if hours else '') + f'{minutes} min {seconds:02d} s'
+        text = (f'✅ Drop finalizado · {self.creator.name}\n\n'
+                f'📦 Total del Drop: {len(job["post_ids_oldest_first"])}\n\n'
+                f'⏱ Tiempo total: {elapsed}\n\n'
+                f'🔄 Bot · {self.creator.name}\n\n'
+                f'🗂 Total de post: {job["session_total"]} posts')
+        if job['rejected']:
+            text += f'\n\n⚠️ Mensajes rechazados: {len(job["rejected"])}'
+        job['summary_status'] = 'delivery_unknown'
+        recorder.save_json(path, job)
+        try:
+            message = await bot.send_message(chat_id, text, reply_markup=self.completion_markup)
+            job.update(summary_status='sent', summary_message_id=message.message_id)
+        except TelegramError:
+            log.warning('Comprobante entregado; no se confirmó el resumen final. No se duplicará el video.')
+        recorder.save_json(path, job)
+

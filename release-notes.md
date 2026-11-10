@@ -1,11 +1,11 @@
-Sesión reutilizable, guardado automático y consola oculta.
+Sesión compartida desde la web y Drop completo con comprobante.
 
-- Conectar AgencyKey carga primero la sesión guardada de la modelo, en vez de abrir un navegador vacío.
-- Al detectar el perfil correcto y sus posts visibles, guarda automáticamente la sesión y cierra Chrome.
-- Guardar sesión queda en la ventana principal como alternativa, sin un diálogo que pueda quedar detrás de Chrome.
-- No abre otra conexión ni muestra el aviso de detener el bot cuando ya hay una conexión en curso.
-- Oculta la consola técnica al abrir el EXE con doble clic; los errores y el progreso siguen en la app.
-- Después de una grabación completa conserva también las renovaciones de la sesión del CRM.
-- Conserva sesiones, configuración, grabación en segundo plano y envío del comprobante.
+- Conecta AgencyKey una sola vez desde la web; la sesión se guarda cifrada y se comparte con las modelos autorizadas.
+- La app recupera la sesión automáticamente y ya no muestra Conectar AgencyKey, Guardar sesión ni vista previa del video.
+- Precarga y verifica los posts y las imágenes del lote antes de iniciar la grabación.
+- Panel de carga al descargar configuraciones y registro desplegable en la app.
+- Confirmaciones mediante paneles en la web.
+- Avisos breves de grabación en Telegram; el resumen «Drop finalizado» aparece después de confirmar la entrega del video.
+- El tiempo total incluye publicación, carga, grabación, conversión y envío. Los reintentos conservan el inicio original y no vuelven a publicar los posts.
 
-Reemplaza el EXE anterior. Una sesión vigente se reutiliza; solo inicia sesión si AgencyKey te solicita acceso. No se modifica Dropper ni se cambian la web o sus contraseñas.
+Reemplaza el EXE anterior y conecta la sesión compartida desde la web. Los datos y bots de Dropper permanecen independientes.

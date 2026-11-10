@@ -67,26 +67,20 @@ class SessionConnectionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SessionButtonTests(unittest.TestCase):
-    def test_second_connect_click_does_not_open_another_login_or_warn_bot_running(self):
+    def test_desktop_has_no_login_workflow(self):
         from desktop import BotPanel
-        panel=BotPanel.__new__(BotPanel)
-        panel.session_thread=Mock();panel.session_thread.is_alive.return_value=True
-        panel.append=Mock()
-        panel.connect_recording()
-        self.assertEqual(panel.append.call_args.args[0],'INFO')
-        self.assertIn('ya está abierta',panel.append.call_args.args[1])
+        self.assertFalse(hasattr(BotPanel, 'connect_recording'))
 
-    def test_bot_cannot_start_while_session_is_being_saved(self):
+    def test_bot_starts_without_local_session_file(self):
         from desktop import BotPanel
         panel=BotPanel.__new__(BotPanel)
         panel.controller=SimpleNamespace(running=False,start=Mock())
-        panel.manager=SimpleNamespace(closing=False)
-        panel.session_thread=Mock();panel.session_thread.is_alive.return_value=True
-        panel.append=Mock()
+        panel.manager=SimpleNamespace(closing=False,panels={})
+        panel.set_mode=Mock()
         panel.start()
-        panel.controller.start.assert_not_called()
-        self.assertIn('guardarse',panel.append.call_args.args[1])
+        panel.controller.start.assert_called_once()
 
 
 if __name__=='__main__':
     unittest.main()
+

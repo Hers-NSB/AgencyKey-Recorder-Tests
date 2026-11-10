@@ -228,7 +228,7 @@ async def frame_geometry(page, frame):
     return box['x'] + box['width'] / 2, max(110, box['y'] + visible_height / 2), visible_height
 
 
-async def images_ready(page, timeout: int = 30000, *, frame=None) -> None:
+async def images_ready(page, timeout: int = 120000, *, frame=None) -> None:
     await (frame or page.main_frame).wait_for_function(IMAGES_READY, timeout=timeout)
 
 
@@ -305,6 +305,38 @@ async def seek_start(page, newest: str, timeout: float = 120) -> dict:
             return target
         await scroll_down(page, 260, frame=frame)
     raise ValueError('No se localizó el primer post. Revisa los IDs, la modelo y si la sesión sigue iniciada.')
+
+
+async def prepare_feed(page, ids, *, timeout=600, on_progress=None):
+    """Warm the entire batch, including lazy images, before marking the video start.
+
+    Virtual feeds remove off-screen cards, so waiting for all nodes at once never completes.
+    """
+    deadline = monotonic() + timeout
+    frame = None
+    while monotonic() < deadline:
+        current = urlparse(page.url)
+        if current.netloc == 'app.agencykey.com' and re.search(r'/(login|sign-in|auth)(/|$)', current.path):
+            raise ValueError('La sesión de AgencyKey caducó. Reconéctala desde la web.')
+        frame = await post_frame(page)
+        if frame:
+            break
+        await page.wait_for_timeout(500)
+    if not frame:
+        raise ValueError('El feed no terminó de cargar. Revisa el acceso de esta modelo o reconecta AgencyKey desde la web.')
+    first = await seek_start(page, ids[0], timeout=max(.1, deadline-monotonic()))
+    def progress(value):
+        if on_progress:
+            on_progress(dict(value, stage='cargando feed e imágenes'))
+    await capture_walk(page, ids, timeout=max(.1, deadline-monotonic()), frame=first['_frame'], on_progress=progress)
+    # Reset every scrolling ancestor inside the active feed, without reloading the page.
+    await first['_frame'].evaluate('''() => {
+        const card=document.querySelector('[id^="postId_"]');
+        for(let node=card?.parentElement;node;node=node.parentElement) node.scrollTop=0;
+        window.scrollTo({top:0,behavior:'instant'});
+    }''')
+    await page.wait_for_timeout(500)
+    return await seek_start(page, ids[0], timeout=max(.1, deadline-monotonic()))
 
 
 async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 600, *, frame=None, seen=None, on_progress=None) -> list[str]:
@@ -449,11 +481,12 @@ async def pause_failed_test(page) -> None:
 
 
 async def record(config: dict, *, fixture: Path | None = None, headless: bool = False, dwell: float = 0,
-                 session_path: Path | None = None, on_progress=None, on_preview=None, stop_event=None) -> Path:
+                 session_path: Path | None = None, on_progress=None, on_preview=None, stop_event=None,
+                 session_state=None, on_session_saved=None) -> Path:
     from playwright.async_api import async_playwright
     state = session_path or STATE
-    if not fixture and not state.exists():
-        raise ValueError('Ejecuta primero Conectar AgencyKey.')
+    if not fixture and session_state is None and not state.exists():
+        raise ValueError('Conecta la sesión compartida de AgencyKey desde la web.')
     run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + __import__('uuid').uuid4().hex[:6]
     output = ROOT / 'output' / run_id
     output.mkdir(parents=True)
@@ -470,7 +503,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         options = {'viewport': {'width': 1280, 'height': 720},
                    'record_video_dir': str(output / 'raw'), 'record_video_size': {'width': 854, 'height': 480}}
         if not fixture:
-            options['storage_state'] = str(state)
+            options['storage_state'] = session_state if session_state is not None else str(state)
         context = await browser.new_context(**options)
         page = await context.new_page()
         async def monitor():
@@ -494,9 +527,11 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             print('Etapa: abrir perfil', flush=True)
             url = fixture.resolve().as_uri() if fixture else config['profile_url']
             await page.goto(url, wait_until='domcontentloaded', timeout=60000)
-            report['stage'] = 'buscar y encuadrar primer post / cargar imágenes'
+            report['stage'] = 'cargando feed e imágenes'
             print(f'Etapa: {report["stage"]} · ID {report["first_post_id"]}', flush=True)
-            first = await seek_start(page, config['post_ids_newest_first'][0], timeout=10 if fixture else 120)
+            first = await prepare_feed(page, config['post_ids_newest_first'], timeout=45 if fixture else 600,
+                                       on_progress=on_progress)
+            report['feed_preloaded'] = True
             print(f'Inicio del comprobante: post {config["post_ids_newest_first"][0]} · segundo plano: {headless}', flush=True)
             report['stage'] = 'marcar inicio del video'
             report['start_verified'] = await confirm_start(page, first['_frame'], report['first_post_id'])
@@ -531,7 +566,11 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             try:
                 if not fixture and error is None:
                     try:
-                        await save_login_session(page, context, config['profile_url'], state_path=state)
+                        if session_state is not None:
+                            if on_session_saved:
+                                await on_session_saved(await context.storage_state(indexed_db=True))
+                        else:
+                            await save_login_session(page, context, config['profile_url'], state_path=state)
                         report['session_refreshed'] = True
                     except Exception as refresh_error:
                         report['session_refresh_error'] = type(refresh_error).__name__
@@ -778,4 +817,5 @@ if __name__ == '__main__':
         if FROZEN and len(sys.argv) == 1:
             input('Pulsa Enter para cerrar: ')
         sys.exit(1)
+
 

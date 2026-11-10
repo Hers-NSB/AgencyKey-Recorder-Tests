@@ -25,7 +25,7 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder, patch.object(recorder, 'ROOT', Path(folder)):
             video, report_path = Path(folder)/'video.mp4', Path(folder)/'report.json'
             video.write_bytes(b'fixture')
-            bot = SimpleNamespace(send_message=AsyncMock(), send_video=AsyncMock(return_value=SimpleNamespace(message_id=7)))
+            bot = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=8)), send_video=AsyncMock(return_value=SimpleNamespace(message_id=7)))
             coordinator = RecordingCoordinator(Creator(52, 'Modelo', None))
             with patch.object(recorder, 'record', new=AsyncMock(return_value=report_path)) as record, \
                  patch.object(recorder, 'verified_video', return_value=({'seen':['103','102','101']}, video)):
@@ -47,7 +47,7 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_manual_id_does_not_record_or_publish_again(self):
         coordinator=RecordingCoordinator(Creator(52,'Modelo',None))
         batch=self.batch();batch.published_ids.pop(2);batch.manual=[2]
-        bot=SimpleNamespace(send_message=AsyncMock())
+        bot=SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=8)))
         app=SimpleNamespace(create_task=lambda task:self.fail('missing ID must block recording'))
         await coordinator.start(batch,bot,42,app)
         self.assertIn('/id',bot.send_message.call_args.args[1])
@@ -58,7 +58,7 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder, patch.object(recorder,'ROOT',Path(folder)):
             video=Path(folder)/'video.mp4';video.write_bytes(b'fixture')
             batch=self.batch();coordinator=RecordingCoordinator(batch.creator)
-            bot=SimpleNamespace(send_message=AsyncMock(),send_video=AsyncMock(side_effect=TimedOut()))
+            bot=SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=8)),send_video=AsyncMock(side_effect=TimedOut()))
             with patch.object(recorder,'record',new=AsyncMock(return_value=Path(folder)/'report.json')), \
                  patch.object(recorder,'verified_video',return_value=({'seen':['103','102','101']},video)):
                 await coordinator.run(batch,bot,42)
@@ -71,7 +71,7 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
     async def test_recording_error_never_sends_incomplete_video(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(recorder,'ROOT',Path(folder)):
             batch=self.batch();coordinator=RecordingCoordinator(batch.creator)
-            bot=SimpleNamespace(send_message=AsyncMock(),send_video=AsyncMock())
+            bot=SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=8)),send_video=AsyncMock())
             with patch.object(recorder,'record',new=AsyncMock(side_effect=ValueError('fallo de imágenes'))):
                 await coordinator.run(batch,bot,42)
             bot.send_video.assert_not_awaited()
@@ -85,7 +85,7 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
             video=Path(folder)/'video.mp4';video.write_bytes(b'fixture')
             failure=NetworkError('private details')
             failure.__cause__=httpx.ConnectTimeout('PRIVATE_TOKEN')
-            bot=SimpleNamespace(send_message=AsyncMock(),send_video=AsyncMock(side_effect=failure))
+            bot=SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=8)),send_video=AsyncMock(side_effect=failure))
             with patch.object(recorder,'record',new=AsyncMock(return_value=Path(folder)/'report.json')), \
                  patch.object(recorder,'verified_video',return_value=({'seen':['103','102','101']},video)), \
                  patch.object(coordinator,'emit') as emit:
@@ -113,7 +113,67 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
         ctx=context();ctx.application=object();ctx.user_data['batch']=batch
         await bot.publish_batch(batch,update(),ctx)
         recording.start.assert_awaited_once_with(batch,ctx.bot,123,ctx.application)
+        self.assertFalse(any('Drop finalizado' in str(call) for call in ctx.bot.send_message.call_args_list))
+
+    async def test_final_summary_follows_video_and_includes_the_entire_process(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(recorder,'ROOT',Path(folder)):
+            batch=self.batch();batch.started_wall_at=1000;batch.session_total=11
+            video=Path(folder)/'video.mp4';video.write_bytes(b'fixture')
+            sequence=[]
+            async def send_video(**kwargs):
+                sequence.append('video delivered')
+                return SimpleNamespace(message_id=7)
+            async def send_message(chat_id,text,**kwargs):
+                if 'Drop finalizado' in text:
+                    sequence.append('summary')
+                    self.assertIn('Tiempo total: 0 min 49 s',text)
+                    self.assertIn('Total del Drop: 3',text)
+                    self.assertIn('Total de post: 11 posts',text)
+                return SimpleNamespace(message_id=8)
+            bot=SimpleNamespace(send_message=AsyncMock(side_effect=send_message),send_video=AsyncMock(side_effect=send_video))
+            coordinator=RecordingCoordinator(batch.creator)
+            with patch.object(recorder,'record',new=AsyncMock(return_value=Path(folder)/'report.json')), \
+                 patch.object(recorder,'verified_video',return_value=({'seen':['103','102','101']},video)), \
+                 patch('recording_service.time',return_value=1049):
+                await coordinator.run(batch,bot,42)
+            self.assertEqual(sequence,['video delivered','summary'])
+            job=json.loads(coordinator.job_path(42).read_text())
+            self.assertEqual(job['summary_status'],'sent')
+            await coordinator.start(batch,bot,42,SimpleNamespace(create_task=lambda task:self.fail('must not resend')))
+            self.assertEqual(sequence,['video delivered','summary'])
+
+    async def test_summary_failure_keeps_confirmed_video_and_does_not_duplicate_it(self):
+        from telegram.error import TimedOut
+        with tempfile.TemporaryDirectory() as folder, patch.object(recorder,'ROOT',Path(folder)):
+            batch=self.batch();video=Path(folder)/'video.mp4';video.write_bytes(b'fixture')
+            async def notify(chat_id,text,**kwargs):
+                if 'Drop finalizado' in text: raise TimedOut()
+                return SimpleNamespace(message_id=8)
+            bot=SimpleNamespace(send_message=AsyncMock(side_effect=notify),send_video=AsyncMock(return_value=SimpleNamespace(message_id=7)))
+            coordinator=RecordingCoordinator(batch.creator)
+            with patch.object(recorder,'record',new=AsyncMock(return_value=Path(folder)/'report.json')), \
+                 patch.object(recorder,'verified_video',return_value=({'seen':['103','102','101']},video)):
+                await coordinator.run(batch,bot,42)
+            job=json.loads(coordinator.job_path(42).read_text())
+            self.assertEqual((job['status'],job['summary_status']),('sent','delivery_unknown'))
+            await coordinator.start(batch,bot,42,SimpleNamespace(create_task=lambda task:self.fail('must not resend')))
+            bot.send_video.assert_awaited_once()
+
+    async def test_new_model_uses_shared_web_session_in_memory_and_refreshes_by_revision(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(recorder,'ROOT',Path(folder)):
+            batch=self.batch();video=Path(folder)/'video.mp4';video.write_bytes(b'fixture')
+            state={'cookies':[],'origins':[]}
+            client=SimpleNamespace(recording_session=lambda:{'state':state,'revision':'original'},refresh_recording_session=lambda value,revision:None)
+            coordinator=RecordingCoordinator(batch.creator,session_client=client)
+            bot=SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=8)),send_video=AsyncMock(return_value=SimpleNamespace(message_id=7)))
+            with patch.object(recorder,'record',new=AsyncMock(return_value=Path(folder)/'report.json')) as record, \
+                 patch.object(recorder,'verified_video',return_value=({'seen':['103','102','101']},video)):
+                await coordinator.run(batch,bot,42)
+            self.assertEqual(record.call_args.kwargs['session_state'],state)
+            self.assertNotIn('on_preview',record.call_args.kwargs)
+            self.assertFalse(session_path(52).exists())
 
 
 if __name__=='__main__':
     unittest.main()
+

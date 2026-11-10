@@ -138,9 +138,9 @@ test('Workers runtime connects to AgencyKey without unsupported redirect mode or
  const {build}=await import('esbuild');
  const {readFileSync}=await import('node:fs');
  const {fileURLToPath}=await import('node:url');
- const bundle=await build({entryPoints:[fileURLToPath(new URL('./worker.mjs',import.meta.url))],bundle:true,write:false,format:'esm',platform:'browser',target:'es2022'});
+ const bundle=await build({entryPoints:[fileURLToPath(new URL('./worker.mjs',import.meta.url))],bundle:true,write:false,format:'esm',platform:'browser',target:'es2022',external:['node:*','cloudflare:*']});
  let redirect=false;const calls=[];
- const runtime=new Miniflare({modules:true,script:bundle.outputFiles[0].text,compatibilityDate:'2026-07-30',d1Databases:{DB:'test-db'},bindings:{ADMIN_TOKEN:env.ADMIN_TOKEN,ACCESS_TOKEN:env.ACCESS_TOKEN,ENCRYPTION_KEY:env.ENCRYPTION_KEY},outboundService:async req=>{
+ const runtime=new Miniflare({modules:true,script:bundle.outputFiles[0].text,compatibilityDate:'2026-07-30',compatibilityFlags:['nodejs_compat'],d1Databases:{DB:'test-db'},bindings:{ADMIN_TOKEN:env.ADMIN_TOKEN,ACCESS_TOKEN:env.ACCESS_TOKEN,ENCRYPTION_KEY:env.ENCRYPTION_KEY},outboundService:async req=>{
   const url=new URL(req.url);calls.push(url.href);
   assert.equal(url.origin,'https://app.agencykey.com');assert.equal(req.headers.get('x-public-api-key'),input.api_key);
   if(redirect)return new RuntimeResponse(null,{status:302,headers:{Location:'https://untrusted.example/collect'}});
@@ -165,3 +165,4 @@ test('accepts UTF-8 app passwords encoded by the Windows client without breaking
  assert.equal((await desktop(env,'GET','/v1/profiles')).status,401);
  assert.equal((await request(env,'GET','/v1/profiles',undefined,{Authorization:'Dropper invalid%%'})).status,401);
 });
+

@@ -1,6 +1,4 @@
 import argparse
-import asyncio
-import base64
 import logging
 import math
 import queue
@@ -111,7 +109,7 @@ class BotPanel:
         self.manager = manager
         self.profile = profile
         self.events = queue.Queue(maxsize=5000)
-        self.controller = BotController(self.events, runner, credential_loader=self.load_credentials)
+        self.controller = BotController(self.events, runner, credential_loader=self.load_credentials, session_client=manager.client)
         self.mode = 'stopped'
         self.pending_profile = None
         self.removed = False
@@ -128,33 +126,27 @@ class BotPanel:
         self.subtitle = label(self.frame, color=MUTED)
         self.subtitle.grid(row=1, column=0, sticky='w', padx=28, pady=(0, 22))
         actions = tk.Frame(self.frame, bg=SURFACE)
-        actions.grid(row=3, column=0, sticky='ew', padx=28, pady=22)
+        actions.grid(row=2, column=0, sticky='ew', padx=28, pady=22)
         self.start_button = ttk.Button(actions, text='Iniciar bot', style='Accent.TButton', command=self.start)
         self.start_button.pack(side='left')
         self.stop_button = ttk.Button(actions, text='Detener', command=self.stop, state='disabled')
         self.stop_button.pack(side='left', padx=8)
-        self.connect_button = ttk.Button(actions, text='Conectar AgencyKey', command=self.connect_recording)
-        self.connect_button.pack(side='right')
-        self.session_confirm = threading.Event()
-        self.save_session_button = ttk.Button(actions, text='Guardar sesión', command=self.session_confirm.set, state='disabled')
-        self.save_session_button.pack(side='right', padx=8)
         proof = tk.Frame(self.frame, bg=SURFACE)
-        proof.grid(row=2, column=0, sticky='ew', padx=28)
+        proof.grid(row=3, column=0, sticky='ew', padx=28)
         proof.grid_columnconfigure(0, weight=1)
-        self.recording_text = tk.StringVar(value='Comprobante automático · Chrome en segundo plano')
+        self.recording_text = tk.StringVar(value='Comprobante automático · sesión compartida desde la web')
+        self.session_label = label(proof, color=MUTED)
+        self.session_label.grid(row=0, column=0, sticky='w', pady=(0, 12))
         tk.Label(proof, textvariable=self.recording_text, bg=SURFACE, fg=ACCENT, anchor='w',
-                 wraplength=230, justify='left', font=('Segoe UI', 10)).grid(row=0, column=0, sticky='ew', padx=(0, 12))
+                 wraplength=580, justify='left', font=('Segoe UI', 10)).grid(row=1, column=0, sticky='ew', padx=(0, 12))
         self.recording_progress = ttk.Progressbar(proof, maximum=1)
-        self.recording_progress.grid(row=1, column=0, sticky='ew', padx=(0, 12), pady=8)
-        self.preview = tk.Label(proof, text='Vista previa en vivo', bg=PANEL, fg=MUTED, width=28, height=7)
-        self.preview.grid(row=0, column=1, rowspan=2)
-        self.preview_image = None
-        self.session_cancel = threading.Event()
-        self.session_thread = None
+        self.recording_progress.grid(row=2, column=0, sticky='ew', padx=(0, 12), pady=8)
         log_title = tk.Frame(self.frame, bg=SURFACE)
         log_title.grid(row=4, column=0, sticky='ew', padx=28, pady=(0, 8))
         label(log_title, 'ACTIVIDAD DEL BOT', color=MUTED, size=9, bold=True).pack(side='left')
-        ttk.Button(log_title, text='Guardar registro', style='Small.TButton', command=self.save_log).pack(side='right')
+        self.log_toggle = ttk.Button(log_title, text='Ver registro', style='Small.TButton', command=self.toggle_log)
+        self.log_toggle.pack(side='right')
+        self.save_log_button = ttk.Button(log_title, text='Guardar registro', style='Small.TButton', command=self.save_log)
         self.activity = scrolledtext.ScrolledText(self.frame, wrap='word', state='disabled', font=('Consolas', 9),
             bg='#121721', fg='#c2ccdc', insertbackground=TEXT, relief='flat', padx=16, pady=14,
             selectbackground='#394875', borderwidth=0, height=7)
@@ -163,6 +155,8 @@ class BotPanel:
         activity_scroll.pack(side='right', fill='y')
         self.activity.configure(yscrollcommand=activity_scroll.set)
         self.activity.grid(row=5, column=0, sticky='nsew', padx=28, pady=(0, 22))
+        self.activity.grid_remove()
+        self.log_visible = False
         self.activity.tag_config('ERROR', foreground='#f68d9d')
         self.activity.tag_config('WARNING', foreground='#edbe70')
         self.handler = WindowLogHandler(self.events, self.controller.thread_name)
@@ -191,6 +185,10 @@ class BotPanel:
         self.title.configure(text=profile['name'])
         username = profile['creator'].get('username')
         self.subtitle.configure(text=f'@{username}' if username else '')
+        configured = getattr(self.manager.client, 'recording_configured', None)
+        self.session_label.configure(text='Sesión compartida guardada en la web' if configured else
+                                     'Conecta AgencyKey desde la web para grabar' if configured is False else
+                                     'Sesión compartida · gestión desde la web')
 
     def set_mode(self, mode):
         self.mode = mode
@@ -198,22 +196,11 @@ class BotPanel:
         active = mode in {'starting', 'running', 'stopping'}
         self.start_button.configure(state='disabled' if active or self.manager.closing or self.removed else 'normal')
         self.stop_button.configure(state='normal' if mode in {'starting', 'running'} else 'disabled')
-        connecting = self.session_thread is not None and self.session_thread.is_alive()
-        self.connect_button.configure(state='disabled' if active or connecting or self.manager.closing else 'normal')
         self.manager.refresh_sidebar()
 
     def start(self):
         if self.controller.running or self.manager.closing:
             return
-        if self.session_thread and self.session_thread.is_alive():
-            self.append('INFO', 'Espera a que termine de guardarse la sesión. No necesitas iniciar sesión otra vez.')
-            return
-        if self.manager.runner is None:
-            from recording_service import session_path
-            if not session_path(self.profile['creator']['external_id']).is_file():
-                messagebox.showinfo('Conectar AgencyKey', 'Conecta y guarda la sesión de esta modelo antes de iniciar el bot.', parent=self.manager.root)
-                self.connect_recording()
-                return
         for panel in self.manager.panels.values():
             if panel is not self and panel.controller.running and panel.profile['bot_id'] == self.profile['bot_id']:
                 messagebox.showerror('Bot activo', 'Este bot ya está funcionando', parent=self.manager.root)
@@ -221,31 +208,15 @@ class BotPanel:
         self.set_mode('starting')
         self.controller.start()
 
-    def connect_recording(self):
-        if self.session_thread and self.session_thread.is_alive():
-            self.append('INFO', 'La conexión ya está abierta. Se guarda automáticamente o con Guardar sesión en esta ventana.')
-            return
-        if self.controller.running or self.manager.closing:
-            self.append('WARNING', 'Detén el bot antes de conectar su sesión de AgencyKey.')
-            return
-        from recording_service import connect_session
-        self.session_confirm.clear()
-        self.session_cancel.clear()
-        self.save_session_button.configure(state='normal')
-        self.connect_button.configure(state='disabled')
-        self.recording_text.set('Conectando sesión · guardado automático al detectar el feed')
-        def emit(level, message):
-            self.events.put(('log', (level, message)))
-        def work():
-            saved = False
-            try:
-                saved = asyncio.run(connect_session(self.profile['creator']['external_id'], self.session_confirm, self.session_cancel, emit))
-            except Exception as error:
-                emit('ERROR', str(error) if isinstance(error, ValueError) else 'No se pudo conectar Chrome: ' + type(error).__name__)
-            finally:
-                self.events.put(('session_closed', saved))
-        self.session_thread = threading.Thread(target=work, daemon=True)
-        self.session_thread.start()
+    def toggle_log(self):
+        self.log_visible = not self.log_visible
+        if self.log_visible:
+            self.activity.grid()
+            self.save_log_button.pack(side='right', padx=8)
+        else:
+            self.activity.grid_remove()
+            self.save_log_button.pack_forget()
+        self.log_toggle.configure(text='Ocultar registro' if self.log_visible else 'Ver registro')
 
     def stop(self):
         if not self.controller.running:
@@ -275,17 +246,6 @@ class BotPanel:
                 self.recording_text.set(f'{value["stage"]} · {value["completed"]}/{value["total"]}'
                                         + (f' · ID {value["post_id"]}' if value.get('post_id') else ''))
                 self.recording_progress.configure(maximum=max(1, value['total']), value=value['completed'])
-            elif event == 'preview':
-                try:
-                    self.preview_image = tk.PhotoImage(data=base64.b64encode(value)).subsample(6, 6)
-                    self.preview.configure(image=self.preview_image, text='', width=0, height=0)
-                except tk.TclError:
-                    pass
-            elif event == 'session_closed':
-                self.session_thread = None
-                self.save_session_button.configure(state='disabled')
-                self.recording_text.set('Sesión guardada · lista para iniciar' if value else 'Conexión sin guardar · revisa el registro')
-                self.set_mode(self.mode)
             elif event == 'ready' and self.mode != 'stopping':
                 self.set_mode('running')
             elif event == 'stopped':
@@ -302,7 +262,6 @@ class BotPanel:
                 messagebox.showerror('No se pudo guardar', str(error), parent=self.manager.root)
 
     def destroy(self):
-        self.session_cancel.set()
         logging.getLogger().removeHandler(self.handler)
         self.badge.destroy()
         self.frame.destroy()
@@ -321,6 +280,7 @@ class DropperWindow:
         self.cloud_online = False
         self.next_sync = monotonic() + 30
         self.access_dialog = None
+        self.loading_panel = None
         self.auth_required = False
         self.connecting = False
         self.vault = CredentialStore()
@@ -442,8 +402,10 @@ class DropperWindow:
         self.connecting = True
         client = CloudClient(token)
         self.status.set('Descargando configuraciones…')
+        self.show_loading()
         def done(profiles):
             self.connecting = False
+            self.hide_loading()
             self.client = client
             if remember:
                 try:
@@ -460,6 +422,7 @@ class DropperWindow:
             self.close_access_dialog(dialog)
         def failed(error):
             self.connecting = False
+            self.hide_loading()
             self.cloud_failed(error)
             if dialog and dialog.winfo_exists():
                 self.show_error(error)
@@ -530,6 +493,25 @@ class DropperWindow:
         y = self.root.winfo_y() + (self.root.winfo_height()-dialog.winfo_reqheight())//2
         dialog.geometry(f'+{max(0,x)}+{max(0,y)}')
 
+    def show_loading(self):
+        if self.loading_panel is not None:
+            return
+        parent = self.access_dialog if self.access_dialog and self.access_dialog.winfo_exists() else self.root
+        panel = tk.Frame(parent, bg=SURFACE, highlightbackground=BORDER, highlightthickness=1, padx=28, pady=24)
+        self.loading_panel = panel
+        label(panel, 'Descargando configuraciones', size=17, bold=True).pack(anchor='w')
+        label(panel, 'Obteniendo los bots y las modelos de la web…', color=MUTED).pack(pady=(10, 16))
+        progress = ttk.Progressbar(panel, mode='indeterminate', length=330)
+        progress.pack(fill='x')
+        progress.start(12)
+        panel.place(relx=.5, rely=.5, anchor='center')
+        panel.lift()
+
+    def hide_loading(self):
+        if self.loading_panel is not None:
+            self.loading_panel.destroy()
+            self.loading_panel = None
+
     def refresh(self):
         if self.refreshing or self.closing:
             return
@@ -537,15 +519,18 @@ class DropperWindow:
             self.connect_dialog()
             return
         self.refreshing = True
+        self.show_loading()
         self.next_sync = monotonic()+30
         self.sync_button.configure(state='disabled')
         def complete(profiles):
             self.refreshing = False
+            self.hide_loading()
             self.sync_button.configure(state='normal')
             self.cloud_online = True
             self.apply_profiles(profiles)
         def failed(error):
             self.refreshing = False
+            self.hide_loading()
             self.sync_button.configure(state='normal')
             self.cloud_failed(error)
         self.background(self.client.list_profiles, complete, failed)
@@ -781,15 +766,11 @@ def smoke_test(screenshot=None):
 
     def check_parallel():
         panel = window.panels['1']
-        sample = tk.PhotoImage(width=1280, height=720)
-        sample.put('#479b83', to=(0, 0, 1280, 720))
-        png = sample.tk.call(str(sample), 'data', '-format', 'png')
         panel.events.put(('recording', {'stage':'grabando', 'completed':2, 'total':3, 'post_id':'102'}))
-        panel.events.put(('preview', png))
         panel.poll()
         root.update_idletasks()
-        if '2/3' not in panel.recording_text.get() or panel.preview_image is None:
-            failures.append('La app no mostró el progreso o la vista previa de la grabación')
+        if '2/3' not in panel.recording_text.get() or hasattr(panel, 'preview'):
+            failures.append('El progreso debe mostrarse sin vista previa')
         if screenshot:
             capture_window(root, screenshot)
         window.panels['1'].stop()
@@ -804,28 +785,12 @@ def smoke_test(screenshot=None):
                  check_session_controls, 'No se detuvo el segundo bot')
 
     def check_session_controls():
-        import recording_service
-        original = recording_service.connect_session
-        calls = []
-        async def fake_connection(creator_id, confirm, cancel, emit):
-            calls.append(creator_id)
-            while not confirm.is_set() and not cancel.is_set():
-                await asyncio.sleep(.05)
-            return confirm.is_set()
-        recording_service.connect_session = fake_connection
         panel = window.panels['1']
-        panel.connect_recording()
-        panel.connect_recording()
-        root.update_idletasks()
-        if not panel.save_session_button.winfo_ismapped() or panel.save_session_button.winfo_width() < 70:
-            failures.append('Guardar sesión no está visible en la ventana principal')
-        panel.save_session_button.invoke()
-        def complete():
-            recording_service.connect_session = original
-            if len(calls) != 1 or 'Sesión guardada' not in panel.recording_text.get():
-                failures.append('La sesión debe guardarse una sola vez sin otro diálogo de acceso')
-            update_from_server()
-        wait_for(lambda: panel.session_thread is None, complete, 'No se guardó la sesión desde el botón principal')
+        if any(hasattr(panel, name) for name in ('connect_button', 'save_session_button', 'preview')):
+            failures.append('La app no debe conectar cuentas ni mostrar vista previa')
+        panel.toggle_log()
+        panel.toggle_log()
+        update_from_server()
 
     def update_from_server():
         cloud.records['1']['name'] = 'Lilith actualizada'
@@ -897,6 +862,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 
