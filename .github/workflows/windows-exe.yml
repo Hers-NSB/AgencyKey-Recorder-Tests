@@ -1,7 +1,7 @@
 name: Ejecutable Windows
 on:
   push:
-    branches: [main]
+    branches: [main, feat/independent-publisher-recorder]
   workflow_dispatch:
 permissions:
   contents: read
@@ -114,6 +114,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Publish private download
+        if: github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -124,6 +125,7 @@ jobs:
             --title "AgencyKey Recorder Tests · Chrome ligero ${GITHUB_RUN_NUMBER}" \
             --notes-file release-notes.md --latest
       - name: Keep only the latest recorder release and tag
+        if: github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
