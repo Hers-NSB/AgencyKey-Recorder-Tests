@@ -27,7 +27,9 @@ using System.Runtime.InteropServices;
 public static class RecorderClipboardSmoke {
     public delegate bool ChildProc(IntPtr window, IntPtr parameter);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)]
-    public static extern IntPtr FindWindow(string className, string title);
+    private static extern IntPtr FindWindow(string className, string title);
+    public static IntPtr FindDialog(string title) { return FindWindow(null, title); }
+    public static IntPtr FindEdit(IntPtr parent) { return FindControl(parent, "WindowsForms10.EDIT", null); }
     [DllImport("user32.dll", CharSet=CharSet.Unicode)]
     private static extern int GetClassName(IntPtr window, StringBuilder text, int size);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)]
@@ -56,12 +58,12 @@ public static class RecorderClipboardSmoke {
 '@
 $dialog = [IntPtr]::Zero
 for ($i=0; $i -lt 120; $i++) {
-    $dialog = [RecorderClipboardSmoke]::FindWindow($null, 'AgencyKey Recorder Tests - Telegram')
+    $dialog = [RecorderClipboardSmoke]::FindDialog('AgencyKey Recorder Tests - Telegram')
     if ($dialog -ne [IntPtr]::Zero) { break }
     Start-Sleep -Milliseconds 250
 }
 if ($dialog -eq [IntPtr]::Zero) { throw 'Token test dialog did not open' }
-$entry = [RecorderClipboardSmoke]::FindControl($dialog, 'WindowsForms10.EDIT', $null)
+$entry = [RecorderClipboardSmoke]::FindEdit($dialog)
 $button = [RecorderClipboardSmoke]::FindControl($dialog, 'WindowsForms10.BUTTON', 'Usar token')
 if ($entry -eq [IntPtr]::Zero -or $button -eq [IntPtr]::Zero) { throw 'Token input controls did not appear' }
 $previous = [System.Windows.Forms.Clipboard]::GetText()
@@ -80,6 +82,9 @@ try {
                                capture_output=True, text=True, encoding='utf-8', errors='replace',
                                creationflags=subprocess.CREATE_NO_WINDOW)
         if check.returncode:
+            if process.poll() is not None:
+                stdout, stderr = process.communicate(timeout=5)
+                raise AssertionError('Native clipboard test failed: ' + check.stderr + '\nApp error: ' + stderr)
             raise AssertionError('Native clipboard test failed: ' + check.stderr)
         stdout, stderr = process.communicate(timeout=30)
         assert process.returncode == 0, f'Token input test failed: {stderr}'
