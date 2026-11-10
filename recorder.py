@@ -601,20 +601,30 @@ def read_bot_token() -> str:
 
 async def send(report_path: Path) -> None:
     import httpx
+    from recorder_network import TelegramFailure, telegram_connection_options, telegram_request
     report, video = verified_video(report_path)
+    if report.get('telegram', {}).get('message_id'):
+        raise ValueError('Este comprobante ya tiene un envío confirmado en Telegram.')
+    previous = report.get('telegram_attempt', {}).get('status')
+    if previous in {'sending', 'delivery_unknown'}:
+        if input('El envío anterior no está confirmado. Revisa el chat; escribe REENVIAR solo si no llegó: ').strip() != 'REENVIAR':
+            raise ValueError('Reenvío cancelado.')
     token = read_bot_token()
     if not re.fullmatch(r'[0-9]+:[A-Za-z0-9_-]+', token):
         raise ValueError('Formato de token inválido.')
-    async with httpx.AsyncClient(base_url=f'https://api.telegram.org/bot{token}/', timeout=180) as client:
+    options = telegram_connection_options()
+    async with httpx.AsyncClient(base_url=f'https://api.telegram.org/bot{token}/',
+                                 timeout=httpx.Timeout(180, connect=30, pool=30),
+                                 follow_redirects=False, **options) as client:
         async def api(method, **kwargs):
+            print(f'Telegram · {method}', flush=True)
             try:
-                response = await client.post(method, **kwargs)
-                body = response.json()
-                if not response.is_success or not body.get('ok'):
-                    raise ValueError('Telegram rechazó la operación. Revisa token, permisos y chat.')
-                return body['result']
-            except httpx.HTTPError:
-                raise ValueError('Error de red con Telegram. Comprueba el chat antes de reintentar.') from None
+                return await telegram_request(client, method, **kwargs)
+            except TelegramFailure as error:
+                report['telegram_attempt'] = {'status': 'delivery_unknown' if error.uncertain else 'failed',
+                                              'method': error.method, 'category': error.category}
+                save_json(report_path, report)
+                raise
         me = await api('getMe')
         username = me.get('username', '')
         print(f'Bot de destino: @{username}')
@@ -633,11 +643,14 @@ async def send(report_path: Path) -> None:
             raise ValueError('No se encontró un único chat con el código. No se envió nada.')
         chat_id = chats.pop()
         caption = ('SIMULACIÓN · ' if report.get('simulation') else '') + f'Comprobante de prueba · {len(report["seen"])} posts · 480p'
+        report['telegram_attempt'] = {'status': 'sending', 'method': 'sendVideo', 'chat_id': chat_id}
+        save_json(report_path, report)
         with video.open('rb') as stream:
             result = await api('sendVideo', data={'chat_id': str(chat_id), 'caption': caption,
                                                   'supports_streaming': 'true'},
                                files={'video': ('comprobante.mp4', stream, 'video/mp4')})
         report['telegram'] = {'chat_id': chat_id, 'message_id': result['message_id']}
+        report['telegram_attempt'] = {'status': 'sent', 'method': 'sendVideo'}
         save_json(report_path, report)
         print('Video enviado al chat del bot de pruebas.')
 
@@ -687,7 +700,12 @@ def main() -> None:
     visibility.add_argument('--headless', action='store_true', help='Grabar sin ventana explícitamente.')
     visibility.add_argument('--show-browser', action='store_true', help='Mostrar Chrome durante una prueba (predeterminado).')
     parser.add_argument('--check-token-input', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--check-telegram-support', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.check_telegram_support:
+        from recorder_network import check_telegram_support
+        asyncio.run(check_telegram_support())
+        return
     if args.check_token_input:
         token = read_bot_token()
         if not re.fullmatch(r'[0-9]+:[A-Za-z0-9_-]+', token):

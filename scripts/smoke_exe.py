@@ -67,6 +67,7 @@ def main():
                                     text=True, encoding='utf-8', env=environment, cwd=root, timeout=180)
         configured.check_returncode()
         subprocess.run([str(exe), 'check-chrome'], env=environment, cwd=root, check=True, timeout=180)
+        subprocess.run([str(exe), '--check-telegram-support'], env=environment, cwd=root, check=True, timeout=180)
         assert (data / 'config.local.json').exists(), 'Frozen app did not persist its configuration'
         subprocess.run([str(exe), 'demo', '--headless'], env=environment, cwd=root, check=True, timeout=900)
         reports = list((data / 'output').glob('*/report.json'))
