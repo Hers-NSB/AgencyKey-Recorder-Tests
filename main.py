@@ -40,7 +40,7 @@ def main(stop_event=None, on_ready=None, credentials=None, creator=None, recordi
             .post_init(on_startup)
             .build()
         )
-        bot.register(app, agencykey, creator, recording)
+        bot.register(app, agencykey, creator, recording, events=recording_events)
         log.info("Iniciando AgencyKey Recorder Tests.")
         if stop_event is None:
             app.run_polling(allowed_updates=["message"])

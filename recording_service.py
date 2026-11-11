@@ -98,7 +98,7 @@ class RecordingCoordinator:
         missing = self.missing_ids(batch)
         if missing:
             await bot.send_message(chat_id, 'Para grabar también los posts manuales, indica sus IDs: '
-                                   + ', '.join(map(str, missing)) + '\nUsa /id NUMERO ID_O_ENLACE y después /video.')
+                                   + ', '.join(map(str, missing)) + '\nUsa /id NUMERO ID_O_ENLACE y después /video')
             return
         path = self.job_path(chat_id)
         previous = json.loads(path.read_text()) if path.exists() else {}
@@ -106,11 +106,11 @@ class RecordingCoordinator:
             if previous.get('status') == 'sent':
                 if previous.get('delivered_wall_at') and not previous.get('summary_status'):
                     await self.send_summary(previous, bot, chat_id, path)
-                await bot.send_message(chat_id, '✅ Este comprobante ya fue enviado.')
+                await bot.send_message(chat_id, '✅ Este comprobante ya fue enviado')
                 return
             if previous.get('status') in {'sending', 'delivery_unknown'} and not resend:
-                await bot.send_message(chat_id, 'La entrega anterior no está confirmada. Revisa el chat; '
-                                       'si no llegó, usa /video reenviar.')
+                await bot.send_message(chat_id, 'Entrega anterior sin confirmar · Revisa el chat y, '
+                                       'si no llegó, usa /video reenviar')
                 return
         self.busy = True
         async def work():
@@ -196,8 +196,8 @@ class RecordingCoordinator:
             self.emit('recording', {'stage': detail, 'completed': 0, 'total': len(batch.order)})
             log.error('Comprobante | %s | Entrega incierta: %s', detail, uncertain)
             try:
-                await bot.send_message(chat_id, '⚠️ Envío sin confirmar. Revisa el chat antes de usar /video reenviar.'
-                                       if uncertain else '❌ No se pudo enviar el video. Usa /video para reintentar.')
+                await bot.send_message(chat_id, '⚠️ Envío sin confirmar · Revisa el chat antes de usar /video reenviar'
+                                       if uncertain else '❌ No se pudo enviar el video · Usa /video para reintentar')
             except TelegramError:
                 pass
         except Exception as error:
@@ -206,7 +206,7 @@ class RecordingCoordinator:
             self.emit('recording', {'stage': 'error · ' + detail, 'completed': 0, 'total': len(batch.order)})
             log.error('Comprobante | %s', detail)
             try:
-                await bot.send_message(chat_id, '❌ No se pudo completar el video. Usa /video para reintentar.')
+                await bot.send_message(chat_id, '❌ No se pudo completar el video · Usa /video para reintentar')
             except TelegramError:
                 pass
         finally:
@@ -231,6 +231,7 @@ class RecordingCoordinator:
         try:
             message = await bot.send_message(chat_id, text, reply_markup=self.completion_markup)
             job.update(summary_status='sent', summary_message_id=message.message_id)
+            self.emit('publication_summary', job.get('batch_id'))
         except TelegramError:
             log.warning('Comprobante entregado; no se confirmó el resumen final. No se duplicará el video.')
         recorder.save_json(path, job)

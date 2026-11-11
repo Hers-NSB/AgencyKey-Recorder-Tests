@@ -1,4 +1,5 @@
 import asyncio
+from queue import Full
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.constants import ChatType
@@ -22,13 +23,26 @@ CONTINUE = "▶️ Continuar"
 
 
 class DropperBot:
-    def __init__(self, agencykey: AgencyKey, creator=None, recording=None):
+    def __init__(self, agencykey: AgencyKey, creator=None, recording=None, events=None):
         self.agencykey = agencykey
         self.creator = creator
         self.session = SessionStats()
         self.recording = recording
+        self.events = events
         if recording:
             recording.completion_markup = ReplyKeyboardMarkup([[NEW_BATCH]], resize_keyboard=True, is_persistent=True)
+
+    def show_batch(self, batch, stage=""):
+        if self.events is None:
+            return
+        try:
+            self.events.put_nowait(("publication", {
+                "id": batch.id, "status": batch.status, "stage": stage, "total": len(batch.order) or len(batch.received),
+                "completed": batch.cursor, "manual": tuple(batch.manual), "mention": batch.rejected_mention,
+                "failed": batch.failed, "uncertain": batch.uncertain,
+            }))
+        except Full:
+            log.warning("No se pudo actualizar el panel de publicación")
 
     async def authorize(self, update, context):
         if (
@@ -71,6 +85,7 @@ class DropperBot:
             await self.reply(update, context, "⚙️ Asigna una modelo desde la app de escritorio")
             return
         context.user_data["batch"] = Batch(self.creator)
+        self.show_batch(context.user_data["batch"])
         log.info("Drop abierto para %s", self.creator.name)
         await self.reply(update, context,
             f"🔄 {self.creator.name}\nReenvía tus posts y pulsa 📤 Publicar",
@@ -111,13 +126,14 @@ class DropperBot:
         if not photo_id and not text.strip():
             return
         batch.received[message.message_id] = Post(text, photo_id)
+        self.show_batch(batch)
         log.info("Drop %s | Post #%d en cola | Foto: %s.", batch.id, len(batch.received), bool(photo_id))
         context.user_data.setdefault("prepublish_ids", set()).add(message.message_id)
         self.schedule_queue_notice(context, update.effective_chat.id, batch)
 
     async def publish(self, update, context):
         if self.recording and self.recording.busy:
-            await self.reply(update, context, '🎥 Espera a que termine el comprobante actual antes de publicar el siguiente Drop.')
+            await self.reply(update, context, '🎥 Espera a que termine el comprobante actual antes de publicar el siguiente Drop')
             return
         batch = context.user_data.get("batch")
         if batch is None or batch.status != "collecting":
@@ -129,12 +145,12 @@ class DropperBot:
             return
         self.cancel_queue_notice(context)
         batch.cleanup_ids.update(context.user_data.pop("prepublish_ids", set()))
-        batch.order = sorted(batch.received)
+        batch.order = sorted(batch.received, reverse=True)
         await self.publish_batch(batch, update, context)
 
     async def resume(self, update, context):
         if self.recording and self.recording.busy:
-            await self.reply(update, context, '🎥 Espera a que termine el comprobante actual antes de continuar la publicación.')
+            await self.reply(update, context, '🎥 Espera a que termine el comprobante actual antes de continuar la publicación')
             return
         batch = context.user_data.get("batch")
         if batch is None or batch.status != "paused":
@@ -183,7 +199,9 @@ class DropperBot:
                     log.debug("No se pudo actualizar el progreso", exc_info=True)
 
         try:
-            await batch.publish(self.agencykey, download_photo, progress, session=self.session)
+            await batch.publish(self.agencykey, download_photo, progress, session=self.session,
+                                on_stage=lambda stage: self.show_batch(batch, stage))
+            self.show_batch(batch)
         finally:
             if loading:
                 try:
@@ -202,7 +220,7 @@ class DropperBot:
         if self.recording and (not batch or batch.status != 'done'):
             batch = self.recording.restore_batch(update.effective_chat.id)
         if not self.recording or not batch or batch.status != 'done':
-            await self.reply(update, context, 'Finaliza primero el Drop para generar su comprobante.')
+            await self.reply(update, context, 'Finaliza primero el Drop para generar su comprobante')
             return
         await self.recording.start(batch, context.bot, update.effective_chat.id, context.application,
                                    resend=getattr(context, 'args', []) == ['reenviar'])
@@ -219,10 +237,10 @@ class DropperBot:
             if value in batch.published_ids.values():
                 raise ValueError()
         except (ValueError, TypeError):
-            await self.reply(update, context, 'Usa /id NUMERO ID_O_ENLACE para un post confirmado manualmente del último Drop.')
+            await self.reply(update, context, 'Usa /id NUMERO ID_O_ENLACE para un post confirmado manualmente del último Drop')
             return
         batch.published_ids[number] = value
-        await self.reply(update, context, f'ID del post #{number} guardado. Usa /video cuando hayas indicado todos.')
+        await self.reply(update, context, f'ID del post #{number} guardado · Usa /video cuando hayas indicado todos')
 
     @staticmethod
     def cancel_queue_notice(context):
@@ -307,7 +325,7 @@ class DropperBot:
             await self.cleanup(context, update.effective_chat.id, batch)
             if self.recording:
                 await self.notify(context, update.effective_chat.id,
-                                  '🎥 Comprobante en proceso.' if self.recording.busy else '🎥 Usa /video para consultar el comprobante.',
+                                  '🎥 Comprobante en proceso' if self.recording.busy else '🎥 Usa /video para consultar el comprobante',
                                   reply_markup=self.keyboard(context))
                 return
             text = (f"✅ Drop finalizado · {batch.creator.name}\n"
@@ -324,6 +342,8 @@ class DropperBot:
                     f"Post #{batch.cursor + 1} de {len(batch.order)}\n")
             if batch.failed:
                 await self.send_recovery(context, update.effective_chat.id, batch)
+                if batch.rejected_mention:
+                    text += f"AgencyKey rechazó la mención {batch.rejected_mention} · HTTP 400\n"
                 if batch.uncertain:
                     text += "🔎 Revisa si aparece en el feed antes de subirlo manualmente\n"
                 text += "Sube este post manualmente y pulsa ▶️ Continuar\n"
@@ -331,7 +351,9 @@ class DropperBot:
                     text += "\n⚠️ No se pudo entregar la copia; pulsa /estado para volver a solicitarla"
             else:
                 text += "▶️ Continuar retoma desde este post pendiente"
-        await self.notify(context, update.effective_chat.id, text, reply_markup=self.keyboard(context))
+        delivered = await self.notify(context, update.effective_chat.id, text, reply_markup=self.keyboard(context))
+        if delivered and batch.status == "done":
+            self.show_batch(batch, "Confirmación enviada a Telegram")
 
     async def send_recovery(self, context, chat_id, batch):
         if batch.recovery_delivered:
@@ -376,6 +398,8 @@ class DropperBot:
         self.cancel_queue_notice(context)
         context.user_data.pop("queue_notice_id", None)
         del context.user_data["batch"]
+        batch.status = "cancelled"
+        self.show_batch(batch)
         confirmed = batch.confirmed
         log.info("Drop %s cancelado con %d publicaciones confirmadas.", batch.id, confirmed)
         text = "🗑️ Drop cancelado"
@@ -401,8 +425,8 @@ async def on_error(update, context):
             data.pop("telegram_error", None)
 
 
-def register(app, agencykey, creator, recording=None):
-    bot = DropperBot(agencykey, creator, recording)
+def register(app, agencykey, creator, recording=None, events=None):
+    bot = DropperBot(agencykey, creator, recording, events)
     app.add_handler(TypeHandler(Update, bot.authorize), group=-1)
     app.add_handler(CommandHandler("start", bot.start))
     app.add_handler(CommandHandler("publicar", bot.publish))
