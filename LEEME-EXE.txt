@@ -2,20 +2,25 @@ AGENCYKEY RECORDER TESTS - APP INDEPENDIENTE
 
 1. Configura API, contrasenas y bots propios en:
    https://agencykey-recorder-tests.datosenviados07.workers.dev/admin
-2. Abre el EXE e introduce la contrasena de las apps.
-3. Conecta AgencyKey UNA VEZ desde la web. Abre el enlace de conexion,
-   inicia sesion y deja el feed visible. La sesion se guarda automaticamente
-   y se comparte entre todas las modelos autorizadas de esa cuenta.
+2. Abre el EXE y pulsa Actualizar la primera vez. Si te pide acceso,
+   introduce la contrasena de las apps. En aperturas posteriores se usan
+   los perfiles guardados. Pulsa Actualizar si hay cambios disponibles.
+3. Deja abierta la app de Windows y pulsa Conectar AgencyKey en la web.
+   Inicia sesion en el Chrome que se abre en tu PC y deja visible el feed
+   de la modelo indicada. La sesion se guarda cifrada y se comparte entre
+   las modelos autorizadas. Pulsa Verificar feed en la fila de cada modelo
+   para comprobar su acceso con Chrome local en segundo plano.
 4. En la app selecciona un bot e inicialo. En Telegram usa /start,
-   envia posts y pulsa Publicar. No necesitas conectar cuentas en el EXE.
+   envia los posts y pulsa Publicar. Se publican del ultimo reenviado
+   al primero.
 5. La app carga los posts y sus imagenes antes de grabar en segundo plano.
    Muestra progreso y registro desplegable, sin vista previa.
 6. El resumen final llega DESPUES del video. Su tiempo incluye todo el
    proceso desde Publicar hasta que Telegram confirma la entrega del video.
 
 Cerrar la app no elimina la sesion guardada en la web. Si caduca,
-reconecta desde el panel web. La descarga de configuraciones muestra
-un panel de carga.
+abre la app y reconecta desde el panel web. Conectar, verificar y grabar
+usan Chrome de tu PC y no consumen minutos de Cloudflare Browser Run.
 
 Conserva los ajustes de publicacion de Dropper, pero usa web, base,
 acceso y bots independientes. Requiere Chrome instalado. No necesita Python.
