@@ -506,7 +506,13 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
     started = ended = 0.0
     raw = None
     error = None
+    def stage(value):
+        report['stage'] = value
+        if on_progress:
+            on_progress({'stage': value, 'completed': len(report['seen']), 'total': len(report['post_ids'])})
+
     async with async_playwright() as pw:
+        stage('iniciando Chrome')
         browser = await launch_browser(pw, headless=headless)
         options = {'viewport': {'width': 1280, 'height': 720},
                    'record_video_dir': str(output / 'raw'), 'record_video_size': {'width': 854, 'height': 480}}
@@ -515,14 +521,10 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         context = await browser.new_context(**options)
         page = await context.new_page()
         async def monitor():
-            last = None
             while not page.is_closed():
                 if stop_event and stop_event.is_set():
                     await page.close()
                     return
-                if on_progress and report.get('stage') != last:
-                    last = report.get('stage')
-                    on_progress({'stage': last or 'preparando', 'completed': len(report['seen']), 'total': len(report['post_ids'])})
                 if on_preview:
                     try:
                         on_preview(await page.screenshot(type='png', timeout=2000))
@@ -531,11 +533,29 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 await asyncio.sleep(1.5)
         monitor_task = asyncio.create_task(monitor())
         try:
-            report['stage'] = 'abrir perfil'
+            stage('abrir perfil')
             print('Etapa: abrir perfil', flush=True)
             url = fixture.resolve().as_uri() if fixture else config['profile_url']
-            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
-            report['stage'] = 'cargando feed e imágenes'
+            from playwright.async_api import Error as BrowserError
+            try:
+                response = await page.goto(url, wait_until='domcontentloaded', timeout=45000)
+            except BrowserError as error:
+                transient = ('ERR_NETWORK_CHANGED', 'ERR_INTERNET_DISCONNECTED', 'ERR_CONNECTION_RESET',
+                             'ERR_TIMED_OUT', 'ERR_CONNECTION_CLOSED')
+                if fixture or (stop_event and stop_event.is_set()) or not any(code in str(error) for code in transient):
+                    raise
+                stage('reintentando abrir el perfil por un fallo de conexión')
+                await asyncio.sleep(2)
+                response = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+
+            if not fixture and response is not None:
+                if response.status == 401:
+                    raise ValueError('AgencyKey pide iniciar sesión · Reconecta desde la web')
+                if response.status in (403, 404):
+                    raise ValueError(f'AgencyKey no permite abrir el feed de esta modelo · HTTP {response.status}')
+                if response.status >= 500:
+                    raise ValueError(f'AgencyKey no pudo cargar el perfil · HTTP {response.status}')
+            stage('cargando feed e imágenes')
             print(f'Etapa: {report["stage"]} · ID {report["first_post_id"]}', flush=True)
             preload_limit = 45 if fixture else min(180, 55 + 4 * len(report['post_ids']))
             try:
@@ -546,10 +566,10 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 raise ValueError('Se agotó la espera del feed. Usa /video para reintentar el comprobante') from exc
             report['feed_preloaded'] = True
             print(f'Inicio del comprobante: post {config["post_ids_newest_first"][0]} · segundo plano: {headless}', flush=True)
-            report['stage'] = 'marcar inicio del video'
+            stage('marcar inicio del video')
             report['start_verified'] = await confirm_start(page, first['_frame'], report['first_post_id'])
             await video_boundary(page)
-            report['stage'] = 'recorrer posts / cargar imágenes'
+            stage('recorrer posts / cargar imágenes')
             walk_limit = 30 if fixture else max(preload_limit, 30 + len(report['post_ids']) * (dwell + 4))
             try:
                 async with asyncio.timeout(walk_limit):
@@ -558,7 +578,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             except TimeoutError as exc:
                 raise ValueError('Se agotó el tiempo de grabación · Usa /video para reintentar el comprobante') from exc
             await page.wait_for_timeout(120)
-            report['stage'] = 'marcar fin del video'
+            stage('marcar fin del video')
             await video_boundary(page)
         except Exception as exc:
             error = exc
@@ -615,9 +635,9 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
     try:
         if error:
             raise ValueError(report['error']) from error
-        report['stage'] = 'verificar límites del video'
+        stage('verificar límites del video')
         started, ended = await asyncio.to_thread(video_bounds, raw)
-        report['stage'] = 'convertir video a MP4'
+        stage('convertir video a MP4')
         video = output / 'comprobante.mp4'
         await asyncio.to_thread(encode, raw, video, started, ended - started)
         report.update(status='complete', stage='completo', duration_seconds=round(ended-started, 2),

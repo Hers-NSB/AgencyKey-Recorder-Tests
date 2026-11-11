@@ -48,3 +48,20 @@ test('web login exports IndexedDB only after matching the intended model feed',a
   feedCount=1;assert.deepEqual((await driver.check('session','https://app.agencykey.com/models/52')).state,state);
   assert.deepEqual(calls,[{indexedDB:true}]);assert.equal(disconnected,4);
 });
+
+test('feed verification opens a single model in a temporary browser with the saved state',async()=>{
+  const target='https://app.agencykey.com/models/52';
+  let current=target, closed=0;
+  const frame={parentFrame:()=>null,locator:selector=>selector.startsWith('input')
+    ? {first:()=>({isVisible:async()=>false})} : {evaluateAll:async()=>true}};
+  const page={goto:async url=>{assert.equal(url,target);return {ok:()=>true,status:()=>200};},
+    url:()=>current,frames:()=>[frame],mainFrame:()=>frame};
+  const sdk={launch:async()=>({newContext:async options=>{
+    assert.deepEqual(options.storageState,state);return {newPage:async()=>page};
+  },close:async()=>{closed++;}})};
+  const driver=await browserDriver({},sdk);
+  assert.equal(await driver.verifyFeed(target,state),'ready');
+  current='https://app.agencykey.com/login';
+  assert.equal(await driver.verifyFeed(target,state),'login_required');
+  assert.equal(closed,2);
+});

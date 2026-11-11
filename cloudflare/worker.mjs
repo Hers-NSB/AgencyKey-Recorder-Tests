@@ -362,6 +362,20 @@ export async function saveSharedSession(env, state, revision) {
 
 async function recordingAdmin(request, env, path) {
   if (path==='/v1/admin/recording-session' && request.method==='GET') return json(await sharedSession(env));
+  const feed = path.match(/^\/v1\/admin\/recording-session\/feed\/([a-f0-9-]{36})$/);
+  if (feed && request.method==='POST') {
+    const profile = await env.DB.prepare('SELECT creator_id FROM profiles WHERE id = ?').bind(feed[1]).first();
+    if (!profile) throw new ApiError(404,'La configuración de la modelo ya no existe');
+    const session = await sharedSession(env,true);
+    if (!session.configured) return json({status:'no_session'});
+    if (!env.BROWSER) throw new ApiError(503,'La comprobación web de AgencyKey no está configurada');
+    const driver = await browserDriver(env.BROWSER);
+    const profileUrl = 'https://app.agencykey.com/models/'+profile.creator_id;
+    let status;
+    try {status=await driver.verifyFeed(profileUrl,session.state);}
+    catch {status='connection_error';}
+    return json({status,checked_at:new Date().toISOString()});
+  }
   const loginKey='recording_login:'+await sessionId(sessionToken(request));
   const row=await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(loginKey).first();
   const pending=row ? await decrypt(row.value,loginKey,env) : null;

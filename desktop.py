@@ -107,11 +107,11 @@ class StatusBadge(tk.Canvas):
         super().destroy()
 
 
-class LoadingRing(tk.Canvas):
+class LoadingTrack(tk.Canvas):
     def __init__(self, parent, bg=SURFACE):
-        super().__init__(parent, width=32, height=32, bg=bg, highlightthickness=0)
-        self.create_oval(5, 5, 27, 27, outline=BORDER, width=2)
-        self.arc = self.create_arc(5, 5, 27, 27, extent=95, style='arc', outline=ACCENT, width=3)
+        super().__init__(parent, height=8, bg=bg, highlightthickness=0)
+        self.track = self.create_line(0, 4, 0, 4, fill=BORDER, width=4, capstyle='round')
+        self.marker = self.create_line(0, 4, 0, 4, fill=ACCENT, width=4, capstyle='round')
         self.phase = 0
         self.timer = None
         self.bind('<Map>', self.animate)
@@ -119,9 +119,13 @@ class LoadingRing(tk.Canvas):
         self.bind('<Destroy>', self.stop_animation)
 
     def animate(self, event=None):
-        self.itemconfigure(self.arc, start=self.phase)
-        self.phase = (self.phase + 12) % 360
-        self.timer = self.after(30, self.animate)
+        width = max(8, self.winfo_width())
+        self.coords(self.track, 3, 4, width - 3, 4)
+        span = max(1, (width - 6) * .28)
+        offset = 3 + (width - 6 - span) * (1 - math.cos(self.phase)) / 2
+        self.coords(self.marker, offset, 4, offset + span, 4)
+        self.phase = (self.phase + .08) % math.tau
+        self.timer = self.after(24, self.animate)
 
     def stop_animation(self, event=None):
         if self.timer is not None:
@@ -181,19 +185,20 @@ class BotPanel:
         self.publication_detail.pack(fill='x', pady=(4, 0))
         publication.bind('<Configure>', lambda event: self.publication_detail.configure(
             wraplength=max(120, event.width - 28)))
-        self.loading_ring = LoadingRing(publication, bg=PANEL)
+        self.loading_track = LoadingTrack(publication, bg=PANEL)
         self.publication_progress = ttk.Progressbar(publication, maximum=1)
         self.publication_progress.pack(fill='x', pady=(6, 2))
         self.publication_progress.pack_forget()
         self.publication_order = label(publication, color=MUTED, bg=PANEL, justify='left', anchor='w')
         self.publication_order.pack(fill='x')
         self.publication_order.pack_forget()
-        self.proof = tk.Frame(body, bg=SURFACE)
+        self.proof = tk.Frame(body, bg=PANEL, padx=14, pady=10)
         self.proof.grid(row=4, column=0, sticky='ew', padx=28, pady=(0, 10))
         self.proof.grid_columnconfigure(0, weight=1)
         self.recording_text = tk.StringVar()
         proof = self.proof
-        self.recording_label = tk.Label(proof, textvariable=self.recording_text, bg=SURFACE, fg=ACCENT, anchor='w',
+        label(proof, 'Comprobante en video', bold=True, bg=PANEL).grid(row=0, column=0, sticky='w', pady=(0, 4))
+        self.recording_label = tk.Label(proof, textvariable=self.recording_text, bg=PANEL, fg=ACCENT, anchor='w',
                  wraplength=230, justify='left', font=('Segoe UI', 10))
         self.recording_label.grid(row=1, column=0, sticky='ew', padx=(0, 12))
         proof.bind('<Configure>', lambda event: self.recording_label.configure(wraplength=max(120, event.width-16)))
@@ -265,7 +270,7 @@ class BotPanel:
         if mode == 'starting':
             self.publication_id = None
             self.show_publication('Cargando configuración', 'Obteniendo la configuración del bot…')
-            self.loading_ring.pack(anchor='w', pady=(6, 2))
+            self.loading_track.pack(fill='x', pady=(8, 2))
             self.proof.grid_remove()
         elif mode == 'running':
             self.show_publication('Bot listo', 'Esperando mensajes reenviados en Telegram', color=GREEN)
@@ -277,7 +282,7 @@ class BotPanel:
         self.manager.refresh_sidebar()
 
     def show_publication(self, title, detail='', color=TEXT):
-        self.loading_ring.pack_forget()
+        self.loading_track.pack_forget()
         self.publication_progress.stop()
         self.publication_progress.pack_forget()
         self.publication_order.pack_forget()
@@ -379,8 +384,9 @@ class BotPanel:
             if event == 'log':
                 self.append(*value)
             elif event == 'recording':
-                self.recording_text.set(f'{value["stage"]} · {value["completed"]}/{value["total"]}'
-                                        + (f' · ID {value["post_id"]}' if value.get('post_id') else ''))
+                stage = value['stage']
+                count = f' · {value["completed"]}/{value["total"]} posts' if value['total'] and not stage.startswith('error') else ''
+                self.recording_text.set(stage[:1].upper() + stage[1:] + count)
                 self.proof.grid()
             elif event == 'setup_stage' and self.mode == 'starting':
                 self.publication_detail.configure(text=f'✓ Configuración cargada · {value}\nConectando el bot con Telegram…')
@@ -696,7 +702,7 @@ class DropperWindow:
         self.loading_panel = panel
         label(panel, 'Cargando configuración', size=17, bold=True).pack(anchor='w')
         label(panel, 'Obteniendo perfiles desde el panel web…', color=MUTED).pack(pady=(10, 16))
-        LoadingRing(panel).pack(anchor='w')
+        LoadingTrack(panel).pack(fill='x')
         panel.place(relx=.5, rely=.5, anchor='center')
         panel.lift()
 

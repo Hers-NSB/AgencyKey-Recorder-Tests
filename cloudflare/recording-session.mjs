@@ -1,6 +1,6 @@
 // Login stays in a remote browser; only the authenticated administrator receives its Live View link.
 export async function browserDriver(binding, sdk=null) {
-  const {acquire, connect} = sdk || await import('@cloudflare/playwright');
+  const {acquire, connect, launch} = sdk || await import('@cloudflare/playwright');
   return {
     async start(profileUrl) {
       const {sessionId} = await acquire(binding, {keep_alive:600000});
@@ -33,6 +33,53 @@ export async function browserDriver(binding, sdk=null) {
         }
         return null;
       } finally {await browser.close();}
+    },
+    async verifyFeed(profileUrl, state) {
+      const browser = await launch(binding);
+      try {
+        const context = await browser.newContext({storageState:state, viewport:{width:1280,height:720}});
+        const page = await context.newPage();
+        const response = await page.goto(profileUrl, {waitUntil:'domcontentloaded',timeout:20000});
+        if (response?.status() === 401) return 'login_required';
+        if ([403,404].includes(response?.status())) return 'unavailable';
+        if (!response?.ok()) return 'connection_error';
+        const expected = new URL(profileUrl);
+        const deadline = Date.now()+20000;
+        while (Date.now()<deadline) {
+          const current = new URL(page.url());
+          if (current.origin !== expected.origin || /\/(login|sign-in|auth)(\/|$)/.test(current.pathname)) {
+            return 'login_required';
+          }
+          if (current.pathname.replace(/\/$/,'') === expected.pathname) {
+            for (const frame of page.frames()) {
+              if (await frame.locator('input[type="password"]').first().isVisible().catch(()=>false)) {
+                return 'login_required';
+              }
+              let parent = frame;
+              while (parent.parentFrame()) {
+                if (!await (await parent.frameElement()).isVisible()) break;
+                parent = parent.parentFrame();
+              }
+              if (parent !== page.mainFrame()) continue;
+              const ready = await frame.locator('[id^="postId_"]:not(.m-pinned)').evaluateAll(cards =>
+                cards.some(card => {
+                  const rect = card.getBoundingClientRect();
+                  if (!card.checkVisibility() || rect.bottom <= 100 || rect.top >= innerHeight) return false;
+                  return [...card.querySelectorAll('img')].every(img => {
+                    const box = img.getBoundingClientRect();
+                    return !box.width || !box.height || box.bottom <= 100 || box.top >= innerHeight ||
+                      (img.complete && img.naturalWidth > 0);
+                  });
+                })).catch(()=>false);
+              if (ready) return 'ready';
+            }
+          }
+          await page.waitForTimeout(500);
+        }
+        return 'feed_unverified';
+      } finally {
+        await browser.close();
+      }
     },
     async close(sessionId) {
       const browser = await connect(binding, {sessionId, persistent:true});

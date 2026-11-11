@@ -144,6 +144,7 @@ class RecordingCoordinator:
         try:
             report_path = Path(job['report']) if job.get('report') else None
             if report_path is None:
+                self.progress({'stage': 'preparando comprobante', 'completed': 0, 'total': len(batch.order)})
                 job['status'] = 'recording'
                 recorder.save_json(path, job)
                 try:
@@ -155,6 +156,7 @@ class RecordingCoordinator:
                                                    'post_ids_newest_first': ids})
                 options = {}
                 if self.session_client:
+                    self.progress({'stage': 'cargando sesión de AgencyKey', 'completed': 0, 'total': len(batch.order)})
                     shared = await asyncio.to_thread(self.session_client.recording_session)
                     options['session_state'] = shared['state']
                     async def refresh(state):
