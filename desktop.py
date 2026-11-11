@@ -109,10 +109,10 @@ class StatusBadge(tk.Canvas):
 
 
 class LoadingTrack(tk.Canvas):
-    def __init__(self, parent, bg=SURFACE):
+    def __init__(self, parent, bg=SURFACE, color=ACCENT):
         super().__init__(parent, height=8, bg=bg, highlightthickness=0)
         self.track = self.create_line(0, 4, 0, 4, fill=BORDER, width=4, capstyle='round')
-        self.marker = self.create_line(0, 4, 0, 4, fill=ACCENT, width=4, capstyle='round')
+        self.marker = self.create_line(0, 4, 0, 4, fill=color, width=4, capstyle='round')
         self.phase = 0
         self.timer = None
         self.bind('<Map>', self.animate)
@@ -186,8 +186,8 @@ class BotPanel:
         self.publication_detail.pack(fill='x', pady=(4, 0))
         publication.bind('<Configure>', lambda event: self.publication_detail.configure(
             wraplength=max(120, event.width - 28)))
-        self.loading_track = LoadingTrack(publication, bg=PANEL)
-        self.publication_progress = ttk.Progressbar(publication, maximum=1)
+        self.loading_track = LoadingTrack(publication, bg=PANEL, color=GREEN)
+        self.publication_progress = ttk.Progressbar(publication, maximum=1, style='Publication.Horizontal.TProgressbar')
         self.publication_progress.pack(fill='x', pady=(6, 2))
         self.publication_progress.pack_forget()
         self.publication_order = label(publication, color=MUTED, bg=PANEL, justify='left', anchor='w')
@@ -557,6 +557,8 @@ class DropperWindow:
         self.root.option_add('*TCombobox*Listbox.selectBackground', '#394875')
         style.layout('Vertical.TScrollbar', [('Vertical.Scrollbar.trough', {'sticky': 'ns', 'children': [
             ('Vertical.Scrollbar.thumb', {'sticky': 'nswe'})]})])
+        style.configure('Publication.Horizontal.TProgressbar', background=GREEN, troughcolor=BORDER,
+                        bordercolor=PANEL, lightcolor=GREEN, darkcolor=GREEN)
         style.configure('Vertical.TScrollbar', background=BORDER, troughcolor=BG, darkcolor=BORDER,
                         lightcolor=BORDER, bordercolor=BG, borderwidth=0, width=7, gripcount=0)
         style.map('Vertical.TScrollbar', background=[('active', '#46546b')])

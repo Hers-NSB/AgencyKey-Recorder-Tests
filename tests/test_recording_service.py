@@ -10,28 +10,80 @@ from unittest.mock import AsyncMock, Mock, patch
 from agencykey import Creator
 from bot import DropperBot
 from core import Batch, Post
-from recording_service import RecordingCoordinator, run_desktop_recording_job, session_path
+from recording_service import (
+    AGENCYKEY_SIGN_IN, RecordingCoordinator, agencykey_login_complete,
+    run_desktop_recording_job, session_path, verify_feed_route,
+)
 import recorder
 
 
 class DesktopRecordingJobTests(unittest.IsolatedAsyncioTestCase):
     async def test_connection_uses_visible_chrome_and_returns_shared_state(self):
         state = {'cookies': [], 'origins': []}
-        page = SimpleNamespace(goto=AsyncMock(), is_closed=lambda: False)
+        page = SimpleNamespace(url='https://app.agencykey.com/dashboard',
+                               goto=AsyncMock(return_value=SimpleNamespace(status=200)),
+                               is_closed=lambda: False, locator=Mock())
+        page.locator.side_effect = lambda selector: (
+            SimpleNamespace(is_visible=AsyncMock(return_value=True)) if selector == 'body'
+            else SimpleNamespace(first=SimpleNamespace(is_visible=AsyncMock(return_value=False)))
+        )
         context = SimpleNamespace(new_page=AsyncMock(return_value=page),
                                   storage_state=AsyncMock(return_value=state))
         browser = SimpleNamespace(new_context=AsyncMock(return_value=context), close=AsyncMock())
         client = SimpleNamespace(update_recording_job=Mock(return_value={'active': False}))
-        job = {'kind': 'connect', 'creator_id': 52}
-        with patch.object(recorder, 'launch_browser', new=AsyncMock(return_value=browser)) as launch, \
-             patch('recording_service.session_ready', new=AsyncMock(return_value=True)):
+        job = {'kind': 'connect'}
+        with patch.object(recorder, 'launch_browser', new=AsyncMock(return_value=browser)) as launch:
             await run_desktop_recording_job(client, job, threading.Event())
         self.assertFalse(launch.call_args.kwargs['headless'])
-        page.goto.assert_awaited_once_with('https://app.agencykey.com/models/52',
+        page.goto.assert_awaited_once_with(AGENCYKEY_SIGN_IN,
                                            wait_until='domcontentloaded', timeout=30000)
         context.storage_state.assert_awaited_once_with(indexed_db=True)
         browser.close.assert_awaited_once()
         client.update_recording_job.assert_called_once_with(job, status='ready', state=state)
+
+    async def test_login_waits_during_sign_in_two_factor_and_external_redirects(self):
+        for url in (AGENCYKEY_SIGN_IN, 'https://app.agencykey.com/auth/verify',
+                    'https://app.agencykey.com/2fa', 'https://example.com/dashboard'):
+            with self.subTest(url=url):
+                page = SimpleNamespace(url=url, locator=Mock())
+                self.assertFalse(await agencykey_login_complete(page))
+                page.locator.assert_not_called()
+
+    async def test_feed_check_uses_only_the_selected_model_route_and_saved_session(self):
+        state = {'cookies': [], 'origins': []}
+        url = 'https://app.agencykey.com/models/98'
+        password = SimpleNamespace(is_visible=AsyncMock(return_value=False))
+        page = SimpleNamespace(url=url, goto=AsyncMock(return_value=SimpleNamespace(status=200, ok=True)),
+                               locator=Mock(return_value=SimpleNamespace(first=password)))
+        context = SimpleNamespace(new_page=AsyncMock(return_value=page))
+        browser = SimpleNamespace(new_context=AsyncMock(return_value=context), close=AsyncMock())
+        client = SimpleNamespace(recording_session=Mock(return_value={'state': state}),
+                                 update_recording_job=Mock(return_value={'active': False}))
+        job = {'kind': 'feed', 'creator_id': 98}
+        with patch.object(recorder, 'launch_browser', new=AsyncMock(return_value=browser)) as launch:
+            await run_desktop_recording_job(client, job, threading.Event())
+        self.assertTrue(launch.call_args.kwargs['headless'])
+        self.assertIs(browser.new_context.call_args.kwargs['storage_state'], state)
+        page.goto.assert_awaited_once_with(url, wait_until='domcontentloaded', timeout=30000)
+        client.update_recording_job.assert_called_once_with(job, status='ready')
+
+    async def test_feed_check_rejects_login_access_errors_and_other_models(self):
+        origin = 'https://app.agencykey.com'
+        for path, status, password_visible, result in [
+            ('/login', 200, False, 'login_required'),
+            ('/models/98', 200, True, 'login_required'),
+            ('/models/98', 401, False, 'login_required'),
+            ('/models/98', 403, False, 'unavailable'),
+            ('/models/98', 404, False, 'unavailable'),
+            ('/models/98', 500, False, 'connection_error'),
+            ('/models/52', 200, False, 'feed_unverified'),
+        ]:
+            with self.subTest(path=path, status=status, password_visible=password_visible):
+                password = SimpleNamespace(is_visible=AsyncMock(return_value=password_visible))
+                response = SimpleNamespace(status=status, ok=status == 200)
+                page = SimpleNamespace(url=origin + path, goto=AsyncMock(return_value=response),
+                                       locator=Mock(return_value=SimpleNamespace(first=password)))
+                self.assertEqual(await verify_feed_route(page, origin + '/models/98'), result)
 
 
 class ProofTests(unittest.IsolatedAsyncioTestCase):
