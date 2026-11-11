@@ -175,3 +175,12 @@ test('desktop update checks return only authenticated profile revision metadata'
  const {profiles}=await (await desktop(env,'GET',path)).json();
  assert.deepEqual(profiles,[{id:firstId,revision:saved.revision,updated_at:saved.updated_at}]);
 });
+
+test('feed check is private and requires the requested model and a saved session',async()=>{
+ const path='/v1/admin/recording-session/feed/'+firstId;
+ assert.equal((await desktop(env,'POST',path,{})).status,401);
+ assert.equal((await admin(env,'POST',path,{})).status,404);
+ assert.equal((await admin(env,'PUT',route,input)).status,200);
+ const response=await admin(env,'POST',path,{});
+ assert.deepEqual(await response.json(),{status:'no_session'});
+});
