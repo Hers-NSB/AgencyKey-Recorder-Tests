@@ -75,7 +75,7 @@ class SessionButtonTests(unittest.TestCase):
         from desktop import BotPanel
         panel=BotPanel.__new__(BotPanel)
         panel.controller=SimpleNamespace(running=False,start=Mock())
-        panel.manager=SimpleNamespace(closing=False,panels={})
+        panel.manager=SimpleNamespace(closing=False,panels={},client=Mock(),auth_required=False)
         panel.set_mode=Mock()
         panel.start()
         panel.controller.start.assert_called_once()

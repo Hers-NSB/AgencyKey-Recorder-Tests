@@ -228,8 +228,15 @@ async def frame_geometry(page, frame):
     return box['x'] + box['width'] / 2, max(110, box['y'] + visible_height / 2), visible_height
 
 
-async def images_ready(page, timeout: int = 120000, *, frame=None) -> None:
-    await (frame or page.main_frame).wait_for_function(IMAGES_READY, timeout=timeout)
+IMAGE_TIMEOUT_MESSAGE = 'Las imágenes visibles del feed tardaron demasiado en cargar'
+
+
+async def images_ready(page, timeout: int = 20000, *, frame=None) -> None:
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+    try:
+        await (frame or page.main_frame).wait_for_function(IMAGES_READY, timeout=timeout)
+    except PlaywrightTimeoutError as error:
+        raise PlaywrightTimeoutError(IMAGE_TIMEOUT_MESSAGE) from error
 
 
 async def confirm_start(page, frame, newest: str) -> dict:
@@ -313,8 +320,9 @@ async def prepare_feed(page, ids, *, timeout=600, on_progress=None):
     Virtual feeds remove off-screen cards, so waiting for all nodes at once never completes.
     """
     deadline = monotonic() + timeout
+    feed_deadline = min(deadline, monotonic() + 35)
     frame = None
-    while monotonic() < deadline:
+    while monotonic() < feed_deadline:
         current = urlparse(page.url)
         if current.netloc == 'app.agencykey.com' and re.search(r'/(login|sign-in|auth)(/|$)', current.path):
             raise ValueError('La sesión de AgencyKey caducó. Reconéctala desde la web.')
@@ -324,7 +332,7 @@ async def prepare_feed(page, ids, *, timeout=600, on_progress=None):
         await page.wait_for_timeout(500)
     if not frame:
         raise ValueError('El feed no terminó de cargar. Revisa el acceso de esta modelo o reconecta AgencyKey desde la web.')
-    first = await seek_start(page, ids[0], timeout=max(.1, deadline-monotonic()))
+    first = await seek_start(page, ids[0], timeout=max(.1, min(30, deadline-monotonic())))
     def progress(value):
         if on_progress:
             on_progress(dict(value, stage='cargando feed e imágenes'))
@@ -336,7 +344,7 @@ async def prepare_feed(page, ids, *, timeout=600, on_progress=None):
         window.scrollTo({top:0,behavior:'instant'});
     }''')
     await page.wait_for_timeout(500)
-    return await seek_start(page, ids[0], timeout=max(.1, deadline-monotonic()))
+    return await seek_start(page, ids[0], timeout=max(.1, min(30, deadline-monotonic())))
 
 
 async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 600, *, frame=None, seen=None, on_progress=None) -> list[str]:
@@ -529,16 +537,26 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             await page.goto(url, wait_until='domcontentloaded', timeout=60000)
             report['stage'] = 'cargando feed e imágenes'
             print(f'Etapa: {report["stage"]} · ID {report["first_post_id"]}', flush=True)
-            first = await prepare_feed(page, config['post_ids_newest_first'], timeout=45 if fixture else 600,
-                                       on_progress=on_progress)
+            preload_limit = 45 if fixture else min(180, 55 + 4 * len(report['post_ids']))
+            try:
+                async with asyncio.timeout(preload_limit):
+                    first = await prepare_feed(page, config['post_ids_newest_first'], timeout=preload_limit,
+                                               on_progress=on_progress)
+            except TimeoutError as exc:
+                raise ValueError('Se agotó la espera del feed. Usa /video para reintentar el comprobante') from exc
             report['feed_preloaded'] = True
             print(f'Inicio del comprobante: post {config["post_ids_newest_first"][0]} · segundo plano: {headless}', flush=True)
             report['stage'] = 'marcar inicio del video'
             report['start_verified'] = await confirm_start(page, first['_frame'], report['first_post_id'])
             await video_boundary(page)
             report['stage'] = 'recorrer posts / cargar imágenes'
-            await capture_walk(page, config['post_ids_newest_first'], dwell=dwell,
-                               timeout=30 if fixture else 600, frame=first['_frame'], seen=report['seen'], on_progress=on_progress)
+            walk_limit = 30 if fixture else max(preload_limit, 30 + len(report['post_ids']) * (dwell + 4))
+            try:
+                async with asyncio.timeout(walk_limit):
+                    await capture_walk(page, config['post_ids_newest_first'], dwell=dwell, timeout=walk_limit,
+                                       frame=first['_frame'], seen=report['seen'], on_progress=on_progress)
+            except TimeoutError as exc:
+                raise ValueError('Se agotó el tiempo de grabación · Usa /video para reintentar el comprobante') from exc
             await page.wait_for_timeout(120)
             report['stage'] = 'marcar fin del video'
             await video_boundary(page)
@@ -546,12 +564,22 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             error = exc
             from playwright.async_api import TimeoutError as PlaywrightTimeoutError
             report['error_type'] = type(exc).__name__
-            reason = str(exc) if isinstance(exc, ValueError) else (
+            if stop_event and stop_event.is_set():
+                exc = ValueError('Grabación detenida · Usa /video para reintentar el comprobante')
+                error = exc
+                report['error_type'] = 'RecordingStopped'
+            reason = str(exc) if isinstance(exc, ValueError) or (
+                isinstance(exc, PlaywrightTimeoutError) and str(exc) == IMAGE_TIMEOUT_MESSAGE
+            ) else (
                 'Se agotó el tiempo de espera del navegador.' if isinstance(exc, PlaywrightTimeoutError)
                 else f'Error del navegador ({type(exc).__name__}).')
             report['error'] = f'Etapa: {report["stage"]}. {reason}'
             report['next_post_id'] = next((pid for pid in report['post_ids'] if pid not in report['seen']), None)
-            report['diagnostics'] = await failure_diagnostics(page)
+            try:
+                async with asyncio.timeout(5):
+                    report['diagnostics'] = await failure_diagnostics(page)
+            except TimeoutError:
+                report['diagnostics'] = []
             save_json(report_path, report)
             print(f'{report["error"]}\nPosts comprobados: {len(report["seen"])}/{len(report["post_ids"])}'
                   f' · siguiente ID: {report["next_post_id"]}\nInforme: {report_path}', flush=True)

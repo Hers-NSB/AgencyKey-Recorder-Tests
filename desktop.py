@@ -1,4 +1,7 @@
 import argparse
+import json
+import os
+import tempfile
 import logging
 import math
 import queue
@@ -104,6 +107,36 @@ class StatusBadge(tk.Canvas):
         super().destroy()
 
 
+class LoadingRing(tk.Canvas):
+    def __init__(self, parent, bg=SURFACE):
+        super().__init__(parent, width=32, height=32, bg=bg, highlightthickness=0)
+        self.create_oval(5, 5, 27, 27, outline=BORDER, width=2)
+        self.arc = self.create_arc(5, 5, 27, 27, extent=95, style='arc', outline=ACCENT, width=3)
+        self.phase = 0
+        self.timer = None
+        self.bind('<Map>', self.animate)
+        self.bind('<Unmap>', self.stop_animation)
+        self.bind('<Destroy>', self.stop_animation)
+
+    def animate(self, event=None):
+        self.itemconfigure(self.arc, start=self.phase)
+        self.phase = (self.phase + 12) % 360
+        self.timer = self.after(30, self.animate)
+
+    def stop_animation(self, event=None):
+        if self.timer is not None:
+            self.after_cancel(self.timer)
+            self.timer = None
+
+
+def cached_profile(profile):
+    return {
+        'id': profile['id'], 'name': profile['name'], 'bot_id': profile['bot_id'],
+        'revision': profile['revision'], 'updated_at': profile.get('updated_at'),
+        'creator': {key: profile['creator'].get(key) for key in ('external_id', 'name', 'username')},
+    }
+
+
 class BotPanel:
     def __init__(self, manager, profile, runner=None):
         self.manager = manager
@@ -115,24 +148,32 @@ class BotPanel:
         self.publication_id = None
         self.removed = False
         self.frame = tk.Frame(manager.content, bg=SURFACE)
-        self.frame.grid_columnconfigure(0, weight=1)
-        self.frame.grid_rowconfigure(6, weight=1)
-        header = tk.Frame(self.frame, bg=SURFACE)
+        self.canvas = tk.Canvas(self.frame, bg=SURFACE, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.frame, orient='vertical', command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right', fill='y')
+        self.canvas.pack(side='left', fill='both', expand=True)
+        body = tk.Frame(self.canvas, bg=SURFACE)
+        body.grid_columnconfigure(0, weight=1)
+        body_window = self.canvas.create_window((0, 0), window=body, anchor='nw')
+        self.canvas.bind('<Configure>', lambda event: self.canvas.itemconfigure(body_window, width=event.width))
+        body.bind('<Configure>', lambda event: self.canvas.configure(scrollregion=self.canvas.bbox(body_window)))
+        header = tk.Frame(body, bg=SURFACE)
         header.grid(row=0, column=0, sticky='ew', padx=28, pady=(24, 4))
         self.title = label(header, profile['name'], size=23, bold=True)
         self.title.pack(side='left')
         header.bind('<Configure>', lambda event: self.title.configure(wraplength=max(160, event.width - 170), justify='left'))
         self.badge = StatusBadge(header)
         self.badge.pack(side='right')
-        self.subtitle = label(self.frame, color=MUTED)
+        self.subtitle = label(body, color=MUTED)
         self.subtitle.grid(row=1, column=0, sticky='w', padx=28, pady=(0, 22))
-        actions = tk.Frame(self.frame, bg=SURFACE)
+        actions = tk.Frame(body, bg=SURFACE)
         actions.grid(row=2, column=0, sticky='ew', padx=28, pady=(0, 14))
         self.start_button = ttk.Button(actions, text='Iniciar bot', style='Accent.TButton', command=self.start)
         self.start_button.pack(side='left')
         self.stop_button = ttk.Button(actions, text='Detener', command=self.stop, state='disabled')
         self.stop_button.pack(side='left', padx=8)
-        publication = tk.Frame(self.frame, bg=PANEL, padx=14, pady=10)
+        publication = tk.Frame(body, bg=PANEL, padx=14, pady=10)
         publication.grid(row=3, column=0, sticky='ew', padx=28, pady=(0, 12))
         self.publication_title = label(publication, 'Bot detenido', bold=True, bg=PANEL)
         self.publication_title.pack(anchor='w')
@@ -140,31 +181,30 @@ class BotPanel:
         self.publication_detail.pack(fill='x', pady=(4, 0))
         publication.bind('<Configure>', lambda event: self.publication_detail.configure(
             wraplength=max(120, event.width - 28)))
+        self.loading_ring = LoadingRing(publication, bg=PANEL)
         self.publication_progress = ttk.Progressbar(publication, maximum=1)
         self.publication_progress.pack(fill='x', pady=(6, 2))
         self.publication_progress.pack_forget()
         self.publication_order = label(publication, color=MUTED, bg=PANEL, justify='left', anchor='w')
         self.publication_order.pack(fill='x')
         self.publication_order.pack_forget()
-        proof = tk.Frame(self.frame, bg=SURFACE)
-        proof.grid(row=4, column=0, sticky='ew', padx=28)
-        proof.grid_columnconfigure(0, weight=1)
-        self.recording_text = tk.StringVar(value='Comprobante automático · sesión compartida desde la web')
-        self.session_label = label(proof, color=MUTED)
-        self.session_label.grid(row=0, column=0, sticky='w', pady=(0, 12))
+        self.proof = tk.Frame(body, bg=SURFACE)
+        self.proof.grid(row=4, column=0, sticky='ew', padx=28, pady=(0, 10))
+        self.proof.grid_columnconfigure(0, weight=1)
+        self.recording_text = tk.StringVar()
+        proof = self.proof
         self.recording_label = tk.Label(proof, textvariable=self.recording_text, bg=SURFACE, fg=ACCENT, anchor='w',
                  wraplength=230, justify='left', font=('Segoe UI', 10))
         self.recording_label.grid(row=1, column=0, sticky='ew', padx=(0, 12))
         proof.bind('<Configure>', lambda event: self.recording_label.configure(wraplength=max(120, event.width-16)))
-        self.recording_progress = ttk.Progressbar(proof, maximum=1)
-        self.recording_progress.grid(row=2, column=0, sticky='ew', padx=(0, 12), pady=8)
-        log_title = tk.Frame(self.frame, bg=SURFACE)
+        self.proof.grid_remove()
+        log_title = tk.Frame(body, bg=SURFACE)
         log_title.grid(row=5, column=0, sticky='ew', padx=28, pady=(0, 8))
         label(log_title, 'ACTIVIDAD DEL BOT', color=MUTED, size=9, bold=True).pack(side='left')
         self.log_toggle = ttk.Button(log_title, text='Ver registro', style='Small.TButton', command=self.toggle_log)
         self.log_toggle.pack(side='right')
         self.save_log_button = ttk.Button(log_title, text='Guardar registro', style='Small.TButton', command=self.save_log)
-        self.activity = scrolledtext.ScrolledText(self.frame, wrap='word', state='disabled', font=('Consolas', 9),
+        self.activity = scrolledtext.ScrolledText(body, wrap='word', state='disabled', font=('Consolas', 9),
             bg='#121721', fg='#c2ccdc', insertbackground=TEXT, relief='flat', padx=16, pady=14,
             selectbackground='#394875', borderwidth=0, height=7)
         self.activity.vbar.pack_forget()
@@ -181,6 +221,16 @@ class BotPanel:
         self.refresh_profile(profile)
         self.append('INFO', 'Listo para iniciar')
 
+    def scroll_panel(self, event):
+        if self.manager.panels.get(self.manager.selected) is not self:
+            return
+        widget = event.widget
+        while widget is not self.canvas and widget is not self.activity and widget is not None:
+            widget = getattr(widget, 'master', None)
+        if widget is self.canvas:
+            steps = abs(event.delta) // 120 or 1
+            self.canvas.yview_scroll(-steps if event.delta > 0 else steps, 'units')
+
     def load_credentials(self):
         self.controller.session_client = self.manager.client
         try:
@@ -188,6 +238,9 @@ class BotPanel:
         except CloudError as error:
             self.manager.events.put((self.manager.cloud_failed, error))
             raise
+        if self.manager.revisions([data]) != self.manager.revisions([self.profile]):
+            self.manager.events.put((self.manager.flag_updates, None))
+            raise CloudError('El perfil cambió en la web · Pulsa Actualizar antes de iniciar el bot')
         self.manager.events.put((self.manager.mark_online, None))
         metadata = {key: value for key, value in data.items() if key not in {'telegram_token', 'api_key'}}
         self.manager.events.put((self.apply_loaded_profile, metadata))
@@ -203,11 +256,6 @@ class BotPanel:
         self.title.configure(text=profile['name'])
         username = profile['creator'].get('username')
         self.subtitle.configure(text=f'@{username}' if username else '')
-        configured = getattr(self.manager.client, 'recording_configured', None)
-        self.session_label.configure(text='Sesión compartida guardada en la web' if configured else
-                                     'Conecta AgencyKey desde la web para grabar' if configured is False else
-                                     'Sesión compartida · gestión desde la web')
-
     def set_mode(self, mode):
         self.mode = mode
         self.badge.set(mode)
@@ -217,9 +265,8 @@ class BotPanel:
         if mode == 'starting':
             self.publication_id = None
             self.show_publication('Cargando configuración', 'Obteniendo la configuración del bot…')
-            self.publication_progress.configure(mode='indeterminate')
-            self.publication_progress.pack(fill='x', pady=(6, 2))
-            self.publication_progress.start(14)
+            self.loading_ring.pack(anchor='w', pady=(6, 2))
+            self.proof.grid_remove()
         elif mode == 'running':
             self.show_publication('Bot listo', 'Esperando mensajes reenviados en Telegram', color=GREEN)
         elif mode == 'error':
@@ -230,6 +277,7 @@ class BotPanel:
         self.manager.refresh_sidebar()
 
     def show_publication(self, title, detail='', color=TEXT):
+        self.loading_ring.pack_forget()
         self.publication_progress.stop()
         self.publication_progress.pack_forget()
         self.publication_order.pack_forget()
@@ -285,6 +333,9 @@ class BotPanel:
     def start(self):
         if self.controller.running or self.manager.closing:
             return
+        if self.manager.client is None or self.manager.auth_required:
+            self.manager.refresh()
+            return
         for panel in self.manager.panels.values():
             if panel is not self and panel.controller.running and panel.profile['bot_id'] == self.profile['bot_id']:
                 messagebox.showerror('Bot activo', 'Este bot ya está funcionando', parent=self.manager.root)
@@ -330,7 +381,7 @@ class BotPanel:
             elif event == 'recording':
                 self.recording_text.set(f'{value["stage"]} · {value["completed"]}/{value["total"]}'
                                         + (f' · ID {value["post_id"]}' if value.get('post_id') else ''))
-                self.recording_progress.configure(maximum=max(1, value['total']), value=value['completed'])
+                self.proof.grid()
             elif event == 'setup_stage' and self.mode == 'starting':
                 self.publication_detail.configure(text=f'✓ Configuración cargada · {value}\nConectando el bot con Telegram…')
             elif event == 'publication' and self.mode in {'running', 'stopping'}:
@@ -369,12 +420,17 @@ class DropperWindow:
         self.closing = False
         self.refreshing = False
         self.cloud_online = False
-        self.next_sync = monotonic() + 30
+        self.next_sync = monotonic()
         self.access_dialog = None
         self.loading_panel = None
         self.auth_required = False
         self.connecting = False
         self.vault = CredentialStore()
+        local = Path(os.environ.get('LOCALAPPDATA') or Path.home() / '.local' / 'share')
+        self.profile_cache = local / 'AgencyKeyRecorderTests' / 'profiles.json' if client is None else None
+        self.profile_snapshot = {}
+        self.checking_updates = False
+        self.update_hint = tk.StringVar()
         root.title('AgencyKey Recorder Tests · Centro de bots')
         root.configure(bg=BG)
         width, height, x, y = initial_geometry(root.winfo_screenwidth(), root.winfo_screenheight(), work_area())
@@ -386,8 +442,10 @@ class DropperWindow:
         top = tk.Frame(root, bg=BG, padx=26, pady=22)
         top.pack(fill='x')
         label(top, 'AgencyKey Recorder Tests', size=18, bold=True, bg=BG).pack(side='left')
-        self.sync_button = ttk.Button(top, text='Actualizar configuraciones', command=self.refresh)
+        self.sync_button = ttk.Button(top, text='Actualizar', command=self.refresh)
         self.sync_button.pack(side='right')
+        tk.Label(top, textvariable=self.update_hint, bg=BG, fg=ACCENT).pack(side='right', padx=12)
+        root.bind('<MouseWheel>', self.scroll_selected)
         shell = tk.Frame(root, bg=BG)
         shell.pack(fill='both', expand=True, padx=22)
         sidebar = tk.Frame(shell, bg=BG, width=242)
@@ -415,7 +473,7 @@ class DropperWindow:
         empty_inner = tk.Frame(self.empty, bg=SURFACE)
         empty_inner.place(relx=.5, rely=.45, anchor='center')
         label(empty_inner, 'Acceso a los bots', size=21, bold=True).pack()
-        label(empty_inner, 'Introduce la contraseña para descargar las configuraciones', color=MUTED).pack(pady=12)
+        label(empty_inner, 'Pulsa Actualizar para cargar las configuraciones', color=MUTED).pack(pady=12)
         self.empty_note = label(empty_inner, '', color=ACCENT)
         self.empty_note.pack(pady=8)
         footer = tk.Frame(root, bg=BG, padx=26, pady=14)
@@ -424,11 +482,50 @@ class DropperWindow:
         tk.Label(footer, textvariable=self.status, bg=BG, fg=MUTED, font=('Segoe UI', 9)).pack(side='left')
         logging.getLogger().setLevel(logging.INFO)
         root.after(100, self.poll)
-        if client:
-            self.connected()
-            self.refresh()
-        else:
-            root.after(200, self.auto_connect)
+        self.restore_profiles()
+        if client is None:
+            self.auto_connect()
+
+    def scroll_selected(self, event):
+        panel = self.panels.get(self.selected)
+        if panel:
+            panel.scroll_panel(event)
+
+    @staticmethod
+    def revisions(profiles):
+        return {p['id']: (p['revision'], p.get('updated_at')) for p in profiles}
+
+    def restore_profiles(self):
+        if self.profile_cache is None:
+            return
+        try:
+            profiles = [cached_profile(p) for p in json.loads(self.profile_cache.read_text(encoding='utf-8'))]
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return
+        self.profile_snapshot = self.revisions(profiles)
+        self.apply_profiles(profiles)
+        self.status.set('Configuración guardada en este equipo')
+
+    def save_profiles(self, profiles):
+        self.apply_profiles(profiles)
+        self.profile_snapshot = self.revisions(profiles)
+        self.update_hint.set('')
+        if self.profile_cache is None:
+            return
+        try:
+            self.profile_cache.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False,
+                                             dir=self.profile_cache.parent) as stream:
+                temporary = Path(stream.name)
+                try:
+                    json.dump([cached_profile(p) for p in profiles], stream, ensure_ascii=False)
+                    stream.close()
+                    temporary.replace(self.profile_cache)
+                finally:
+                    stream.close()
+                    temporary.unlink(missing_ok=True)
+        except OSError:
+            self.status.set('Configuración actualizada · No se pudo guardar la copia local')
 
     def styles(self):
         style = ttk.Style(self.root)
@@ -473,9 +570,7 @@ class DropperWindow:
         except OSError:
             token = None
         if token:
-            self.try_connect(token)
-        else:
-            self.connect_dialog()
+            self.client = CloudClient(token)
 
     def connected(self):
         self.next_sync = monotonic() + 30
@@ -510,7 +605,7 @@ class DropperWindow:
                 except OSError:
                     pass
             self.connected()
-            self.apply_profiles(profiles)
+            self.save_profiles(profiles)
             self.close_access_dialog(dialog)
         def failed(error):
             self.connecting = False
@@ -563,6 +658,14 @@ class DropperWindow:
                 self.vault.delete()
             except OSError:
                 pass
+            if self.profile_cache is not None:
+                try:
+                    self.profile_cache.unlink(missing_ok=True)
+                except OSError as error:
+                    self.show_error(error)
+                    return
+            self.profile_snapshot = {}
+            self.update_hint.set('')
             self.client = None
             self.cloud_online = False
             for panel in self.panels.values():
@@ -593,9 +696,7 @@ class DropperWindow:
         self.loading_panel = panel
         label(panel, 'Cargando configuración', size=17, bold=True).pack(anchor='w')
         label(panel, 'Obteniendo perfiles desde el panel web…', color=MUTED).pack(pady=(10, 16))
-        progress = ttk.Progressbar(panel, mode='indeterminate', length=330)
-        progress.pack(fill='x')
-        progress.start(12)
+        LoadingRing(panel).pack(anchor='w')
         panel.place(relx=.5, rely=.5, anchor='center')
         panel.lift()
 
@@ -604,15 +705,14 @@ class DropperWindow:
             self.loading_panel.destroy()
             self.loading_panel = None
 
-    def refresh(self, show_panel=True):
+    def refresh(self):
         if self.refreshing or self.connecting or self.closing:
             return
         if not self.client or self.auth_required:
             self.connect_dialog()
             return
         self.refreshing = True
-        if show_panel:
-            self.show_loading()
+        self.show_loading()
         self.next_sync = monotonic()+30
         self.sync_button.configure(state='disabled')
         def complete(profiles):
@@ -620,13 +720,43 @@ class DropperWindow:
             self.hide_loading()
             self.sync_button.configure(state='normal')
             self.cloud_online = True
-            self.apply_profiles(profiles)
+            self.save_profiles(profiles)
         def failed(error):
             self.refreshing = False
             self.hide_loading()
             self.sync_button.configure(state='normal')
             self.cloud_failed(error)
         self.background(self.client.list_profiles, complete, failed)
+
+    def flag_updates(self, _):
+        self.update_hint.set('Hay cambios disponibles')
+
+    def check_updates(self):
+        if self.checking_updates or self.refreshing or self.connecting:
+            return
+        self.checking_updates = True
+        self.next_sync = monotonic() + 30
+        client = self.client
+        snapshot = self.profile_snapshot
+
+        def complete(profiles):
+            self.checking_updates = False
+            if self.client is client and self.profile_snapshot is snapshot and not self.refreshing and not self.auth_required:
+                changed = self.revisions(profiles) != self.profile_snapshot
+                self.update_hint.set('Hay cambios disponibles' if changed else '')
+                self.cloud_online = True
+
+        def failed(error):
+            self.checking_updates = False
+            if self.client is client and self.profile_snapshot is snapshot and not self.refreshing:
+                self.cloud_online = False
+                if isinstance(error, AccessDenied):
+                    self.auth_required = True
+                    self.update_hint.set('Actualiza para volver a conectar')
+                else:
+                    self.status.set(str(error))
+
+        self.background(client.profile_revisions, complete, failed)
 
     def apply_profiles(self, profiles):
         remote = {profile['id']: profile for profile in profiles}
@@ -750,12 +880,12 @@ class DropperWindow:
                     self.refresh_sidebar()
         active = sum(panel.controller.running for panel in self.panels.values())
         if self.client and self.cloud_online and not self.refreshing:
-            self.status.set(f'Configuraciones actualizadas · {active} bots activos')
+            self.status.set(f'{active} bots activos')
         if self.closing and not active:
             self.destroy()
             return
         if self.client and not self.auth_required and monotonic() >= self.next_sync and not self.closing:
-            self.refresh(show_panel=False)
+            self.check_updates()
         self.root.after(100, self.poll)
 
     def close(self):
@@ -783,6 +913,9 @@ def smoke_test(screenshot=None):
             self.records = {str(i): dict(id=str(i), name=model, bot_id=str(i), revision=1,
                 creator=dict(external_id=i, name=model, username=model.lower()))
                 for i, model in [(1, 'Lilith'), (2, 'Lola')]}
+        def profile_revisions(self):
+            return list(self.records.values())
+
         def list_profiles(self):
             from copy import deepcopy
             return deepcopy(list(self.records.values()))
@@ -902,6 +1035,7 @@ def smoke_test(screenshot=None):
         wait_for(lambda: len(window.panels) == 1 and window.panels['1'].profile['name'] == 'Lilith actualizada',
                  finish, 'La app no sincronizó los cambios del panel privado')
 
+    window.refresh()
     wait_for(lambda: len(window.panels) == 2, start, 'No se cargaron las configuraciones')
     root.mainloop()
     for panel in window.panels.values():

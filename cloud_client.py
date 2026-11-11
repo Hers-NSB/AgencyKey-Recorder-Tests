@@ -65,6 +65,12 @@ class CloudClient:
         self.recording_configured = data.get('recording_session', {}).get('configured')
         return result
 
+    def profile_revisions(self):
+        profiles = self.request('GET', '/v1/profile-revisions').get('profiles')
+        if not isinstance(profiles, list):
+            raise CloudError('No se pudo verificar si hay cambios')
+        return profiles
+
     def credentials(self, profile_id):
         result = self.request('POST', f'/v1/profiles/{profile_id}/credentials')
         register_secrets(result.get('telegram_token'), result.get('api_key'))

@@ -517,6 +517,10 @@ async function handle(request, env) {
     throw new ApiError(405,'Método no permitido');
   }
   if (path === '/v1/profiles' && request.method === 'GET') return listProfiles(env);
+  if (path === '/v1/profile-revisions' && request.method === 'GET') {
+    const {results} = await env.DB.prepare('SELECT id, revision, updated_at FROM profiles').all();
+    return json({profiles:results});
+  }
   const match = path.match(/^\/v1\/profiles\/([a-f0-9-]{36})\/credentials$/);
   if (match && request.method === 'POST') {
     const row = await env.DB.prepare('SELECT * FROM profiles WHERE id = ?').bind(match[1]).first();

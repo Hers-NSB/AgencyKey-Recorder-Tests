@@ -166,3 +166,12 @@ test('accepts UTF-8 app passwords encoded by the Windows client without breaking
  assert.equal((await request(env,'GET','/v1/profiles',undefined,{Authorization:'Dropper invalid%%'})).status,401);
 });
 
+
+test('desktop update checks return only authenticated profile revision metadata',async()=>{
+ const path='/v1/profile-revisions';
+ assert.equal((await request(env,'GET',path)).status,401);
+ assert.deepEqual(await (await desktop(env,'GET',path)).json(),{profiles:[]});
+ const saved=await (await admin(env,'PUT',route,input)).json();
+ const {profiles}=await (await desktop(env,'GET',path)).json();
+ assert.deepEqual(profiles,[{id:firstId,revision:saved.revision,updated_at:saved.updated_at}]);
+});
