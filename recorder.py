@@ -228,12 +228,15 @@ async def frame_geometry(page, frame):
     return box['x'] + box['width'] / 2, max(110, box['y'] + visible_height / 2), visible_height
 
 
+IMAGE_TIMEOUT_MESSAGE = 'Las imágenes visibles del feed tardaron demasiado en cargar'
+
+
 async def images_ready(page, timeout: int = 20000, *, frame=None) -> None:
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
     try:
         await (frame or page.main_frame).wait_for_function(IMAGES_READY, timeout=timeout)
     except PlaywrightTimeoutError as error:
-        raise ValueError('Las imágenes visibles del feed tardaron demasiado en cargar') from error
+        raise PlaywrightTimeoutError(IMAGE_TIMEOUT_MESSAGE) from error
 
 
 async def confirm_start(page, frame, newest: str) -> dict:
@@ -565,7 +568,9 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 exc = ValueError('Grabación detenida · Usa /video para reintentar el comprobante')
                 error = exc
                 report['error_type'] = 'RecordingStopped'
-            reason = str(exc) if isinstance(exc, ValueError) else (
+            reason = str(exc) if isinstance(exc, ValueError) or (
+                isinstance(exc, PlaywrightTimeoutError) and str(exc) == IMAGE_TIMEOUT_MESSAGE
+            ) else (
                 'Se agotó el tiempo de espera del navegador.' if isinstance(exc, PlaywrightTimeoutError)
                 else f'Error del navegador ({type(exc).__name__}).')
             report['error'] = f'Etapa: {report["stage"]}. {reason}'

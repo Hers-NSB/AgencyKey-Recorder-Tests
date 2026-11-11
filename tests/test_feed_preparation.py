@@ -36,6 +36,6 @@ class FeedPreparationTests(IsolatedAsyncioTestCase):
 
     async def test_image_timeout_reports_the_stalled_stage(self):
         frame = SimpleNamespace(wait_for_function=AsyncMock(side_effect=PlaywrightTimeoutError('timeout')))
-        with self.assertRaisesRegex(ValueError, 'imágenes visibles'):
+        with self.assertRaisesRegex(PlaywrightTimeoutError, 'imágenes visibles'):
             await recorder.images_ready(None, frame=frame)
         self.assertEqual(frame.wait_for_function.call_args.kwargs['timeout'], 20000)
