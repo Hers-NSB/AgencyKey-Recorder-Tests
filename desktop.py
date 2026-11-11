@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import json
 import os
 import tempfile
@@ -436,6 +437,9 @@ class DropperWindow:
         self.profile_cache = local / 'AgencyKeyRecorderTests' / 'profiles.json' if client is None else None
         self.profile_snapshot = {}
         self.checking_updates = False
+        self.next_recording_job = monotonic()
+        self.recording_job_running = threading.Event()
+        self.recording_job_stop = threading.Event()
         self.update_hint = tk.StringVar()
         root.title('AgencyKey Recorder Tests · Centro de bots')
         root.configure(bg=BG)
@@ -859,6 +863,26 @@ class DropperWindow:
                 pass
             self.connect_dialog()
 
+    def check_recording_job(self):
+        if self.recording_job_running.is_set():
+            return
+        self.next_recording_job = monotonic() + 8
+        self.recording_job_running.set()
+        client = self.client
+
+        def run():
+            try:
+                job = client.claim_recording_job()
+                if job and not self.recording_job_stop.is_set():
+                    from recording_service import run_desktop_recording_job
+                    asyncio.run(run_desktop_recording_job(client, job, self.recording_job_stop))
+            except CloudError:
+                pass
+            finally:
+                self.recording_job_running.clear()
+
+        threading.Thread(target=run, name='agencykey-web-job', daemon=True).start()
+
     def poll(self):
         for _ in range(50):
             try:
@@ -892,6 +916,9 @@ class DropperWindow:
             return
         if self.client and not self.auth_required and monotonic() >= self.next_sync and not self.closing:
             self.check_updates()
+        if isinstance(self.client, CloudClient) and not self.auth_required and not self.closing:
+            if monotonic() >= self.next_recording_job:
+                self.check_recording_job()
         self.root.after(100, self.poll)
 
     def close(self):
@@ -899,12 +926,14 @@ class DropperWindow:
             if not messagebox.askyesno('Cerrar AgencyKey Recorder Tests', '¿Detener los bots y cerrar? Los Drops pendientes se perderán', parent=self.root):
                 return
             self.closing = True
+            self.recording_job_stop.set()
             for panel in self.panels.values():
                 panel.stop()
         else:
             self.destroy()
 
     def destroy(self):
+        self.recording_job_stop.set()
         for panel in self.panels.values():
             panel.destroy()
         self.client = None

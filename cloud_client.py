@@ -76,6 +76,13 @@ class CloudClient:
         register_secrets(result.get('telegram_token'), result.get('api_key'))
         return result
 
+    def claim_recording_job(self):
+        return self.request('POST', '/v1/recording-desktop-job').get('job')
+
+    def update_recording_job(self, job, **result):
+        return self.request('PUT', '/v1/recording-desktop-job',
+                            json={'id': job['id'], 'claim': job['claim'], **result})
+
     def recording_session(self):
         result = self.request('GET', '/v1/recording-session')
         state = result.get('state')
