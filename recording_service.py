@@ -14,13 +14,16 @@ from config import log
 from cloud_client import CloudError
 
 
+AGENCYKEY_SIGN_IN = 'https://app.agencykey.com/auth/signin'
+
+
 def session_path(creator_id):
     return recorder.ROOT / 'private' / 'sessions' / f'{int(creator_id)}.json'
 
 
 async def connect_session(creator_id, confirm, cancel, emit):
     from playwright.async_api import async_playwright
-    url = f'https://app.agencykey.com/models/{int(creator_id)}'
+    url = recorder.model_profile_url(creator_id)
     state = session_path(creator_id)
     async with async_playwright() as pw:
         browser = await recorder.launch_browser(pw, headless=False)
@@ -66,6 +69,45 @@ async def session_ready(page, expected_url):
         return False
 
 
+async def agencykey_sign_in_visible(page):
+    auth_paths = {'auth', 'login', 'sign-in', 'signin', 'signup', '2fa', 'mfa', 'two-factor'}
+    return (bool(auth_paths.intersection(urlparse(page.url).path.lower().split('/')))
+            or await page.locator('input[type="password"]:visible').first.is_visible())
+
+
+async def agencykey_login_complete(page):
+    from playwright.async_api import Error as PlaywrightError
+
+    current = urlparse(page.url)
+    if (current.scheme, current.netloc) != ('https', 'app.agencykey.com'):
+        return False
+    try:
+        return not await agencykey_sign_in_visible(page) and await page.locator('body').is_visible()
+    except PlaywrightError:
+        return False
+
+
+async def verify_feed_route(page, url):
+    response = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+    if response is None:
+        return 'connection_error'
+    if response.status == 401:
+        return 'login_required'
+    if response.status in (403, 404):
+        return 'unavailable'
+    if not response.ok:
+        return 'connection_error'
+
+    expected = urlparse(url)
+    current = urlparse(page.url)
+    if await agencykey_sign_in_visible(page):
+        return 'login_required'
+    if (current.scheme, current.netloc, current.path.rstrip('/')) != (
+            expected.scheme, expected.netloc, expected.path.rstrip('/')):
+        return 'feed_unverified'
+    return 'ready'
+
+
 async def run_desktop_recording_job(client, job, stop_event):
     """Open AgencyKey on this PC, then return the result to the waiting admin page."""
     from playwright.async_api import async_playwright
@@ -83,7 +125,6 @@ async def run_desktop_recording_job(client, job, stop_event):
 
     async def open_feed():
         connect = job['kind'] == 'connect'
-        url = f'https://app.agencykey.com/models/{int(job["creator_id"])}'
         options = {'viewport': {'width': 1280, 'height': 720}}
         if not connect:
             options['storage_state'] = (await asyncio.to_thread(client.recording_session))['state']
@@ -92,28 +133,18 @@ async def run_desktop_recording_job(client, job, stop_event):
             try:
                 context = await browser.new_context(**options)
                 page = await context.new_page()
-                response = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
-                if not connect and response:
-                    if response.status == 401:
-                        return {'status': 'login_required'}
-                    if response.status in (403, 404):
-                        return {'status': 'unavailable'}
-                    if not response.ok:
-                        return {'status': 'connection_error'}
-                deadline = monotonic() + (240 if connect else 20)
+                if not connect:
+                    url = recorder.model_profile_url(job['creator_id'])
+                    return {'status': await verify_feed_route(page, url)}
+                response = await page.goto(AGENCYKEY_SIGN_IN, wait_until='domcontentloaded', timeout=30000)
+                if response is not None and response.status >= 400:
+                    return {'status': 'connection_error'}
+                deadline = monotonic() + 240
                 while not page.is_closed() and monotonic() < deadline:
-                    if await session_ready(page, url):
-                        if connect:
-                            return {'status': 'ready', 'state': await context.storage_state(indexed_db=True)}
-                        frame = await recorder.post_frame(page)
-                        if frame and await frame.evaluate(recorder.IMAGES_READY):
-                            return {'status': 'ready'}
-                    if not connect:
-                        path = urlparse(page.url).path.lower().strip('/').split('/')
-                        if any(segment in {'login', 'sign-in', 'auth'} for segment in path):
-                            return {'status': 'login_required'}
+                    if await agencykey_login_complete(page):
+                        return {'status': 'ready', 'state': await context.storage_state(indexed_db=True)}
                     await asyncio.sleep(.7)
-                return {'status': 'cancelled' if connect else 'feed_unverified'}
+                return {'status': 'cancelled'}
             finally:
                 await browser.close()
 
@@ -220,7 +251,7 @@ class RecordingCoordinator:
                 except TelegramError:
                     log.warning('Comprobante | No se pudo entregar el aviso inicial; la grabación continúa.')
                 ids = [recorder.post_id(batch.published_ids[n]) for n in range(len(batch.order), 0, -1)]
-                config = recorder.validate_config({'profile_url': f'https://app.agencykey.com/models/{self.creator.external_id}',
+                config = recorder.validate_config({'profile_url': recorder.model_profile_url(self.creator.external_id),
                                                    'post_ids_newest_first': ids})
                 options = {}
                 if self.session_client:

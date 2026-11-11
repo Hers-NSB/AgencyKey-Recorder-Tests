@@ -188,7 +188,6 @@ test('feed check is private and requires the requested model and a saved session
 test('admin queues a local Chrome connection and only the claiming app can complete it',async()=>{
  const root='/v1/admin/recording-session';
  const claim='/v1/recording-desktop-job';
- await admin(env,'PUT',route,input);
  const login=await request(env,'POST','/v1/admin/login',{password:env.ADMIN_TOKEN});
  const cookie={Cookie:login.headers.get('set-cookie').split(';')[0]};
  const queued=await request(env,'POST',root+'/connect',{},cookie);
@@ -196,7 +195,7 @@ test('admin queues a local Chrome connection and only the claiming app can compl
  const {id}=await queued.json();
  assert.equal((await request(env,'POST',claim)).status,401);
  const {job}=await (await desktop(env,'POST',claim)).json();
- assert.deepEqual({id:job.id,kind:job.kind,creator_id:job.creator_id},{id,kind:'connect',creator_id:52});
+ assert.deepEqual(job,{id,kind:'connect',claim:job.claim});
  assert.deepEqual(await (await desktop(env,'POST',claim)).json(),{job:null});
  assert.deepEqual(await (await desktop(env,'PUT',claim,{id,claim:'invalid',status:'ready'})).json(),{active:false});
  assert.equal((await (await request(env,'POST',root+'/check',{id},cookie)).json()).status,'running');
@@ -206,9 +205,11 @@ test('admin queues a local Chrome connection and only the claiming app can compl
  assert.equal((await (await admin(env,'POST',root+'/check',{id})).json()).status,'expired');
  const result=await (await desktop(env,'GET','/v1/recording-session')).json();
  assert.deepEqual(result.state,state);
+ assert.equal((await admin(env,'PUT',route,input)).status,200);
  const feed=await (await request(env,'POST',root+'/feed/'+firstId,{},cookie)).json();
  const next=(await (await desktop(env,'POST',claim)).json()).job;
  assert.equal(next.kind,'feed');
+ assert.equal(next.creator_id,52);
  assert.equal(next.id,feed.id);
  assert.equal((await (await request(env,'POST',root+'/cancel',{id:feed.id},cookie)).json()).status,'cancelled');
  assert.deepEqual(await (await desktop(env,'PUT',claim,{id:feed.id,claim:next.claim})).json(),{active:false});

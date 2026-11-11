@@ -21,7 +21,7 @@ const PAGE = String.raw`<!doctype html>
 'use strict';
 const $=id=>document.getElementById(id);
 let profiles=[],creators=[],editing=null,saving=false,checking=false,resolveRequest=0;
-let confirmResolve=null,recordingTimer=null,recordingBusy=false,recordingGeneration=0,recordingJob=null,recordingModel=null,feedBusy=false;
+let confirmResolve=null,recordingTimer=null,recordingBusy=false,recordingGeneration=0,recordingJob=null,feedBusy=false;
 let setupToken=new URLSearchParams(location.hash.slice(1)).get('configurar')||'';
 if(location.hash)history.replaceState(null,'',location.pathname);
 async function api(path,options={}) {
@@ -58,9 +58,9 @@ async function verifyFeed(profile, status, button){
    await new Promise(resolve=>setTimeout(resolve,2500));
    result=await checkDesktopJob(id);
   }
-  const messages={ready:'Feed verificado · Publicación visible',no_session:'Sin sesión guardada · Conecta AgencyKey',
+  const messages={ready:'Ruta del feed verificada',no_session:'Sin sesión guardada · Conecta AgencyKey',
    login_required:'AgencyKey pide iniciar sesión · Reconecta',unavailable:'Feed sin acceso o no disponible',
-   feed_unverified:'Feed sin verificar · No cargó una publicación visible con sus imágenes',
+   feed_unverified:'Feed sin verificar · AgencyKey no abrió la ruta de esta modelo',
    connection_error:'La app no pudo abrir AgencyKey en tu PC',
    desktop_offline:'Abre la app de Windows e inténtalo de nuevo',expired:'La comprobación caducó',
    cancelled:'Comprobación cancelada'};
@@ -102,7 +102,7 @@ async function checkRecording(generation){
   }
   if(['queued','running','finishing'].includes(data.status)){
    $('recording-help').textContent=data.status==='queued'?'Esperando la app de Windows…':
-    data.status==='finishing'?'Guardando la sesión…':'Inicia sesión en Chrome en tu PC y abre el feed de '+(recordingModel||'la modelo');
+    data.status==='finishing'?'Guardando la sesión…':'Inicia sesión en la ventana de Chrome que abrió la app. La sesión se guardará al entrar a AgencyKey.';
    recordingTimer=setTimeout(()=>checkRecording(generation),2500);return;
   }
   recordingJob=null;
@@ -119,7 +119,7 @@ $('connect-recording').addEventListener('click',async()=>{
  $('recording-dialog').showModal();$('recording-cancel').disabled=true;
  try{
   const data=await api('/recording-session/connect',{method:'POST',body:'{}'});
-  recordingJob=data.id;recordingModel=data.model;recordingTimer=setTimeout(()=>checkRecording(generation),2500);
+  recordingJob=data.id;recordingTimer=setTimeout(()=>checkRecording(generation),2500);
  }catch(error){$('recording-error').textContent=error.message;}
  finally{recordingBusy=false;$('recording-cancel').disabled=false;}
 });

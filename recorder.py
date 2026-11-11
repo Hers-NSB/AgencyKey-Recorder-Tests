@@ -38,6 +38,10 @@ def post_id(value: str) -> str:
     return match[1]
 
 
+def model_profile_url(creator_id) -> str:
+    return f'https://app.agencykey.com/models/{int(creator_id)}'
+
+
 def validate_config(data: dict) -> dict:
     url = urlparse(data.get('profile_url', ''))
     if url.scheme != 'https' or url.netloc != 'app.agencykey.com' or not re.fullmatch(r'/models/[0-9]+/?', url.path) or url.query or url.fragment:

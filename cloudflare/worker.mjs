@@ -396,16 +396,16 @@ async function recordingAdmin(request, env, path) {
     if (entry && ['queued','running','finishing'].includes(jobStatus(entry.job))) {
       throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
     }
-    const profile=connect
-      ? await env.DB.prepare('SELECT creator_id, name FROM profiles ORDER BY name COLLATE NOCASE LIMIT 1').first()
-      : await env.DB.prepare('SELECT creator_id FROM profiles WHERE id = ?').bind(feed[1]).first();
-    if (!profile) throw new ApiError(404,connect?'Añade una modelo antes de conectar AgencyKey':'La configuración de la modelo ya no existe');
+    const profile=feed
+      ? await env.DB.prepare('SELECT creator_id FROM profiles WHERE id = ?').bind(feed[1]).first()
+      : null;
+    if (feed && !profile) throw new ApiError(404,'La configuración de la modelo ya no existe');
     const session=await sharedSession(env);
     if (feed && !session.configured) return json({status:'no_session'});
-    const job={id:crypto.randomUUID(),owner,kind:connect?'connect':'feed',creator_id:profile.creator_id,
-      revision:session.revision,status:'queued',expires:Date.now()+45000};
+    const job={id:crypto.randomUUID(),owner,kind:connect?'connect':'feed',
+      ...(profile?{creator_id:profile.creator_id}:{}),revision:session.revision,status:'queued',expires:Date.now()+45000};
     if (!await replaceDesktopJob(env,entry,job)) throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
-    return json({id:job.id,status:job.status,...(connect?{model:profile.name}:{})},202);
+    return json({id:job.id,status:job.status},202);
   }
   if (request.method==='POST' && [root+'/check',root+'/cancel'].includes(path)) {
     const {id}=await body(request);
