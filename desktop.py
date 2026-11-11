@@ -112,10 +112,11 @@ class BotPanel:
         self.controller = BotController(self.events, runner, credential_loader=self.load_credentials, session_client=manager.client)
         self.mode = 'stopped'
         self.pending_profile = None
+        self.publication_id = None
         self.removed = False
         self.frame = tk.Frame(manager.content, bg=SURFACE)
         self.frame.grid_columnconfigure(0, weight=1)
-        self.frame.grid_rowconfigure(5, weight=1)
+        self.frame.grid_rowconfigure(6, weight=1)
         header = tk.Frame(self.frame, bg=SURFACE)
         header.grid(row=0, column=0, sticky='ew', padx=28, pady=(24, 4))
         self.title = label(header, profile['name'], size=23, bold=True)
@@ -126,13 +127,27 @@ class BotPanel:
         self.subtitle = label(self.frame, color=MUTED)
         self.subtitle.grid(row=1, column=0, sticky='w', padx=28, pady=(0, 22))
         actions = tk.Frame(self.frame, bg=SURFACE)
-        actions.grid(row=2, column=0, sticky='ew', padx=28, pady=22)
+        actions.grid(row=2, column=0, sticky='ew', padx=28, pady=(0, 14))
         self.start_button = ttk.Button(actions, text='Iniciar bot', style='Accent.TButton', command=self.start)
         self.start_button.pack(side='left')
         self.stop_button = ttk.Button(actions, text='Detener', command=self.stop, state='disabled')
         self.stop_button.pack(side='left', padx=8)
+        publication = tk.Frame(self.frame, bg=PANEL, padx=14, pady=10)
+        publication.grid(row=3, column=0, sticky='ew', padx=28, pady=(0, 12))
+        self.publication_title = label(publication, 'Bot detenido', bold=True, bg=PANEL)
+        self.publication_title.pack(anchor='w')
+        self.publication_detail = label(publication, color=MUTED, bg=PANEL, justify='left', anchor='w')
+        self.publication_detail.pack(fill='x', pady=(4, 0))
+        publication.bind('<Configure>', lambda event: self.publication_detail.configure(
+            wraplength=max(120, event.width - 28)))
+        self.publication_progress = ttk.Progressbar(publication, maximum=1)
+        self.publication_progress.pack(fill='x', pady=(6, 2))
+        self.publication_progress.pack_forget()
+        self.publication_order = label(publication, color=MUTED, bg=PANEL, justify='left', anchor='w')
+        self.publication_order.pack(fill='x')
+        self.publication_order.pack_forget()
         proof = tk.Frame(self.frame, bg=SURFACE)
-        proof.grid(row=3, column=0, sticky='ew', padx=28)
+        proof.grid(row=4, column=0, sticky='ew', padx=28)
         proof.grid_columnconfigure(0, weight=1)
         self.recording_text = tk.StringVar(value='Comprobante automático · sesión compartida desde la web')
         self.session_label = label(proof, color=MUTED)
@@ -144,7 +159,7 @@ class BotPanel:
         self.recording_progress = ttk.Progressbar(proof, maximum=1)
         self.recording_progress.grid(row=2, column=0, sticky='ew', padx=(0, 12), pady=8)
         log_title = tk.Frame(self.frame, bg=SURFACE)
-        log_title.grid(row=4, column=0, sticky='ew', padx=28, pady=(0, 8))
+        log_title.grid(row=5, column=0, sticky='ew', padx=28, pady=(0, 8))
         label(log_title, 'ACTIVIDAD DEL BOT', color=MUTED, size=9, bold=True).pack(side='left')
         self.log_toggle = ttk.Button(log_title, text='Ver registro', style='Small.TButton', command=self.toggle_log)
         self.log_toggle.pack(side='right')
@@ -156,7 +171,7 @@ class BotPanel:
         activity_scroll = ttk.Scrollbar(self.activity.frame, orient='vertical', command=self.activity.yview)
         activity_scroll.pack(side='right', fill='y')
         self.activity.configure(yscrollcommand=activity_scroll.set)
-        self.activity.grid(row=5, column=0, sticky='nsew', padx=28, pady=(0, 22))
+        self.activity.grid(row=6, column=0, sticky='nsew', padx=28, pady=(0, 22))
         self.activity.grid_remove()
         self.log_visible = False
         self.activity.tag_config('ERROR', foreground='#f68d9d')
@@ -199,7 +214,73 @@ class BotPanel:
         active = mode in {'starting', 'running', 'stopping'}
         self.start_button.configure(state='disabled' if active or self.manager.closing or self.removed else 'normal')
         self.stop_button.configure(state='normal' if mode in {'starting', 'running'} else 'disabled')
+        if mode == 'starting':
+            self.publication_id = None
+            self.show_publication('Cargando configuración', 'Obteniendo la configuración del bot…')
+            self.publication_progress.configure(mode='indeterminate')
+            self.publication_progress.pack(fill='x', pady=(6, 2))
+            self.publication_progress.start(14)
+        elif mode == 'running':
+            self.show_publication('Bot listo', 'Esperando mensajes reenviados en Telegram', color=GREEN)
+        elif mode == 'error':
+            self.show_publication('No se pudo iniciar o continuar el bot', 'Abre el registro para ver el detalle',
+                                  color='#f68d9d')
+        elif mode == 'stopped':
+            self.show_publication('Bot detenido')
         self.manager.refresh_sidebar()
+
+    def show_publication(self, title, detail='', color=TEXT):
+        self.publication_progress.stop()
+        self.publication_progress.pack_forget()
+        self.publication_order.pack_forget()
+        self.publication_title.configure(text=title, fg=color)
+        self.publication_detail.configure(text=detail)
+
+    def update_publication(self, data):
+        self.publication_id = data['id']
+        status = data['status']
+        total, completed = data['total'], data['completed']
+        if status == 'collecting':
+            detail = f'{total} en cola · Se publican del último reenviado al primero' if total else 'Esperando mensajes reenviados en Telegram'
+            self.show_publication('Drop abierto', detail)
+            return
+        if status == 'cancelled':
+            self.show_publication('Drop cancelado', 'Esperando un nuevo Drop en Telegram')
+            return
+        if status == 'done':
+            detail = data['stage'] or 'Orden del último reenviado al primero · Confirmación pendiente en Telegram'
+            self.show_publication(f'{completed} de {total} publicados', detail, GREEN)
+        elif status == 'paused':
+            mention = data['mention']
+            if mention:
+                detail = f'HTTP 400 · AgencyKey rechazó la mención {mention}\nPublica manualmente y pulsa Continuar en Telegram'
+            elif data['uncertain']:
+                detail = 'Revisa el feed antes de publicar manualmente y pulsa Continuar en Telegram'
+            elif data['failed']:
+                detail = 'Publica manualmente y pulsa Continuar en Telegram · Ver detalle en el registro'
+            else:
+                detail = 'La publicación se detuvo antes de enviar el siguiente mensaje'
+            self.show_publication(f'Drop pausado · {completed} de {total} publicados', detail, '#edbe70')
+        else:
+            stage = data['stage']
+            if completed < total and stage != 'Publicación confirmada':
+                stage = f'{stage} · Mensaje #{total - completed}'
+            self.show_publication(f'Drop en curso · {completed} de {total} publicados', stage, ACCENT)
+        self.publication_progress.configure(mode='determinate', maximum=max(1, total), value=completed)
+        self.publication_progress.pack(fill='x', pady=(6, 2))
+        if total:
+            start = max(0, min(completed - 1, total - 3))
+            rows = ['Orden de publicación · Del último al primero']
+            for index in range(start, min(total, start + 3)):
+                if index < completed:
+                    state = 'Publicado manualmente' if index + 1 in data['manual'] else 'Publicado'
+                elif index == completed:
+                    state = 'En pausa' if status == 'paused' else 'En curso'
+                else:
+                    state = 'Pendiente'
+                rows.append(f'Turno {index + 1} · Mensaje #{total - index} · {state}')
+            self.publication_order.configure(text='\n'.join(rows))
+            self.publication_order.pack(fill='x', pady=(2, 0))
 
     def start(self):
         if self.controller.running or self.manager.closing:
@@ -225,6 +306,7 @@ class BotPanel:
         if not self.controller.running:
             return
         self.set_mode('stopping')
+        self.show_publication('Deteniendo bot', 'Esperando el envío en curso')
         self.controller.stop()
         self.append('WARNING', 'Esperando el envío en curso · No se iniciarán nuevas publicaciones')
 
@@ -249,7 +331,13 @@ class BotPanel:
                 self.recording_text.set(f'{value["stage"]} · {value["completed"]}/{value["total"]}'
                                         + (f' · ID {value["post_id"]}' if value.get('post_id') else ''))
                 self.recording_progress.configure(maximum=max(1, value['total']), value=value['completed'])
-            elif event == 'ready' and self.mode != 'stopping':
+            elif event == 'setup_stage' and self.mode == 'starting':
+                self.publication_detail.configure(text=f'✓ Configuración cargada · {value}\nConectando el bot con Telegram…')
+            elif event == 'publication' and self.mode in {'running', 'stopping'}:
+                self.update_publication(value)
+            elif event == 'publication_summary' and value and value == self.publication_id:
+                self.publication_detail.configure(text='Confirmación enviada a Telegram')
+            elif event == 'ready' and self.mode == 'starting':
                 self.set_mode('running')
             elif event == 'stopped':
                 self.set_mode('error' if value else 'stopped')
@@ -390,6 +478,7 @@ class DropperWindow:
             self.connect_dialog()
 
     def connected(self):
+        self.next_sync = monotonic() + 30
         self.sync_button.configure(state='normal')
         self.status.set('Configuraciones actualizadas')
         self.auth_required = False
@@ -397,7 +486,7 @@ class DropperWindow:
         self.cloud_online = True
 
     def try_connect(self, token, remember=False, dialog=None):
-        if self.connecting:
+        if self.connecting or self.refreshing or self.closing:
             return
         token = token.strip()
         if not token:
@@ -502,8 +591,8 @@ class DropperWindow:
         parent = self.access_dialog if self.access_dialog and self.access_dialog.winfo_exists() else self.root
         panel = tk.Frame(parent, bg=SURFACE, highlightbackground=BORDER, highlightthickness=1, padx=28, pady=24)
         self.loading_panel = panel
-        label(panel, 'Descargando configuraciones', size=17, bold=True).pack(anchor='w')
-        label(panel, 'Obteniendo los bots y las modelos de la web…', color=MUTED).pack(pady=(10, 16))
+        label(panel, 'Cargando configuración', size=17, bold=True).pack(anchor='w')
+        label(panel, 'Obteniendo perfiles desde el panel web…', color=MUTED).pack(pady=(10, 16))
         progress = ttk.Progressbar(panel, mode='indeterminate', length=330)
         progress.pack(fill='x')
         progress.start(12)
@@ -515,14 +604,15 @@ class DropperWindow:
             self.loading_panel.destroy()
             self.loading_panel = None
 
-    def refresh(self):
-        if self.refreshing or self.closing:
+    def refresh(self, show_panel=True):
+        if self.refreshing or self.connecting or self.closing:
             return
         if not self.client or self.auth_required:
             self.connect_dialog()
             return
         self.refreshing = True
-        self.show_loading()
+        if show_panel:
+            self.show_loading()
         self.next_sync = monotonic()+30
         self.sync_button.configure(state='disabled')
         def complete(profiles):
@@ -665,7 +755,7 @@ class DropperWindow:
             self.destroy()
             return
         if self.client and not self.auth_required and monotonic() >= self.next_sync and not self.closing:
-            self.refresh()
+            self.refresh(show_panel=False)
         self.root.after(100, self.poll)
 
     def close(self):
@@ -769,9 +859,17 @@ def smoke_test(screenshot=None):
 
     def check_parallel():
         panel = window.panels['1']
+        if panel.publication_title.cget('text') != 'Bot listo' or panel.publication_progress.winfo_manager():
+            failures.append('La carga del bot debe desaparecer al conectarse a Telegram')
+        panel.events.put(('publication', {
+            'id': 'demo', 'status': 'publishing', 'stage': 'Subiendo foto a AgencyKey',
+            'total': 3, 'completed': 1, 'manual': (), 'mention': None, 'failed': False, 'uncertain': False,
+        }))
         panel.events.put(('recording', {'stage':'grabando', 'completed':2, 'total':3, 'post_id':'102'}))
         panel.poll()
         root.update_idletasks()
+        if 'Turno 1 · Mensaje #3 · Publicado' not in panel.publication_order.cget('text'):
+            failures.append('El panel debe mostrar el orden inverso de publicación')
         if '2/3' not in panel.recording_text.get() or hasattr(panel, 'preview'):
             failures.append('El progreso debe mostrarse sin vista previa')
         if screenshot:

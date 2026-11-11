@@ -15,6 +15,7 @@ class AccessFlowTests(unittest.TestCase):
         manager.hide_loading = Mock()
         manager.connect_dialog = Mock()
         manager.auth_required = False
+        manager.connecting = manager.refreshing = manager.closing = False
         return manager
 
     def test_first_launch_requests_password(self):
@@ -37,12 +38,22 @@ class AccessFlowTests(unittest.TestCase):
 
     def test_update_asks_for_new_password_when_revoked(self):
         manager = self.manager()
-        manager.refreshing = manager.closing = False
         manager.client = Mock()
         manager.auth_required = True
         manager.refresh()
         manager.connect_dialog.assert_called_once()
         manager.client.list_profiles.assert_not_called()
+
+    def test_automatic_sync_updates_profiles_without_showing_loading(self):
+        manager = self.manager()
+        manager.client = Mock()
+        manager.sync_button = Mock()
+        manager.apply_profiles = Mock()
+        manager.background = lambda work, complete, failed: complete([{'id': 'one'}])
+        manager.refresh(show_panel=False)
+        manager.show_loading.assert_not_called()
+        manager.apply_profiles.assert_called_once_with([{'id': 'one'}])
+        self.assertFalse(manager.refreshing)
 
     def test_saved_password_is_checked_on_launch(self):
         manager = self.manager()
@@ -53,7 +64,6 @@ class AccessFlowTests(unittest.TestCase):
 
     def login_manager(self):
         manager = self.manager()
-        manager.connecting = False
         manager.root = Mock()
         manager.connected = Mock()
         manager.apply_profiles = Mock()

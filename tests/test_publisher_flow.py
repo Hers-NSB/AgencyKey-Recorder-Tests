@@ -1,4 +1,5 @@
 import unittest
+from queue import Queue
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -93,7 +94,7 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         await bot.resume(update(), ctx)
         api.publish_text.assert_awaited_once_with(1, "post 2")
 
-    async def test_photo_and_text_publish_in_received_order(self):
+    async def test_photo_and_text_publish_newest_message_first(self):
         api = SimpleNamespace(publish_photo=AsyncMock(return_value=102), publish_text=AsyncMock(return_value=101))
         ctx = context()
         ctx.bot.get_file.return_value.download_as_bytearray = AsyncMock(return_value=bytearray(b"photo"))
@@ -101,12 +102,36 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         batch.received = {20: Post("foto", "file"), 10: Post("texto", None)}
         ctx.user_data["batch"] = batch
         await DropperBot(api).publish(update(), ctx)
-        self.assertEqual(batch.order, [10, 20])
+        self.assertEqual(batch.order, [20, 10])
         self.assertEqual((batch.status, batch.cursor), ("done", 2))
         api.publish_photo.assert_awaited_once_with(1, "foto", b"photo")
         messages = [c.args[1] for c in ctx.bot.send_message.call_args_list]
         self.assertTrue(any("Publicando" in text for text in messages))
         self.assertTrue(any("Post #2 confirmado" in text for text in messages))
+
+    async def test_rejected_mention_pauses_newest_post_and_resumes_in_reverse_order(self):
+        rejected = AgencyKeyError("AgencyKey respondió HTTP 400. | Detalle: You cannot tag @ask_lola")
+        api = SimpleNamespace(publish_text=AsyncMock(side_effect=[rejected, 102, 103]))
+        events = Queue()
+        bot = DropperBot(api, events=events)
+        ctx = context()
+        batch = batch_with_posts()
+        batch.received[3] = Post("Hola @ask_lola.", None)
+        ctx.user_data["batch"] = batch
+
+        await bot.publish(update(), ctx)
+
+        self.assertEqual((batch.order, batch.cursor), ([3, 2, 1], 0))
+        ctx.bot.copy_message.assert_awaited_once_with(chat_id=123, from_chat_id=123, message_id=3)
+        self.assertIn("AgencyKey rechazó la mención @ask_lola", ctx.bot.send_message.call_args.args[1])
+        await bot.resume(update(), ctx)
+
+        self.assertEqual([call.args[1] for call in api.publish_text.call_args_list],
+                         ["Hola @ask_lola.", "post 2", "post 1"])
+        self.assertEqual((batch.status, batch.cursor, batch.manual), ("done", 3, [1]))
+        updates = [data for kind, data in list(events.queue) if kind == "publication"]
+        self.assertEqual([data["mention"] for data in updates if data["status"] == "paused"], ["@ask_lola"])
+        self.assertEqual(updates[-1]["stage"], "Confirmación enviada a Telegram")
 
     async def test_repeated_manual_confirmations_keep_correct_counts(self):
         api = SimpleNamespace(publish_text=AsyncMock(side_effect=[AgencyKeyError("a"), AgencyKeyError("b"), 103]))

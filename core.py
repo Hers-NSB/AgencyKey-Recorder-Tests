@@ -1,3 +1,4 @@
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from time import monotonic, time
@@ -65,6 +66,14 @@ class Batch:
     def confirmed(self) -> int:
         return self.cursor - len(self.manual)
 
+    @property
+    def rejected_mention(self) -> str | None:
+        if self.error.startswith("AgencyKey respondió HTTP 400"):
+            match = re.search(r"You cannot tag (@[a-zA-Z0-9_]+)", self.error, re.IGNORECASE)
+            if match:
+                return match[1]
+        return None
+
     def confirm_manual(self) -> None:
         if self.status != "paused" or not self.failed or self.cursor >= len(self.order):
             raise ValueError("No hay una publicación fallida para confirmar.")
@@ -78,6 +87,7 @@ class Batch:
         self, agencykey: AgencyKey, download_photo: Callable[[str], Awaitable[bytes]],
         notify: Callable[[str], Awaitable[None]] | None = None,
         session: SessionStats | None = None,
+        on_stage: Callable[[str], None] | None = None,
     ) -> None:
         self.start_timer()
         self.attempt += 1
@@ -88,6 +98,8 @@ class Batch:
         self.recovery_delivered = False
         log.info("Drop %s | Intento %d | %d automáticos | %d manuales | %d en total.",
                  self.id, self.attempt, self.confirmed, len(self.manual), len(self.order))
+        if on_stage:
+            on_stage("Preparando publicación")
         while self.cursor < len(self.order):
             if getattr(agencykey, "stop_requested", lambda: False)():
                 self.status = "paused"
@@ -100,9 +112,15 @@ class Batch:
             try:
                 if post.photo_id:
                     log.info("Drop %s | Post #%d | Descargando foto de Telegram.", self.id, self.cursor + 1)
+                    if on_stage:
+                        on_stage("Descargando foto de Telegram")
                     photo = await download_photo(post.photo_id)
+                    if on_stage:
+                        on_stage("Subiendo foto a AgencyKey")
                     post_id = await agencykey.publish_photo(self.creator.external_id, post.text, photo)
                 else:
+                    if on_stage:
+                        on_stage("Creando post en AgencyKey")
                     post_id = await agencykey.publish_text(self.creator.external_id, post.text)
             except AgencyKeyError as error:
                 self.status = "paused"
@@ -125,6 +143,8 @@ class Batch:
             if session is not None:
                 session.automatic += 1
             log.info("Drop %s | Post #%d confirmado | ID %s.", self.id, self.cursor, post_id)
+            if on_stage:
+                on_stage("Publicación confirmada")
             if notify:
                 await notify(f"✅ Post #{self.cursor} confirmado")
         self.status = "done"
