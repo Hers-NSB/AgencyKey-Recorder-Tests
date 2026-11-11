@@ -66,6 +66,74 @@ async def session_ready(page, expected_url):
         return False
 
 
+async def run_desktop_recording_job(client, job, stop_event):
+    """Open AgencyKey on this PC, then return the result to the waiting admin page."""
+    from playwright.async_api import async_playwright
+
+    async def check_cancelled():
+        while not stop_event.is_set():
+            await asyncio.sleep(3)
+            try:
+                status = await asyncio.to_thread(client.update_recording_job, job)
+            except CloudError:
+                continue
+            if not status.get('active'):
+                return
+        return
+
+    async def open_feed():
+        connect = job['kind'] == 'connect'
+        url = f'https://app.agencykey.com/models/{int(job["creator_id"])}'
+        options = {'viewport': {'width': 1280, 'height': 720}}
+        if not connect:
+            options['storage_state'] = (await asyncio.to_thread(client.recording_session))['state']
+        async with async_playwright() as pw:
+            browser = await recorder.launch_browser(pw, headless=not connect)
+            try:
+                context = await browser.new_context(**options)
+                page = await context.new_page()
+                response = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+                if not connect and response:
+                    if response.status == 401:
+                        return {'status': 'login_required'}
+                    if response.status in (403, 404):
+                        return {'status': 'unavailable'}
+                    if not response.ok:
+                        return {'status': 'connection_error'}
+                deadline = monotonic() + (240 if connect else 20)
+                while not page.is_closed() and monotonic() < deadline:
+                    if await session_ready(page, url):
+                        if connect:
+                            return {'status': 'ready', 'state': await context.storage_state(indexed_db=True)}
+                        frame = await recorder.post_frame(page)
+                        if frame and await frame.evaluate(recorder.IMAGES_READY):
+                            return {'status': 'ready'}
+                    if not connect:
+                        path = urlparse(page.url).path.lower().strip('/').split('/')
+                        if any(segment in {'login', 'sign-in', 'auth'} for segment in path):
+                            return {'status': 'login_required'}
+                    await asyncio.sleep(.7)
+                return {'status': 'cancelled' if connect else 'feed_unverified'}
+            finally:
+                await browser.close()
+
+    running = asyncio.create_task(open_feed())
+    cancelled = asyncio.create_task(check_cancelled())
+    try:
+        done, _ = await asyncio.wait((running, cancelled), return_when=asyncio.FIRST_COMPLETED)
+        if running in done and not stop_event.is_set():
+            try:
+                result = running.result()
+            except Exception:
+                result = {'status': 'connection_error'}
+            await asyncio.to_thread(client.update_recording_job, job, **result)
+    finally:
+        for task in (running, cancelled):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(running, cancelled, return_exceptions=True)
+
+
 class RecordingCoordinator:
     def __init__(self, creator, *, events=None, stop_event=None, session_client=None):
         self.creator, self.events, self.stop_event = creator, events, stop_event

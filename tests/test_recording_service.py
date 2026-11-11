@@ -3,14 +3,35 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import threading
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from agencykey import Creator
 from bot import DropperBot
 from core import Batch, Post
-from recording_service import RecordingCoordinator, session_path
+from recording_service import RecordingCoordinator, run_desktop_recording_job, session_path
 import recorder
+
+
+class DesktopRecordingJobTests(unittest.IsolatedAsyncioTestCase):
+    async def test_connection_uses_visible_chrome_and_returns_shared_state(self):
+        state = {'cookies': [], 'origins': []}
+        page = SimpleNamespace(goto=AsyncMock(), is_closed=lambda: False)
+        context = SimpleNamespace(new_page=AsyncMock(return_value=page),
+                                  storage_state=AsyncMock(return_value=state))
+        browser = SimpleNamespace(new_context=AsyncMock(return_value=context), close=AsyncMock())
+        client = SimpleNamespace(update_recording_job=Mock(return_value={'active': False}))
+        job = {'kind': 'connect', 'creator_id': 52}
+        with patch.object(recorder, 'launch_browser', new=AsyncMock(return_value=browser)) as launch, \
+             patch('recording_service.session_ready', new=AsyncMock(return_value=True)):
+            await run_desktop_recording_job(client, job, threading.Event())
+        self.assertFalse(launch.call_args.kwargs['headless'])
+        page.goto.assert_awaited_once_with('https://app.agencykey.com/models/52',
+                                           wait_until='domcontentloaded', timeout=30000)
+        context.storage_state.assert_awaited_once_with(indexed_db=True)
+        browser.close.assert_awaited_once()
+        client.update_recording_job.assert_called_once_with(job, status='ready', state=state)
 
 
 class ProofTests(unittest.IsolatedAsyncioTestCase):

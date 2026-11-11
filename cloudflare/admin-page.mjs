@@ -15,13 +15,13 @@ const PAGE = String.raw`<!doctype html>
 <div class="status" id="status" aria-live="polite"></div></main></div>
 <dialog class="dialog" id="profile-dialog"><form id="profile-form"><h2 id="dialog-title">Añadir bot</h2><label class="field">Token de Telegram<input id="telegram-token" type="password" autocomplete="new-password" maxlength="256"></label><span class="keep" id="keep-hint" hidden>Vacío para conservar el token actual</span><label class="field">Modelo<select id="creator-id" required><option value="">Selecciona una modelo</option></select></label><label class="field">Nombre de OnlyFans<input id="creator-name" readonly></label><div class="error" id="form-error" role="alert"></div><div class="actions"><button type="button" id="cancel">Cancelar</button><button type="submit" class="primary" id="save">Guardar</button></div></form></dialog>
 <dialog class="dialog" id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message" class="muted"></p><div class="actions"><button id="confirm-cancel">Cancelar</button><button class="primary" id="confirm-accept">Confirmar</button></div></dialog>
-<dialog class="dialog" id="recording-dialog"><h2>Conectar sesión compartida</h2><p id="recording-help" class="muted">Preparando AgencyKey…</p><div class="actions"><a id="recording-live" target="_blank" rel="noopener noreferrer" hidden>Abrir AgencyKey</a><button id="recording-cancel">Cancelar</button></div><div class="error" id="recording-error" role="alert"></div></dialog>
+<dialog class="dialog" id="recording-dialog"><h2>Conectar sesión compartida</h2><p id="recording-help" class="muted">Preparando AgencyKey…</p><div class="actions"><button id="recording-cancel">Cancelar</button></div><div class="error" id="recording-error" role="alert"></div></dialog>
 <script nonce="__NONCE__">
 (()=>{
 'use strict';
 const $=id=>document.getElementById(id);
 let profiles=[],creators=[],editing=null,saving=false,checking=false,resolveRequest=0;
-let confirmResolve=null,recordingTimer=null,recordingBusy=false,recordingGeneration=0,feedBusy=false;
+let confirmResolve=null,recordingTimer=null,recordingBusy=false,recordingGeneration=0,recordingJob=null,recordingModel=null,feedBusy=false;
 let setupToken=new URLSearchParams(location.hash.slice(1)).get('configurar')||'';
 if(location.hash)history.replaceState(null,'',location.pathname);
 async function api(path,options={}) {
@@ -33,7 +33,7 @@ async function api(path,options={}) {
  return data;
 }
 function showLogin(){
- stopRecordingPoll();$('recording-live').removeAttribute('href');$('recording-dialog').close();if(confirmResolve)finishConfirm(false);
+ stopRecordingPoll();$('recording-dialog').close();if(confirmResolve)finishConfirm(false);
  profiles=[];creators=[];resolveRequest++;$('profiles-body').replaceChildren();$('profile-form').reset();$('agency-form').reset();$('access-form').reset();$('admin-password-form').reset();$('admin-password').value='';$('admin-confirm').value='';
  if($('profile-dialog').open)$('profile-dialog').close();$('app-view').hidden=true;$('logout').hidden=true;$('login-view').hidden=false;
  const setup=Boolean(setupToken);$('login-title').textContent=setup?'Crea tu contraseña':'Entrar a AgencyKey Recorder Tests';$('login-help').textContent=setup?'Esta contraseña privada será solo para administrar la web':'Introduce tu contraseña de administrador';$('confirm-field').hidden=!setup;$('admin-confirm').required=setup;$('admin-password').minLength=setup?12:1;$('admin-password').autocomplete=setup?'new-password':'current-password';$('login-button').textContent=setup?'Crear contraseña y entrar':'Entrar';
@@ -51,11 +51,19 @@ async function verifyFeed(profile, status, button){
  if(feedBusy){status.textContent='Espera a que termine la otra comprobación';return;}
  feedBusy=true;button.disabled=true;status.textContent='Abriendo el feed con la sesión guardada…';
  try{
-  const result=await api('/recording-session/feed/'+profile.id,{method:'POST',body:'{}'});
+  let result=await api('/recording-session/feed/'+profile.id,{method:'POST',body:'{}'});
+  const id=result.id;
+  while(['queued','running','finishing'].includes(result.status)&&status.isConnected){
+   status.textContent=result.status==='queued'?'Esperando la app de Windows…':'Comprobando el feed en Chrome de tu PC…';
+   await new Promise(resolve=>setTimeout(resolve,2500));
+   result=await checkDesktopJob(id);
+  }
   const messages={ready:'Feed verificado · Publicación visible',no_session:'Sin sesión guardada · Conecta AgencyKey',
    login_required:'AgencyKey pide iniciar sesión · Reconecta',unavailable:'Feed sin acceso o no disponible',
    feed_unverified:'Feed sin verificar · No cargó una publicación visible con sus imágenes',
-   connection_error:'No se pudo abrir AgencyKey desde la web · Intenta de nuevo'};
+   connection_error:'La app no pudo abrir AgencyKey en tu PC',
+   desktop_offline:'Abre la app de Windows e inténtalo de nuevo',expired:'La comprobación caducó',
+   cancelled:'Comprobación cancelada'};
   const time=result.checked_at?new Date(result.checked_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
   status.textContent=(messages[result.status]||'Feed sin verificar')+(time?' · '+time:'');
  }catch(error){status.textContent=error.message;}
@@ -81,9 +89,48 @@ function askConfirm(title,message,label){if(confirmResolve)return Promise.resolv
 $('confirm-cancel').addEventListener('click',()=>finishConfirm(false));$('confirm-accept').addEventListener('click',()=>finishConfirm(true));$('confirm-dialog').addEventListener('cancel',event=>{event.preventDefault();finishConfirm(false);});
 async function recordingStatus(){try{const data=await api('/recording-session');$('recording-session-status').textContent=data.configured?'Sesión guardada · Verifica el feed de cada modelo':'Sin sesión · conecta AgencyKey para grabar videos';$('connect-recording').textContent=data.configured?'Reconectar AgencyKey':'Conectar AgencyKey';}catch(error){$('recording-session-status').textContent=error.message;}}
 function stopRecordingPoll(){recordingGeneration++;clearTimeout(recordingTimer);recordingTimer=null;}
-async function checkRecording(generation){if(generation!==recordingGeneration||!$('recording-dialog').open)return;try{const data=await api('/recording-session/check',{method:'POST',body:'{}'});if(generation!==recordingGeneration)return;if(data.ready){stopRecordingPoll();$('recording-live').removeAttribute('href');$('recording-dialog').close();await recordingStatus();render();$('status').textContent='Sesión compartida guardada automáticamente';return;}recordingTimer=setTimeout(()=>checkRecording(generation),3000);}catch(error){if(generation===recordingGeneration){$('recording-error').textContent=error.message;stopRecordingPoll();}}}
-$('connect-recording').addEventListener('click',async()=>{if(recordingBusy)return;recordingBusy=true;stopRecordingPoll();const generation=recordingGeneration;$('recording-error').textContent='';$('recording-live').hidden=true;$('recording-help').textContent='Preparando AgencyKey…';$('recording-dialog').showModal();$('recording-cancel').disabled=true;try{const data=await api('/recording-session/connect',{method:'POST',body:'{}'});const url=new URL(data.live_url);if(url.protocol!=='https:'||url.hostname!=='live.browser.run')throw new Error('No se pudo abrir la conexión');$('recording-live').href=url.href;$('recording-live').hidden=false;$('recording-help').textContent='Abre AgencyKey e inicia sesión. Deja visible el feed de la modelo: la sesión se guardará automáticamente para todas tus modelos autorizadas.';recordingTimer=setTimeout(()=>checkRecording(generation),3000);}catch(error){$('recording-error').textContent=error.message;}finally{recordingBusy=false;$('recording-cancel').disabled=false;}});
-async function cancelRecording(){if(recordingBusy)return;recordingBusy=true;stopRecordingPoll();$('recording-cancel').disabled=true;try{await api('/recording-session/cancel',{method:'POST',body:'{}'});$('recording-dialog').close();$('recording-live').removeAttribute('href');}catch(error){$('recording-error').textContent=error.message;}finally{recordingBusy=false;$('recording-cancel').disabled=false;}}
+const desktopJobRequest=(action,id)=>api('/recording-session/'+action,{method:'POST',body:JSON.stringify({id})});
+const checkDesktopJob=id=>desktopJobRequest('check',id);
+async function checkRecording(generation){
+ if(generation!==recordingGeneration||!$('recording-dialog').open)return;
+ try{
+  const data=await checkDesktopJob(recordingJob);
+  if(generation!==recordingGeneration)return;
+  if(data.status==='ready'){
+   stopRecordingPoll();recordingJob=null;$('recording-dialog').close();await recordingStatus();render();
+   $('status').textContent='Sesión compartida guardada desde tu PC';return;
+  }
+  if(['queued','running','finishing'].includes(data.status)){
+   $('recording-help').textContent=data.status==='queued'?'Esperando la app de Windows…':
+    data.status==='finishing'?'Guardando la sesión…':'Inicia sesión en Chrome en tu PC y abre el feed de '+(recordingModel||'la modelo');
+   recordingTimer=setTimeout(()=>checkRecording(generation),2500);return;
+  }
+  recordingJob=null;
+  $('recording-error').textContent=data.status==='desktop_offline'?'Abre la app de Windows e inténtalo de nuevo':
+   data.status==='connection_error'?'La app no pudo abrir AgencyKey en tu PC':'La conexión caducó o se canceló';
+ }catch(error){
+  if(generation===recordingGeneration)$('recording-error').textContent=error.message;
+ }
+}
+$('connect-recording').addEventListener('click',async()=>{
+ if(recordingBusy)return;recordingBusy=true;stopRecordingPoll();recordingJob=null;
+ const generation=recordingGeneration;
+ $('recording-error').textContent='';$('recording-help').textContent='Esperando la app de Windows…';
+ $('recording-dialog').showModal();$('recording-cancel').disabled=true;
+ try{
+  const data=await api('/recording-session/connect',{method:'POST',body:'{}'});
+  recordingJob=data.id;recordingModel=data.model;recordingTimer=setTimeout(()=>checkRecording(generation),2500);
+ }catch(error){$('recording-error').textContent=error.message;}
+ finally{recordingBusy=false;$('recording-cancel').disabled=false;}
+});
+async function cancelRecording(){
+ if(recordingBusy)return;recordingBusy=true;$('recording-cancel').disabled=true;
+ try{
+  if(recordingJob)await desktopJobRequest('cancel',recordingJob);
+  stopRecordingPoll();recordingJob=null;$('recording-dialog').close();
+ }catch(error){$('recording-error').textContent=error.message;}
+ finally{recordingBusy=false;$('recording-cancel').disabled=false;}
+}
 $('recording-cancel').addEventListener('click',cancelRecording);$('recording-dialog').addEventListener('cancel',event=>{event.preventDefault();cancelRecording();});
 if(setupToken)showLogin();else api('/session').then(showApp).catch(showLogin);
 })();

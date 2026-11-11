@@ -1,5 +1,5 @@
 import {adminPage} from './admin-page.mjs';
-import {browserDriver, cleanStorageState} from './recording-session.mjs';
+import {cleanStorageState} from './recording-session.mjs';
 
 const encoder = new TextEncoder();
 const columns = 'id, name, bot_id, creator_id, creator_name, creator_username, revision, updated_at';
@@ -360,56 +360,93 @@ export async function saveSharedSession(env, state, revision) {
   return {configured:true,revision:value.revision,updated_at:value.updated_at};
 }
 
+const desktopJobKey = 'recording_desktop_job';
+const desktopResults = new Set(['ready','login_required','unavailable','feed_unverified','connection_error','cancelled']);
+
+async function readDesktopJob(env) {
+  const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(desktopJobKey).first();
+  return row ? {raw:row.value, job:JSON.parse(row.value)} : null;
+}
+
+async function replaceDesktopJob(env, entry, job) {
+  const value = JSON.stringify(job);
+  const result = entry
+    ? await env.DB.prepare('UPDATE settings SET value = ? WHERE key = ? AND value = ? RETURNING key')
+      .bind(value,desktopJobKey,entry.raw).first()
+    : await env.DB.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO NOTHING RETURNING key')
+      .bind(desktopJobKey,value).first();
+  return Boolean(result);
+}
+
+function jobStatus(job) {
+  if (job.expires<=Date.now() && ['queued','running','finishing'].includes(job.status)) {
+    return job.status==='queued' ? 'desktop_offline' : 'expired';
+  }
+  return job.status;
+}
+
 async function recordingAdmin(request, env, path) {
-  if (path==='/v1/admin/recording-session' && request.method==='GET') return json(await sharedSession(env));
-  const feed = path.match(/^\/v1\/admin\/recording-session\/feed\/([a-f0-9-]{36})$/);
-  if (feed && request.method==='POST') {
-    const profile = await env.DB.prepare('SELECT creator_id FROM profiles WHERE id = ?').bind(feed[1]).first();
-    if (!profile) throw new ApiError(404,'La configuración de la modelo ya no existe');
-    const session = await sharedSession(env,true);
-    if (!session.configured) return json({status:'no_session'});
-    if (!env.BROWSER) throw new ApiError(503,'La comprobación web de AgencyKey no está configurada');
-    const driver = await browserDriver(env.BROWSER);
-    const profileUrl = 'https://app.agencykey.com/models/'+profile.creator_id;
-    let status;
-    try {status=await driver.verifyFeed(profileUrl,session.state);}
-    catch {status='connection_error';}
-    return json({status,checked_at:new Date().toISOString()});
+  const root='/v1/admin/recording-session';
+  if (path===root && request.method==='GET') return json(await sharedSession(env));
+  const owner=await sessionId(sessionToken(request));
+  const entry=await readDesktopJob(env);
+  const feed=path.match(/^\/v1\/admin\/recording-session\/feed\/([a-f0-9-]{36})$/);
+  const connect=path===root+'/connect';
+  if (request.method==='POST' && (connect || feed)) {
+    if (entry && ['queued','running','finishing'].includes(jobStatus(entry.job))) {
+      throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
+    }
+    const profile=connect
+      ? await env.DB.prepare('SELECT creator_id, name FROM profiles ORDER BY name COLLATE NOCASE LIMIT 1').first()
+      : await env.DB.prepare('SELECT creator_id FROM profiles WHERE id = ?').bind(feed[1]).first();
+    if (!profile) throw new ApiError(404,connect?'Añade una modelo antes de conectar AgencyKey':'La configuración de la modelo ya no existe');
+    const session=await sharedSession(env);
+    if (feed && !session.configured) return json({status:'no_session'});
+    const job={id:crypto.randomUUID(),owner,kind:connect?'connect':'feed',creator_id:profile.creator_id,
+      revision:session.revision,status:'queued',expires:Date.now()+45000};
+    if (!await replaceDesktopJob(env,entry,job)) throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
+    return json({id:job.id,status:job.status,...(connect?{model:profile.name}:{})},202);
   }
-  const loginKey='recording_login:'+await sessionId(sessionToken(request));
-  const row=await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(loginKey).first();
-  const pending=row ? await decrypt(row.value,loginKey,env) : null;
-  if (!env.BROWSER) throw new ApiError(503,'La conexión web de AgencyKey no está configurada');
-  const driver=await browserDriver(env.BROWSER);
-  if (path==='/v1/admin/recording-session/connect' && request.method==='POST') {
-    if (pending?.expires>Date.now()) throw new ApiError(409,'Ya hay una conexión abierta. Termínala o cancélala');
-    const profile=await env.DB.prepare('SELECT creator_id FROM profiles ORDER BY name COLLATE NOCASE LIMIT 1').first();
-    if (!profile) throw new ApiError(409,'Añade una modelo antes de conectar AgencyKey');
-    const profileUrl='https://app.agencykey.com/models/'+profile.creator_id;
-    const current=await sharedSession(env);
-    let connection;
-    try {connection=await driver.start(profileUrl);} catch {throw new ApiError(502,'No se pudo abrir AgencyKey. Intenta conectar de nuevo');}
-    const login={sessionId:connection.sessionId, profileUrl, revision:current.revision, expires:Date.now()+600000};
-    await env.DB.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
-      .bind(loginKey,await encrypt(login,loginKey,env)).run();
-    return json({live_url:connection.live_url,expires:login.expires});
-  }
-  if (path==='/v1/admin/recording-session/cancel' && request.method==='POST') {
-    if (pending) await driver.close(pending.sessionId).catch(()=>{});
-    await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(loginKey).run();
-    return json({cancelled:true});
-  }
-  if (path==='/v1/admin/recording-session/check' && request.method==='POST') {
-    if (!pending || pending.expires<=Date.now()) throw new ApiError(410,'La conexión caducó. Vuelve a conectar AgencyKey');
-    let ready;
-    try {ready=await driver.check(pending.sessionId,pending.profileUrl);} catch {throw new ApiError(410,'La conexión se cerró. Vuelve a conectar AgencyKey');}
-    if (!ready) return json({ready:false});
-    const saved=await saveSharedSession(env,ready.state,pending.revision);
-    await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(loginKey).run();
-    await driver.close(pending.sessionId).catch(()=>{});
-    return json({ready:true,...saved});
+  if (request.method==='POST' && [root+'/check',root+'/cancel'].includes(path)) {
+    const {id}=await body(request);
+    if (!entry || entry.job.id!==id || entry.job.owner!==owner) return json({status:'expired'});
+    const status=jobStatus(entry.job);
+    if (path.endsWith('/cancel') && ['queued','running'].includes(status)) {
+      const cancelled=await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'});
+      return json({status:cancelled?'cancelled':'finishing'});
+    }
+    return json({status,checked_at:entry.job.checked_at});
   }
   throw new ApiError(405,'Método no permitido');
+}
+
+async function desktopRecordingJob(request,env) {
+  const entry=await readDesktopJob(env);
+  if (request.method==='POST') {
+    if (!entry || jobStatus(entry.job)!=='queued') return json({job:null});
+    const job={...entry.job,status:'running',claim:crypto.randomUUID(),expires:Date.now()+300000};
+    if (!await replaceDesktopJob(env,entry,job)) return json({job:null});
+    const {id,claim,kind,creator_id}=job;
+    return json({job:{id,claim,kind,creator_id}});
+  }
+  if (request.method!=='PUT') throw new ApiError(405,'Método no permitido');
+  const input=await body(request,524288);
+  if (!entry || entry.job.id!==input.id || entry.job.claim!==input.claim || jobStatus(entry.job)!=='running') {
+    return json({active:false});
+  }
+  if (!input.status) return json({active:true});
+  if (!desktopResults.has(input.status)) throw new ApiError(400,'Resultado de Chrome inválido');
+  const job={...entry.job,status:input.status,checked_at:new Date().toISOString()};
+  if (job.kind==='connect' && input.status==='ready') {
+    const finishing={...entry.job,status:'finishing',expires:Date.now()+30000};
+    if (!await replaceDesktopJob(env,entry,finishing)) return json({active:false});
+    try {await saveSharedSession(env,input.state,job.revision);}
+    catch {job.status='connection_error';}
+    await replaceDesktopJob(env,{raw:JSON.stringify(finishing)},job);
+  } else if (!await replaceDesktopJob(env,entry,job)) {
+    return json({active:false});
+  }
+  return json({active:false});
 }
 
 async function adminHandle(request, env, path) {
@@ -517,6 +554,7 @@ async function handle(request, env) {
   if (path === '/health' && request.method === 'GET') return json({service: 'agencykey-recorder-tests', version: 5});
   if (path.startsWith('/v1/admin/')) return adminHandle(request, env, path);
   await authorize(request, env);
+  if (path==='/v1/recording-desktop-job') return desktopRecordingJob(request,env);
   if (path==='/v1/recording-session') {
     if (request.method==='GET') {
       const session=await sharedSession(env,true);
