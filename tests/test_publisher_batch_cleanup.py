@@ -38,7 +38,7 @@ class PreparationTests(unittest.IsolatedAsyncioTestCase):
         batch = Batch(Creator(1, 'Lilith', None))
         batch.received = {10: Post('one', None), 20: Post('two', None)}
         ctx.user_data.update(batch=batch, prepublish_ids={1, 2, 10, 20})
-        async def publish(*args):
+        async def publish(*args, **kwargs):
             self.assertFalse(any(call.args[1] in {1, 2, 10, 20}
                                  for call in ctx.bot.delete_message.call_args_list))
             return 45
@@ -102,7 +102,7 @@ class PreparationTests(unittest.IsolatedAsyncioTestCase):
         async def edit(*args, **kwargs):
             edited.set()
         ctx.bot.edit_message_text.side_effect = edit
-        async def publish(*args):
+        async def publish(*args, **kwargs):
             await asyncio.wait_for(edited.wait(), 1)
             return 77
         await DropperBot(SimpleNamespace(publish_text=AsyncMock(side_effect=publish))).publish_batch(batch, update(), ctx)

@@ -15,13 +15,15 @@ class ExpirationTests(unittest.IsolatedAsyncioTestCase):
         await api.publish_photo(1, 'texto', b'\xff\xd8\xffphoto')
         api._publish.assert_awaited_once_with(1, {
             'text': 'texto', 'mediaFiles': [{'processId': 'photo'}], 'expireDays': 1,
-        })
+        }, slow=False)
 
-    async def test_text_only_is_unchanged(self):
-        api = AgencyKey('test')
-        api._publish = AsyncMock(return_value=101)
-        await api.publish_text(1, 'texto')
-        api._publish.assert_awaited_once_with(1, {'text': 'texto'})
+    async def test_text_only_expiration_is_forwarded_to_agencykey(self):
+        for expire in (True, False):
+            api = AgencyKey('test')
+            api._publish = AsyncMock(return_value=101)
+            await api.publish_text(1, 'texto', expire=expire, slow=True)
+            expected = {'text': 'texto', 'expireDays': 1} if expire else {'text': 'texto'}
+            api._publish.assert_awaited_once_with(1, expected, slow=True)
 
 
 class DurationTests(unittest.IsolatedAsyncioTestCase):

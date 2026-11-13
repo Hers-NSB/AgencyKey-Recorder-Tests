@@ -105,6 +105,27 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         last = await self.page.locator('#postId_100').bounding_box()
         self.assertLessEqual(last['y'] + last['height'], 700)
 
+    async def test_feed_discovery_scrolls_past_header_to_mount_posts(self):
+        await self.page.set_content("""
+            <div style="height: 1800px">Perfil de prueba</div>
+            <script>
+            window.addEventListener('scroll', () => {
+                if (!document.getElementById('postId_200') && window.scrollY > 100) {
+                    const post = document.createElement('article');
+                    post.id = 'postId_200';
+                    post.style.cssText = 'height: 500px; position: absolute; top: 340px';
+                    document.body.appendChild(post);
+                }
+            });
+            </script>
+        """)
+        frame = self.page.main_frame
+        with patch.object(recorder, 'seek_start', new=AsyncMock(return_value={'_frame': frame})), \
+             patch.object(recorder, 'capture_walk', new=AsyncMock()) as walk:
+            await recorder.prepare_feed(self.page, ['200'], timeout=5)
+        self.assertEqual(await self.page.locator('#postId_200').count(), 1)
+        walk.assert_awaited_once()
+
     async def test_out_of_order_fails(self):
         await self.page.goto((recorder.RESOURCE_ROOT / 'tests/feed.html').as_uri())
         await recorder.seek_start(self.page, '300', timeout=3)

@@ -1,12 +1,12 @@
 import unittest
 from queue import Queue
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 
-from agencykey import AgencyKeyError, Creator, UnconfirmedPost
-from bot import CANCEL, CONTINUE, NEW_BATCH, PUBLISH, DropperBot, on_error
+from agencykey import AgencyKeyError, Creator, PublishRateLimited, UnconfirmedPost
+from bot import CANCEL, CONTINUE, NEW_BATCH, PUBLISH, PUBLISH_NORMAL, PUBLISH_SLOW, KEEP_TEXT, RESUME_SLOW, DropperBot, on_error
 from core import Batch, Post
 
 
@@ -92,7 +92,7 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         api.publish_photo.assert_not_awaited()
         api.publish_text.assert_not_awaited()
         await bot.resume(update(), ctx)
-        api.publish_text.assert_awaited_once_with(1, "post 2")
+        api.publish_text.assert_awaited_once_with(1, "post 2", expire=True, slow=False)
 
     async def test_photo_and_text_publish_newest_message_first(self):
         api = SimpleNamespace(publish_photo=AsyncMock(return_value=102), publish_text=AsyncMock(return_value=101))
@@ -104,7 +104,7 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         await DropperBot(api).publish(update(), ctx)
         self.assertEqual(batch.order, [20, 10])
         self.assertEqual((batch.status, batch.cursor), ("done", 2))
-        api.publish_photo.assert_awaited_once_with(1, "foto", b"photo")
+        api.publish_photo.assert_awaited_once_with(1, "foto", b"photo", slow=False)
         messages = [c.args[1] for c in ctx.bot.send_message.call_args_list]
         self.assertTrue(any("Publicando" in text for text in messages))
         self.assertTrue(any("Post #2 confirmado" in text for text in messages))
@@ -183,6 +183,43 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("telegram_error", data)
 
 
+class PublishingOptionsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_slow_lot_starts_with_last_received_and_text_expires_by_default(self):
+        batch = batch_with_posts()
+        ctx = context()
+        ctx.user_data['batch'] = batch
+        api = SimpleNamespace(publish_text=AsyncMock(return_value=101))
+        await DropperBot(api).publish(update(PUBLISH_SLOW), ctx)
+        self.assertEqual([call.args[1] for call in api.publish_text.await_args_list],
+                         ['post 3', 'post 2', 'post 1'])
+        self.assertTrue(all(call.kwargs == {'expire': True, 'slow': True}
+                            for call in api.publish_text.await_args_list))
+
+    async def test_keep_text_applies_to_current_batch(self):
+        ctx = context()
+        ctx.user_data['batch'] = batch_with_posts(1)
+        api = SimpleNamespace(publish_text=AsyncMock(return_value=101))
+        bot = DropperBot(api)
+        await bot.menu(update(KEEP_TEXT), ctx)
+        await bot.publish(update(PUBLISH_NORMAL), ctx)
+        api.publish_text.assert_awaited_once_with(1, 'post 1', expire=False, slow=False)
+
+    async def test_rate_limit_pauses_without_advancing_and_can_resume_slow(self):
+        ctx = context()
+        batch = ctx.user_data['batch'] = batch_with_posts(1)
+        api = SimpleNamespace(publish_text=AsyncMock(side_effect=[PublishRateLimited(retry_at=110), 101]))
+        bot = DropperBot(api)
+        await bot.publish(update(PUBLISH_NORMAL), ctx)
+        self.assertEqual((batch.status, batch.cursor, batch.failed), ('paused', 0, False))
+        with patch('bot.monotonic', return_value=105):
+            await bot.resume(update(RESUME_SLOW), ctx)
+        self.assertEqual(api.publish_text.await_count, 1)
+        with patch('bot.monotonic', return_value=111):
+            await bot.resume(update(RESUME_SLOW), ctx)
+        self.assertEqual((batch.status, batch.cursor, batch.manual), ('done', 1, []))
+        self.assertTrue(api.publish_text.await_args.kwargs['slow'])
+
+
 class KeyboardTests(unittest.IsolatedAsyncioTestCase):
     async def test_model_is_fixed_in_desktop_and_no_selection_is_shown(self):
         api = SimpleNamespace(list_creators=AsyncMock())
@@ -196,7 +233,7 @@ class KeyboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('Selecciona', event.message.reply_text.call_args.args[0])
         keyboard = event.message.reply_text.call_args.kwargs['reply_markup']
         labels = [button.text for row in keyboard.keyboard for button in row]
-        self.assertEqual(labels, [PUBLISH, CANCEL])
+        self.assertEqual(labels, [PUBLISH_NORMAL, PUBLISH_SLOW, KEEP_TEXT, CANCEL])
 
     async def test_first_forward_opens_batch_without_losing_photo(self):
         ctx = context()
@@ -247,7 +284,7 @@ class KeyboardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_keyboard_for_each_state(self):
         ctx = context()
-        for state, expected in [(None, NEW_BATCH), ("collecting", PUBLISH), ("paused", CONTINUE),
+        for state, expected in [(None, NEW_BATCH), ("collecting", PUBLISH_NORMAL), ("paused", CONTINUE),
                                 ("publishing", None), ("done", NEW_BATCH)]:
             if state:
                 ctx.user_data["batch"] = batch_with_posts()
