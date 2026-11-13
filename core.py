@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from time import monotonic, time
 from uuid import uuid4
 
-from agencykey import AgencyKey, AgencyKeyError, Creator, UnconfirmedPost
+from agencykey import AgencyKey, AgencyKeyError, Creator, PublishRateLimited, UnconfirmedPost
 from config import log
 
 
@@ -45,6 +45,9 @@ class Batch:
     finished_at: float | None = None
     started_wall_at: float | None = None
     session_total: int = 0
+    expire_text: bool = True
+    slow: bool = False
+    retry_at: float | None = None
 
     def start_timer(self) -> None:
         if self.started_at is None:
@@ -90,6 +93,7 @@ class Batch:
         on_stage: Callable[[str], None] | None = None,
     ) -> None:
         self.start_timer()
+        self.retry_at = None
         self.attempt += 1
         self.status = "publishing"
         self.error = ""
@@ -117,11 +121,18 @@ class Batch:
                     photo = await download_photo(post.photo_id)
                     if on_stage:
                         on_stage("Subiendo foto a AgencyKey")
-                    post_id = await agencykey.publish_photo(self.creator.external_id, post.text, photo)
+                    post_id = await agencykey.publish_photo(self.creator.external_id, post.text, photo, slow=self.slow)
                 else:
                     if on_stage:
                         on_stage("Creando post en AgencyKey")
-                    post_id = await agencykey.publish_text(self.creator.external_id, post.text)
+                    post_id = await agencykey.publish_text(self.creator.external_id, post.text,
+                                                           expire=self.expire_text, slow=self.slow)
+            except PublishRateLimited as error:
+                self.status = "paused"
+                self.error = str(error)
+                self.retry_at = error.retry_at
+                log.warning("Drop %s | %s", self.id, self.error)
+                return
             except AgencyKeyError as error:
                 self.status = "paused"
                 self.failed = True

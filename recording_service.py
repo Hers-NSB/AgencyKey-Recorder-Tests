@@ -15,6 +15,27 @@ from cloud_client import CloudError
 
 
 AGENCYKEY_SIGN_IN = 'https://app.agencykey.com/auth/signin'
+RECORDING_STEPS = {
+    'preparando comprobante': 'Preparando el comprobante',
+    'cargando sesión de AgencyKey': 'Abriendo la sesión guardada de AgencyKey',
+    'iniciando Chrome': 'Iniciando Chrome',
+    'abrir perfil': 'Abriendo el perfil de la modelo',
+    'reintentando abrir el perfil por un fallo de conexión': 'La conexión se interrumpió. Intentando abrir el perfil otra vez',
+    'cargando feed e imágenes': 'Buscando las publicaciones de la modelo y cargando sus fotos',
+    'marcar inicio del video': 'Preparando el inicio del video',
+    'recorrer posts / cargar imágenes': 'Grabando las publicaciones y sus fotos',
+    'grabando': 'Grabando las publicaciones',
+    'marcar fin del video': 'Terminando la grabación',
+    'verificar límites del video': 'Comprobando que el video esté completo',
+    'convertir video a MP4': 'Preparando el archivo de video',
+    'video listo': 'Video listo',
+    'enviando video': 'Enviando el video a Telegram',
+    'enviado': 'Video enviado a Telegram',
+}
+
+
+def recording_step(stage):
+    return RECORDING_STEPS.get(stage, stage)
 
 
 def session_path(creator_id):
@@ -166,11 +187,13 @@ async def run_desktop_recording_job(client, job, stop_event):
 
 
 class RecordingCoordinator:
-    def __init__(self, creator, *, events=None, stop_event=None, session_client=None):
+    def __init__(self, creator, *, events=None, stop_event=None, session_client=None, show_browser=None):
         self.creator, self.events, self.stop_event = creator, events, stop_event
         self.busy = False
         self.session_client = session_client
         self.completion_markup = None
+        self.show_browser = show_browser or (lambda: False)
+        self.last_recording_step = None
 
     def emit(self, event, value):
         if self.events is not None:
@@ -180,8 +203,18 @@ class RecordingCoordinator:
                 pass
 
     def progress(self, value):
-        self.emit('recording', value)
-        log.info('Comprobante | %s | %s/%s | ID %s', value['stage'], value['completed'], value['total'], value.get('post_id', ''))
+        stage = recording_step(value['stage'])
+        self.emit('recording', dict(value, stage=stage))
+        if stage != self.last_recording_step:
+            log.info('%s', stage)
+            self.last_recording_step = stage
+
+    async def inspect_browser_failure(self, page, stage, reason):
+        detail = f'{recording_step(stage)}. {reason} Chrome queda abierto. Ciérralo cuando termines de revisar.'
+        self.emit('recording', {'stage': detail, 'error': True, 'completed': 0, 'total': 0})
+        log.error('%s', detail)
+        while not page.is_closed() and not (self.stop_event and self.stop_event.is_set()):
+            await asyncio.sleep(0.25)
 
     def job_path(self, chat_id):
         return recorder.ROOT / 'jobs' / f'{int(self.creator.external_id)}-{int(chat_id)}.json'
@@ -261,7 +294,10 @@ class RecordingCoordinator:
                     async def refresh(state):
                         await asyncio.to_thread(self.session_client.refresh_recording_session, state, shared['revision'])
                     options['on_session_saved'] = refresh
-                report_path = await recorder.record(config, headless=True, session_path=session_path(self.creator.external_id),
+                visible = self.show_browser()
+                if visible:
+                    options['on_browser_failure'] = self.inspect_browser_failure
+                report_path = await recorder.record(config, headless=not visible, session_path=session_path(self.creator.external_id),
                     on_progress=self.progress, stop_event=self.stop_event, **options)
                 job['report'] = str(report_path)
             report, video = recorder.verified_video(report_path)
@@ -280,7 +316,7 @@ class RecordingCoordinator:
             await self.send_summary(job, bot, chat_id, path)
         except TelegramError as error:
             uncertain = job.get('status') == 'sending' and not isinstance(error, (BadRequest, Forbidden, RetryAfter))
-            detail = 'Telegram: ' + type(error).__name__
+            detail = 'No se pudo enviar el video a Telegram.'
             import httpx
             from recorder_network import network_failure
             current = error
@@ -294,7 +330,10 @@ class RecordingCoordinator:
                 if current is None:
                     break
             job.update(status='delivery_unknown' if uncertain else 'error', error_type=type(error).__name__)
-            self.emit('recording', {'stage': detail, 'completed': 0, 'total': len(batch.order)})
+            if uncertain and 'La entrega no está confirmada' not in detail:
+                detail += ' Comprueba si el video llegó antes de reenviarlo.'
+            message = detail if uncertain else f'{detail} Usa /video para reintentar.'
+            self.emit('recording', {'stage': message, 'error': True, 'completed': 0, 'total': len(batch.order)})
             log.error('Comprobante | %s | Entrega incierta: %s', detail, uncertain)
             try:
                 await bot.send_message(chat_id, '⚠️ Envío sin confirmar · Revisa el chat antes de usar /video reenviar'
@@ -304,8 +343,15 @@ class RecordingCoordinator:
         except Exception as error:
             job.update(status='error', error_type=type(error).__name__)
             detail = str(error) if isinstance(error, (ValueError, CloudError)) else type(error).__name__
-            self.emit('recording', {'stage': 'error · ' + detail, 'completed': 0, 'total': len(batch.order)})
-            log.error('Comprobante | %s', detail)
+            if detail.startswith('Etapa: '):
+                stage, _, reason = detail.removeprefix('Etapa: ').partition('. ')
+                message = f'{recording_step(stage)}. {reason}'
+            elif isinstance(error, (ValueError, CloudError)):
+                message = detail
+            else:
+                message = 'No se pudo completar el video. Usa /video para intentarlo de nuevo.'
+            self.emit('recording', {'stage': message, 'error': True, 'completed': 0, 'total': len(batch.order)})
+            log.error('%s', message)
             try:
                 await bot.send_message(chat_id, '❌ No se pudo completar el video · Usa /video para reintentar')
             except TelegramError:

@@ -204,8 +204,11 @@ class BotPanel:
         self.recording_label.grid(row=1, column=0, sticky='ew', padx=(0, 12))
         proof.bind('<Configure>', lambda event: self.recording_label.configure(wraplength=max(120, event.width-16)))
         self.proof.grid_remove()
+        self.show_recording_browser = tk.BooleanVar(master=body)
+        ttk.Checkbutton(body, text='Mostrar Chrome durante la grabación', variable=self.show_recording_browser,
+                        command=self.update_recording_browser).grid(row=5, column=0, sticky='w', padx=28, pady=(0, 8))
         log_title = tk.Frame(body, bg=SURFACE)
-        log_title.grid(row=5, column=0, sticky='ew', padx=28, pady=(0, 8))
+        log_title.grid(row=6, column=0, sticky='ew', padx=28, pady=(0, 8))
         label(log_title, 'ACTIVIDAD DEL BOT', color=MUTED, size=9, bold=True).pack(side='left')
         self.log_toggle = ttk.Button(log_title, text='Ver registro', style='Small.TButton', command=self.toggle_log)
         self.log_toggle.pack(side='right')
@@ -217,7 +220,7 @@ class BotPanel:
         activity_scroll = ttk.Scrollbar(self.activity.frame, orient='vertical', command=self.activity.yview)
         activity_scroll.pack(side='right', fill='y')
         self.activity.configure(yscrollcommand=activity_scroll.set)
-        self.activity.grid(row=6, column=0, sticky='nsew', padx=28, pady=(0, 22))
+        self.activity.grid(row=7, column=0, sticky='nsew', padx=28, pady=(0, 22))
         self.activity.grid_remove()
         self.log_visible = False
         self.activity.tag_config('ERROR', foreground='#f68d9d')
@@ -306,8 +309,10 @@ class BotPanel:
             self.show_publication(f'{completed} de {total} publicados', detail, GREEN)
         elif status == 'paused':
             mention = data['mention']
-            if mention:
-                detail = f'HTTP 400 · AgencyKey rechazó la mención {mention}\nPublica manualmente y pulsa Continuar en Telegram'
+            if data.get('rate_limited'):
+                detail = 'El servicio pidió una pausa. Consulta en Telegram cuándo puedes continuar.'
+            elif mention:
+                detail = f'AgencyKey rechazó la mención {mention}\nPublica manualmente y pulsa Continuar en Telegram'
             elif data['uncertain']:
                 detail = 'Revisa el feed antes de publicar manualmente y pulsa Continuar en Telegram'
             elif data['failed']:
@@ -349,6 +354,13 @@ class BotPanel:
         self.set_mode('starting')
         self.controller.start()
 
+    def update_recording_browser(self):
+        setting = self.controller.show_recording_browser
+        if self.show_recording_browser.get():
+            setting.set()
+        else:
+            setting.clear()
+
     def toggle_log(self):
         self.log_visible = not self.log_visible
         if self.log_visible:
@@ -386,8 +398,9 @@ class BotPanel:
                 self.append(*value)
             elif event == 'recording':
                 stage = value['stage']
-                count = f' · {value["completed"]}/{value["total"]} posts' if value['total'] and not stage.startswith('error') else ''
+                count = f' · {value["completed"]}/{value["total"]} posts' if value['total'] and not value.get('error') else ''
                 self.recording_text.set(stage[:1].upper() + stage[1:] + count)
+                self.recording_label.configure(fg='#f68d9d' if value.get('error') else ACCENT)
                 self.proof.grid()
             elif event == 'setup_stage' and self.mode == 'starting':
                 self.publication_detail.configure(text=f'✓ Configuración cargada · {value}\nConectando el bot con Telegram…')

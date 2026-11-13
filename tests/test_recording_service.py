@@ -94,6 +94,24 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
         batch.status = 'done'
         return batch
 
+    async def test_visible_recording_uses_desktop_failure_callback(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(recorder, 'ROOT', Path(folder)):
+            coordinator = RecordingCoordinator(Creator(52, 'Modelo', None), show_browser=lambda: True)
+            bot = SimpleNamespace(send_message=AsyncMock())
+            with patch.object(recorder, 'record', new=AsyncMock(side_effect=ValueError('No se encontró el perfil'))) as record:
+                await coordinator.run(self.batch(), bot, 42)
+            self.assertFalse(record.call_args.kwargs['headless'])
+            self.assertEqual(record.call_args.kwargs['on_browser_failure'], coordinator.inspect_browser_failure)
+
+    async def test_visible_failure_explains_what_to_do_and_waits_for_chrome_to_close(self):
+        coordinator = RecordingCoordinator(Creator(52, 'Modelo', None))
+        page = SimpleNamespace(is_closed=Mock(side_effect=[False, True]))
+        with patch.object(coordinator, 'emit') as emit, patch('recording_service.asyncio.sleep', new_callable=AsyncMock) as sleep:
+            await coordinator.inspect_browser_failure(page, 'abrir perfil', 'Se agotó la espera.')
+        sleep.assert_awaited_once()
+        self.assertIn('Chrome queda abierto', emit.call_args.args[1]['stage'])
+        self.assertTrue(emit.call_args.args[1]['error'])
+
     async def test_background_proof_uses_newest_first_ids_and_sends_only_verified_mp4(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(recorder, 'ROOT', Path(folder)):
             video, report_path = Path(folder)/'video.mp4', Path(folder)/'report.json'

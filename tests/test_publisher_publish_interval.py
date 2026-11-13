@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
-from agencykey import AgencyKey, AgencyKeyError
+from agencykey import AgencyKey, AgencyKeyError, PublishRateLimited
 
 
 class PublishIntervalTests(unittest.IsolatedAsyncioTestCase):
@@ -20,6 +20,23 @@ class PublishIntervalTests(unittest.IsolatedAsyncioTestCase):
             await api.publish_text(1, 'next')
             sleep.assert_awaited_once_with(7)
             self.assertEqual(api._last_publish_finished[1], 120)
+
+    async def test_slow_mode_waits_thirty_seconds_from_previous_completion(self):
+        api = AgencyKey('test')
+        api._publish_once = AsyncMock(return_value=1)
+        api._last_publish_finished[1] = 100
+        with patch('agencykey.monotonic', return_value=104), patch('agencykey.asyncio.sleep', new_callable=AsyncMock) as sleep:
+            await api.publish_text(1, 'next', slow=True)
+        sleep.assert_awaited_once_with(26)
+
+    async def test_limit_is_shared_with_other_batches_for_same_model(self):
+        api = AgencyKey('test')
+        api._publish_once = AsyncMock(side_effect=PublishRateLimited(retry_at=120))
+        with patch('agencykey.monotonic', return_value=100):
+            for _ in range(2):
+                with self.assertRaises(PublishRateLimited):
+                    await api.publish_text(1, 'pending')
+        api._publish_once.assert_awaited_once()
 
     async def test_no_extra_wait_after_interval(self):
         api = AgencyKey('test')

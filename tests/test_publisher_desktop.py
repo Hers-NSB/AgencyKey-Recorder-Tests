@@ -108,7 +108,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_stop_between_posts_preserves_current_result(self):
         api, event = AgencyKey('test'), threading.Event()
         api.stop_requested = event.is_set
-        async def publish(*args):
+        async def publish(*args, **kwargs):
             event.set()
             return 101
         api.publish_text = AsyncMock(side_effect=publish)
@@ -117,7 +117,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         batch.order = [1, 2]
         await batch.publish(api, AsyncMock())
         self.assertEqual((batch.status, batch.cursor), ('paused', 1))
-        api.publish_text.assert_awaited_once_with(1, 'uno')
+        api.publish_text.assert_awaited_once_with(1, 'uno', expire=True, slow=False)
 
     async def test_stop_before_request_does_not_create_post(self):
         api = AgencyKey('test')

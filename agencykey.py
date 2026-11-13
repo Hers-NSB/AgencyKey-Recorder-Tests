@@ -2,8 +2,9 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from secrets import randbelow
-from time import monotonic
+from time import monotonic, time
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ API_URL = "https://app.agencykey.com/api"
 STORAGE_HOST = "of2transcoder.s3-accelerate.amazonaws.com"
 CONVERTER_URL = "https://convert.onlyfans.com/file/upload"
 PUBLISH_INTERVAL_SECONDS = 11.0
+SLOW_PUBLISH_INTERVAL_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,19 @@ class AgencyKeyError(Exception):
     pass
 
 
+class PublishRateLimited(AgencyKeyError):
+    def __init__(self, retry_after: str = "", *, retry_at: float | None = None):
+        try:
+            seconds = int(retry_after)
+        except ValueError:
+            try:
+                seconds = parsedate_to_datetime(retry_after).timestamp() - time()
+            except (ValueError, OverflowError):
+                seconds = 60
+        self.retry_at = retry_at if retry_at is not None else monotonic() + max(1, seconds)
+        super().__init__("El servicio limitó temporalmente las publicaciones. El lote quedó en pausa.")
+
+
 class UnconfirmedPost(AgencyKeyError):
     pass
 
@@ -39,6 +54,7 @@ class AgencyKey:
         self.stop_requested = lambda: False
         self._publish_locks: dict[int, asyncio.Lock] = {}
         self._last_publish_finished: dict[int, float] = {}
+        self._retry_at: dict[int, float] = {}
         self.headers = {
             "x-public-api-key": api_key,
             "Accept": "application/json",
@@ -74,7 +90,7 @@ class AgencyKey:
                 page += 1
         return list(creators.values())
 
-    async def publish_photo(self, external_id: int, text: str, photo: bytes) -> int:
+    async def publish_photo(self, external_id: int, text: str, photo: bytes, *, slow: bool = False) -> int:
         if self.stop_requested():
             raise AgencyKeyError("Parada solicitada desde la ventana. No se envió este post.")
         if photo.startswith(b"\xff\xd8\xff"):
@@ -84,10 +100,15 @@ class AgencyKey:
         else:
             raise AgencyKeyError("La foto descargada debe ser JPEG o PNG.")
 
-        attachment = await self._upload_photo(external_id, photo, extension, content_type)
+        self._check_rate_limit(external_id)
+        try:
+            attachment = await self._upload_photo(external_id, photo, extension, content_type)
+        except PublishRateLimited as error:
+            self._remember_rate_limit(external_id, error)
+            raise
         return await self._publish(external_id, {
             "text": text, "mediaFiles": [attachment], "expireDays": 1,
-        })
+        }, slow=slow)
 
     async def _upload_photo(
         self, external_id: int, photo: bytes, extension: str, content_type: str
@@ -176,6 +197,8 @@ class AgencyKey:
                 return {**attachment, "name": filename}
         except httpx.HTTPStatusError as error:
             status = error.response.status_code
+            if status == 429:
+                raise PublishRateLimited(error.response.headers.get("Retry-After", "")) from error
             if step == "Configuración de la modelo":
                 raise AgencyKeyError(f"{step}: la consulta de perfil respondió HTTP {status}.") from error
             if step in {"Carga firmada", "Procesamiento de la foto"}:
@@ -246,26 +269,42 @@ class AgencyKey:
             )
         return profile
 
-    async def publish_text(self, external_id: int, text: str) -> int:
-        return await self._publish(external_id, {"text": text})
+    async def publish_text(self, external_id: int, text: str, *, expire: bool = False, slow: bool = False) -> int:
+        payload = {"text": text}
+        if expire:
+            payload["expireDays"] = 1
+        return await self._publish(external_id, payload, slow=slow)
 
-    async def _publish(self, external_id: int, payload: dict) -> int:
+    def _check_rate_limit(self, external_id: int) -> None:
+        retry_at = self._retry_at.get(external_id)
+        if retry_at is not None and retry_at > monotonic():
+            raise PublishRateLimited(retry_at=retry_at)
 
+    def _remember_rate_limit(self, external_id: int, error: PublishRateLimited) -> None:
+        self._retry_at[external_id] = max(self._retry_at.get(external_id, 0), error.retry_at)
+
+    async def _publish(self, external_id: int, payload: dict, *, slow: bool = False) -> int:
         lock = self._publish_locks.setdefault(external_id, asyncio.Lock())
         async with lock:
+            self._check_rate_limit(external_id)
             if self.stop_requested():
                 raise AgencyKeyError("Parada solicitada desde la ventana. No se envió este post.")
             last_finished = self._last_publish_finished.get(external_id)
             if last_finished is not None:
-                remaining = PUBLISH_INTERVAL_SECONDS - (monotonic() - last_finished)
+                interval = SLOW_PUBLISH_INTERVAL_SECONDS if slow else PUBLISH_INTERVAL_SECONDS
+                remaining = interval - (monotonic() - last_finished)
                 if remaining > 0:
                     log.info("AgencyKey | Modelo %s | Esperando %.1f segundos entre publicaciones.",
                              external_id, remaining)
                     await asyncio.sleep(remaining)
             if self.stop_requested():
                 raise AgencyKeyError("Parada solicitada desde la ventana. No se envió este post.")
+            self._check_rate_limit(external_id)
             try:
                 return await self._publish_once(external_id, payload)
+            except PublishRateLimited as error:
+                self._remember_rate_limit(external_id, error)
+                raise
             finally:
                 self._last_publish_finished[external_id] = monotonic()
 
@@ -291,7 +330,9 @@ class AgencyKey:
                 external_id, status, len(payload.get("text", "")),
                 len(payload.get("mediaFiles", [])), detail,
             )
-            if status in {400, 401, 403, 404, 422, 429}:
+            if status == 429:
+                raise PublishRateLimited(error.response.headers.get("Retry-After", "")) from error
+            if status in {400, 401, 403, 404, 422}:
                 raise AgencyKeyError(message) from error
             raise UnconfirmedPost(message) from error
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as error:

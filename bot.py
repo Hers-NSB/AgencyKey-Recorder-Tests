@@ -1,5 +1,7 @@
 import asyncio
+from math import ceil
 from queue import Full
+from time import monotonic
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.constants import ChatType
@@ -18,6 +20,12 @@ from core import Batch, Post, SessionStats
 
 NEW_BATCH = "🔄 Nuevo Drop"
 PUBLISH = "📤 Publicar"
+PUBLISH_NORMAL = "📤 Publicar normal"
+PUBLISH_SLOW = "🐢 Publicar lento"
+KEEP_TEXT = "Conservar solo texto"
+EXPIRE_TEXT = "Eliminar solo texto tras 24 h"
+RESUME_SLOW = "🐢 Continuar lento"
+CONTROL_TEXTS = {PUBLISH, PUBLISH_NORMAL, PUBLISH_SLOW, KEEP_TEXT, EXPIRE_TEXT}
 CANCEL = "❌ Cancelar Drop"
 CONTINUE = "▶️ Continuar"
 
@@ -39,7 +47,7 @@ class DropperBot:
             self.events.put_nowait(("publication", {
                 "id": batch.id, "status": batch.status, "stage": stage, "total": len(batch.order) or len(batch.received),
                 "completed": batch.cursor, "manual": tuple(batch.manual), "mention": batch.rejected_mention,
-                "failed": batch.failed, "uncertain": batch.uncertain,
+                "failed": batch.failed, "uncertain": batch.uncertain, "rate_limited": batch.retry_at is not None,
             }))
         except Full:
             log.warning("No se pudo actualizar el panel de publicación")
@@ -54,7 +62,7 @@ class DropperBot:
         batch = context.user_data.get("batch")
         message = update.effective_message
         if message and (not batch or batch.status in {"collecting", "done"}):
-            if message.text not in {PUBLISH, "/publicar"} or message.forward_origin or message.photo:
+            if message.text not in CONTROL_TEXTS | {"/publicar"} or message.forward_origin or message.photo:
                 context.user_data.setdefault("prepublish_ids", set()).add(message.message_id)
         pending_error = context.user_data.get("telegram_error")
         if pending_error and await self.notify(context, update.effective_chat.id, pending_error):
@@ -65,10 +73,11 @@ class DropperBot:
         batch = context.user_data.get("batch")
         rows = []
         if batch and batch.status == "collecting":
-            rows.append([PUBLISH])
+            rows.append([PUBLISH_NORMAL, PUBLISH_SLOW])
+            rows.append([KEEP_TEXT if batch.expire_text else EXPIRE_TEXT])
             rows.append([CANCEL])
         elif batch and batch.status == "paused":
-            rows.append([CONTINUE])
+            rows.append([CONTINUE, RESUME_SLOW] if batch.retry_at is not None else [CONTINUE])
             rows.append([CANCEL])
         elif batch and batch.status == "publishing":
             return ReplyKeyboardRemove()
@@ -88,7 +97,7 @@ class DropperBot:
         self.show_batch(context.user_data["batch"])
         log.info("Drop abierto para %s", self.creator.name)
         await self.reply(update, context,
-            f"🔄 {self.creator.name}\nReenvía tus posts y pulsa 📤 Publicar",
+            f"🔄 {self.creator.name}\nReenvía tus mensajes y elige Publicar normal o Publicar lento. El texto sin foto caduca tras 24 horas.",
             reply_markup=self.keyboard(context))
 
     async def menu(self, update, context):
@@ -96,8 +105,10 @@ class DropperBot:
         if message.forward_origin or message.photo or message.caption or message.media_group_id:
             await self.receive(update, context)
             return
-        handlers = {NEW_BATCH: self.start, PUBLISH: self.publish,
-                    CANCEL: self.cancel, CONTINUE: self.resume}
+        handlers = {NEW_BATCH: self.start, PUBLISH: self.publish, PUBLISH_NORMAL: self.publish,
+                    PUBLISH_SLOW: self.publish, KEEP_TEXT: self.set_text_expiration,
+                    EXPIRE_TEXT: self.set_text_expiration, CANCEL: self.cancel,
+                    CONTINUE: self.resume, RESUME_SLOW: self.resume}
         if message.text in handlers:
             await handlers[message.text](update, context)
         else:
@@ -131,6 +142,14 @@ class DropperBot:
         context.user_data.setdefault("prepublish_ids", set()).add(message.message_id)
         self.schedule_queue_notice(context, update.effective_chat.id, batch)
 
+    async def set_text_expiration(self, update, context):
+        batch = context.user_data.get("batch")
+        if batch is None or batch.status != "collecting":
+            await self.status(update, context)
+            return
+        batch.expire_text = update.effective_message.text == EXPIRE_TEXT
+        await self.reply(update, context, self.queue_text(batch), reply_markup=self.keyboard(context))
+
     async def publish(self, update, context):
         if self.recording and self.recording.busy:
             await self.reply(update, context, '🎥 Espera a que termine el comprobante actual antes de publicar el siguiente Drop')
@@ -146,6 +165,7 @@ class DropperBot:
         self.cancel_queue_notice(context)
         batch.cleanup_ids.update(context.user_data.pop("prepublish_ids", set()))
         batch.order = sorted(batch.received, reverse=True)
+        batch.slow = update.effective_message.text == PUBLISH_SLOW
         await self.publish_batch(batch, update, context)
 
     async def resume(self, update, context):
@@ -156,6 +176,11 @@ class DropperBot:
         if batch is None or batch.status != "paused":
             await self.status(update, context)
             return
+        if batch.retry_at is not None and monotonic() < batch.retry_at:
+            await self.report(update, context)
+            return
+        if update.effective_message.text == RESUME_SLOW:
+            batch.slow = True
         if batch.failed:
             if not batch.recovery_delivered:
                 await self.report(update, context)
@@ -255,7 +280,10 @@ class DropperBot:
         context.user_data["queue_notice_task"] = asyncio.create_task(self.queue_notice(context, chat_id, batch))
 
     def queue_text(self, batch):
-        text = f"✅ {len(batch.received)} posts en cola"
+        text = f"✅ {len(batch.received)} posts en cola · Del último reenviado al primero"
+        if any(post.photo_id is None for post in batch.received.values()):
+            expiration = "se elimina tras 24 horas" if batch.expire_text else "se conserva"
+            text += f"\nSolo texto · {expiration}"
         if batch.rejected:
             text += (f"\n⚠️ {len(batch.rejected)} mensajes rechazados"
                      "\nEnvía cada foto con su texto como mensaje individual")
@@ -340,7 +368,14 @@ class DropperBot:
         else:
             text = (f"⏸ Drop pausado · {batch.creator.name}\n"
                     f"Post #{batch.cursor + 1} de {len(batch.order)}\n")
-            if batch.failed:
+            if batch.retry_at is not None:
+                remaining = max(0, ceil(batch.retry_at - monotonic()))
+                text += "El servicio limitó temporalmente las publicaciones.\n"
+                if remaining:
+                    text += f"Espera {remaining} s antes de continuar."
+                else:
+                    text += "Puedes continuar desde la publicación pendiente."
+            elif batch.failed:
                 await self.send_recovery(context, update.effective_chat.id, batch)
                 if batch.rejected_mention:
                     text += f"AgencyKey rechazó la mención {batch.rejected_mention} · HTTP 400\n"

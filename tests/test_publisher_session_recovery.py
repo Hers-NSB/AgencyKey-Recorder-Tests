@@ -73,7 +73,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(batch.failed)
         api.stop_requested = lambda: False
         await bot.resume(update(), ctx)
-        api.publish_text.assert_awaited_once_with(1, 'post 1')
+        api.publish_text.assert_awaited_once_with(1, 'post 1', expire=True, slow=False)
         self.assertEqual((bot.session.automatic, bot.session.manual), (1, 0))
 
 
@@ -123,7 +123,7 @@ class QueueActivityTests(unittest.IsolatedAsyncioTestCase):
             await ctx.user_data['queue_notice_task']
         notice = ctx.bot.send_message.call_args.args[1]
         self.assertIn('3 posts en cola', notice)
-        self.assertEqual(notice, '✅ 3 posts en cola')
+        self.assertEqual(notice, '✅ 3 posts en cola · Del último reenviado al primero')
         self.assertEqual(list(ctx.user_data['batch'].received), [1, 2, 3])
 
     async def test_reception_during_notice_send_updates_final_count(self):

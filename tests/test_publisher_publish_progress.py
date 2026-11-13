@@ -14,7 +14,7 @@ class ProgressTests(unittest.IsolatedAsyncioTestCase):
         batch = batch_with_posts(2)
         ctx.user_data['batch'] = batch
         bot = DropperBot(SimpleNamespace(publish_text=AsyncMock(return_value=7)))
-        self.assertEqual(bot.queue_text(batch), '✅ 2 posts en cola')
+        self.assertEqual(bot.queue_text(batch), '✅ 2 posts en cola · Del último reenviado al primero\nSolo texto · se elimina tras 24 horas')
         self.assertEqual((NEW_BATCH, CANCEL), ('🔄 Nuevo Drop', '❌ Cancelar Drop'))
         await bot.publish_batch(batch, update(), ctx)
         texts = [call.args[1] for call in ctx.bot.send_message.call_args_list]

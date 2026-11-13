@@ -193,16 +193,30 @@ async def frame_is_visible(page, frame) -> bool:
     return not frame.is_detached()
 
 
-async def post_frame(page):
+async def post_frame(page, preferred_id=None):
+    from playwright.async_api import Error as PlaywrightError
+
+    first = None
     for frame in page.frames:
-        if await frame_is_visible(page, frame) and await frame.locator('[id^="postId_"]').evaluate_all(
-                'cards => cards.some(e => e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && e.getBoundingClientRect().height>0)'):
-            return frame
-    return None
+        try:
+            if not await frame_is_visible(page, frame):
+                continue
+            visible_ids = await frame.locator('[id^="postId_"]').evaluate_all(
+                """cards => cards.filter(e => e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})
+                    && e.getBoundingClientRect().height>0).map(e => e.id.slice(7))""")
+        except PlaywrightError as error:
+            if frame.is_detached() or 'Execution context was destroyed' in str(error):
+                continue
+            raise
+        if visible_ids:
+            first = first or frame
+            if preferred_id is None or preferred_id in visible_ids:
+                return frame
+    return first
 
 
-async def scroll_frame(page):
-    found = await post_frame(page)
+async def scroll_frame(page, preferred_id=None):
+    found = await post_frame(page, preferred_id)
     if found:
         return found
     # A profile header can fill a visible iframe before the recycled posts are mounted.
@@ -292,7 +306,7 @@ async def scroll_down(page, pixels: int = 190, *, frame=None) -> None:
 async def seek_start(page, newest: str, timeout: float = 120) -> dict:
     deadline = monotonic() + timeout
     while monotonic() < deadline:
-        frame = await scroll_frame(page)
+        frame = await scroll_frame(page, newest)
         cards = await frame.evaluate(SNAPSHOT)
         target = next((p for p in cards if p['id'] == newest and not p['pinned']), None)
         if target:
@@ -318,24 +332,40 @@ async def seek_start(page, newest: str, timeout: float = 120) -> dict:
     raise ValueError('No se localizó el primer post. Revisa los IDs, la modelo y si la sesión sigue iniciada.')
 
 
-async def prepare_feed(page, ids, *, timeout=600, on_progress=None):
+async def prepare_feed(page, ids, *, timeout=600, on_progress=None, profile_url=None):
     """Warm the entire batch, including lazy images, before marking the video start.
 
     Virtual feeds remove off-screen cards, so waiting for all nodes at once never completes.
     """
     deadline = monotonic() + timeout
     feed_deadline = min(deadline, monotonic() + 35)
-    frame = None
+    expected = urlparse(profile_url) if profile_url else None
+    from playwright.async_api import Error as PlaywrightError
+
     while monotonic() < feed_deadline:
         current = urlparse(page.url)
-        if current.netloc == 'app.agencykey.com' and re.search(r'/(login|sign-in|auth)(/|$)', current.path):
-            raise ValueError('La sesión de AgencyKey caducó. Reconéctala desde la web.')
-        frame = await post_frame(page)
-        if frame:
+        path = current.path.lower().split('/')
+        if current.netloc == 'app.agencykey.com' and any(
+                part in {'login', 'sign-in', 'signin', 'auth', '2fa', 'mfa'} for part in path):
+            raise ValueError('AgencyKey volvió a pedir inicio de sesión. Pulsa «Conectar AgencyKey» en el panel web.')
+        if expected and (current.scheme, current.netloc, current.path.rstrip('/')) != (
+                expected.scheme, expected.netloc, expected.path.rstrip('/')):
+            await page.wait_for_timeout(500)
+            continue
+        if await post_frame(page, ids[0]):
             break
+        # The profile header can occupy the full view before lazy cards are mounted.
+        try:
+            await scroll_down(page, 220, frame=await scroll_frame(page))
+        except PlaywrightError as error:
+            if page.is_closed():
+                raise
+            if not any(message in str(error) for message in
+                       ('Execution context was destroyed', 'Frame was detached', 'Frame has been detached')):
+                raise
         await page.wait_for_timeout(500)
-    if not frame:
-        raise ValueError('El feed no terminó de cargar. Revisa el acceso de esta modelo o reconecta AgencyKey desde la web.')
+    else:
+        raise ValueError('No pudimos abrir las publicaciones de esta modelo. Comprueba su acceso con «Verificar feed» en el panel web.')
     first = await seek_start(page, ids[0], timeout=max(.1, min(30, deadline-monotonic())))
     def progress(value):
         if on_progress:
@@ -494,7 +524,7 @@ async def pause_failed_test(page) -> None:
 
 async def record(config: dict, *, fixture: Path | None = None, headless: bool = False, dwell: float = 0,
                  session_path: Path | None = None, on_progress=None, on_preview=None, stop_event=None,
-                 session_state=None, on_session_saved=None) -> Path:
+                 session_state=None, on_session_saved=None, on_browser_failure=None) -> Path:
     from playwright.async_api import async_playwright
     state = session_path or STATE
     if not fixture and session_state is None and not state.exists():
@@ -556,16 +586,16 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 if response.status == 401:
                     raise ValueError('AgencyKey pide iniciar sesión · Reconecta desde la web')
                 if response.status in (403, 404):
-                    raise ValueError(f'AgencyKey no permite abrir el feed de esta modelo · HTTP {response.status}')
+                    raise ValueError('AgencyKey no permite abrir las publicaciones de esta modelo. Revisa sus permisos en el panel web.')
                 if response.status >= 500:
-                    raise ValueError(f'AgencyKey no pudo cargar el perfil · HTTP {response.status}')
+                    raise ValueError('AgencyKey no pudo cargar el perfil. Usa /video para intentarlo de nuevo.')
             stage('cargando feed e imágenes')
             print(f'Etapa: {report["stage"]} · ID {report["first_post_id"]}', flush=True)
             preload_limit = 45 if fixture else min(180, 55 + 4 * len(report['post_ids']))
             try:
                 async with asyncio.timeout(preload_limit):
                     first = await prepare_feed(page, config['post_ids_newest_first'], timeout=preload_limit,
-                                               on_progress=on_progress)
+                                               on_progress=on_progress, profile_url=None if fixture else url)
             except TimeoutError as exc:
                 raise ValueError('Se agotó la espera del feed. Usa /video para reintentar el comprobante') from exc
             report['feed_preloaded'] = True
@@ -596,7 +626,8 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 isinstance(exc, PlaywrightTimeoutError) and str(exc) == IMAGE_TIMEOUT_MESSAGE
             ) else (
                 'Se agotó el tiempo de espera del navegador.' if isinstance(exc, PlaywrightTimeoutError)
-                else f'Error del navegador ({type(exc).__name__}).')
+                else 'Chrome se cerró durante la grabación.' if page.is_closed()
+                else 'Chrome no pudo completar este paso. Usa /video para intentarlo de nuevo.')
             report['error'] = f'Etapa: {report["stage"]}. {reason}'
             report['next_post_id'] = next((pid for pid in report['post_ids'] if pid not in report['seen']), None)
             try:
@@ -607,8 +638,11 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             save_json(report_path, report)
             print(f'{report["error"]}\nPosts comprobados: {len(report["seen"])}/{len(report["post_ids"])}'
                   f' · siguiente ID: {report["next_post_id"]}\nInforme: {report_path}', flush=True)
-            if not headless and not fixture:
-                await pause_failed_test(page)
+            if not headless and not fixture and not page.is_closed() and not (stop_event and stop_event.is_set()):
+                if on_browser_failure:
+                    await on_browser_failure(page, report['stage'], reason)
+                else:
+                    await pause_failed_test(page)
         finally:
             monitor_task.cancel()
             try:
@@ -651,6 +685,9 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             on_progress({'stage': 'video listo', 'completed': len(report['seen']), 'total': len(report['post_ids'])})
         print(f'Video completo: {video}\nTamaño: {video.stat().st_size / 1_000_000:.2f} MB')
         return report_path
+    except Exception as exc:
+        report.setdefault('error_type', type(exc).__name__)
+        raise
     finally:
         save_json(report_path, report)
         # Never retain setup/login navigation or incomplete captures.
