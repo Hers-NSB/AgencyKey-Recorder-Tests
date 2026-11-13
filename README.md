@@ -1,10 +1,30 @@
-# AgencyKey Recorder Tests — web, app y bots independientes
+# AgencyKey Recorder Tests
 
-Adaptación de Dropper con grabación automática al terminar cada Drop. Todo el código pertenece a **Hers-NSB/AgencyKey-Recorder-Tests**. Dropper y su servidor permanecen separados.
+AgencyKey Recorder Tests es una app de Windows que toma los mensajes que reenvías a un bot de Telegram, los publica en el muro de OnlyFans de la modelo asignada mediante AgencyKey y envía al mismo chat un comprobante en video. Un **Drop** es un lote de mensajes reenviados. La app usa Google Chrome instalado en la PC para grabar las publicaciones y el panel web sirve para configurar los bots y conectar AgencyKey.
+
+El proyecto se basa en Dropper y funciona con su propia app, bots y servidor.
+
+## Qué cambió en esta actualización
+
+| Función | Qué verás |
+| --- | --- |
+| Búsqueda del feed | Después de abrir el perfil, el grabador también busca publicaciones debajo del encabezado, donde pueden cargarse al desplazar la página. |
+| Chrome visible | Activa **Mostrar Chrome durante la grabación** en la ficha del bot. Si la grabación falla y Chrome sigue abierto, puedes revisar la página antes de cerrar la ventana. |
+| Registro de actividad | La app indica en lenguaje claro qué está haciendo, en qué paso se detuvo y qué puedes revisar. |
+| Ritmo de publicación | **Publicar normal** espera 11 segundos entre publicaciones y **Publicar lento** espera 30. Si el servicio limita temporalmente el ritmo, el lote se pausa y Telegram indica cuándo puedes continuar desde la publicación pendiente. |
+| Caducidad del texto | Las publicaciones de solo texto se envían con caducidad de 24 horas por defecto. **Conservar solo texto** la desactiva para el lote actual. |
+
+Ambos ritmos publican del **último mensaje reenviado al primero**. Si reenvías los mensajes 1, 2 y 3, salen en orden 3, 2 y 1.
+
+### Estado de la actualización
+
+Los cambios están en el [PR #13](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/pull/13). El [EXE de prueba para Windows](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/43489220395/artifacts/14068926994) pasó las pruebas automatizadas con Google Chrome y datos simulados. Queda verificar con una cuenta real que el grabador encuentre el feed y que la caducidad de solo texto se aplique a las 24 horas. La versión privada publicada sigue disponible por separado.
+
+Para probar la grabación del último lote, abre el EXE de prueba, activa **Mostrar Chrome durante la grabación** y envía `/video` al bot. Ese comando reintenta el comprobante sin volver a publicar.
 
 ## Uso en Windows
 
-1. Descarga **AgencyKeyRecorderTests.exe** desde la [última versión privada](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/releases/latest). Requiere Windows de 64 bits y Google Chrome instalado; no necesita Python, OBS ni descargar otro navegador.
+1. Descarga el EXE de prueba indicado arriba para usar las funciones de esta actualización. La [última versión privada publicada](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/releases/latest) se descarga por separado. El EXE requiere Windows de 64 bits y Google Chrome instalado.
 2. Configura el entorno nuevo en https://agencykey-recorder-tests.datosenviados07.workers.dev/admin: contraseña de administrador, API de AgencyKey, contraseña de las apps y bots con sus modelos. Usa tokens propios de los bots de pruebas; el token de un mismo bot no puede ser atendido por dos apps a la vez. Puedes usar la misma API de AgencyKey y las mismas asignaciones de modelo.
 3. Abre el EXE y pulsa **Actualizar** la primera vez. Si te pide acceso, introduce la contraseña de las apps. Puedes recordarla con el Administrador de credenciales de Windows. Al volver a abrir, la app usa los perfiles guardados y comprueba si hay cambios cada 30 segundos. Si aparece **Hay cambios disponibles**, pulsa **Actualizar** para descargarlos.
 4. Deja abierta la app de Windows y pulsa **Conectar AgencyKey** en el panel web. La app abrirá una ventana de Chrome en esa PC. Inicia sesión en AgencyKey y espera la confirmación del panel. Luego pulsa **Verificar feed** en la fila de cada modelo. La app comprueba en segundo plano la ruta que usará para el video, sin esperar publicaciones ni imágenes. La misma sesión sirve para las modelos a las que la cuenta tiene acceso. La conexión, la verificación y la grabación usan Chrome en la PC, sin consumir minutos de Cloudflare Browser Run.
@@ -20,7 +40,7 @@ La prueba publica contenido real en la modelo configurada. Las pruebas de CI usa
 
 - Interfaz de escritorio, varios bots independientes, aviso de cambios cada 30 segundos y descarga manual de perfiles, inicio y parada por bot, registro exportable.
 - Administración web con API global de AgencyKey, modelo fija por bot y un bot por modelo.
-- Fotos y textos del último mensaje reenviado al primero, rechazo de álbumes, intervalo de 11 segundos por modelo y vencimiento de fotos de un día.
+- Reenvío de fotos con texto y mensajes de solo texto, rechazo de álbumes y caducidad de un día para publicaciones con foto.
 - Progreso de publicación, contadores de sesión, pausa ante errores, copia para carga manual, continuación sin reenviar el post manual y limpieza de mensajes de preparación.
 - Contraseñas de administrador y apps independientes, sesiones seguras, cifrado de claves en D1 y claves descargadas solo a memoria.
 
