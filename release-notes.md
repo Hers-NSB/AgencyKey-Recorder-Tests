@@ -1,3 +1,3 @@
-- Cancelar Drop aparece en el bot después de recibir el primer mensaje del lote.
-- Chrome espera más al abrir perfiles y cargar fotos. La espera del recorrido se reinicia con cada post verificado.
-- El botón Repetir grabación recupera el comprobante de los posts ya publicados.
+- Detecta el feed de Mi perfil por su estructura y desplaza su contenedor con JavaScript.
+- Busca por ID las publicaciones del lote y confirma el encuadre antes de grabar.
+- La verificación iniciada en la web usa la misma búsqueda desde Chrome en la app de Windows.
