@@ -22,6 +22,8 @@ const PAGE = String.raw`<!doctype html>
 const $=id=>document.getElementById(id);
 let profiles=[],creators=[],editing=null,saving=false,checking=false,resolveRequest=0;
 let confirmResolve=null,recordingTimer=null,recordingBusy=false,recordingGeneration=0,recordingJob=null,feedBusy=false;
+const feedRows=new Map();
+let renderPending=false;
 let setupToken=new URLSearchParams(location.hash.slice(1)).get('configurar')||'';
 if(location.hash)history.replaceState(null,'',location.pathname);
 async function api(path,options={}) {
@@ -34,7 +36,7 @@ async function api(path,options={}) {
 }
 function showLogin(){
  stopRecordingPoll();$('recording-dialog').close();if(confirmResolve)finishConfirm(false);
- profiles=[];creators=[];resolveRequest++;$('profiles-body').replaceChildren();$('profile-form').reset();$('agency-form').reset();$('access-form').reset();$('admin-password-form').reset();$('admin-password').value='';$('admin-confirm').value='';
+ profiles=[];creators=[];feedRows.clear();renderPending=false;resolveRequest++;$('profiles-body').replaceChildren();$('profile-form').reset();$('agency-form').reset();$('access-form').reset();$('admin-password-form').reset();$('admin-password').value='';$('admin-confirm').value='';
  if($('profile-dialog').open)$('profile-dialog').close();$('app-view').hidden=true;$('logout').hidden=true;$('login-view').hidden=false;
  const setup=Boolean(setupToken);$('login-title').textContent=setup?'Crea tu contraseña':'Entrar a AgencyKey Recorder Tests';$('login-help').textContent=setup?'Esta contraseña privada será solo para administrar la web':'Introduce tu contraseña de administrador';$('confirm-field').hidden=!setup;$('admin-confirm').required=setup;$('admin-password').minLength=setup?12:1;$('admin-password').autocomplete=setup?'new-password':'current-password';$('login-button').textContent=setup?'Crear contraseña y entrar':'Entrar';
 }
@@ -44,12 +46,27 @@ $('logout').addEventListener('click',async()=>{if(!await askConfirm('¿Cerrar se
 $('admin-password-form').addEventListener('submit',async event=>{event.preventDefault();if(!await askConfirm('¿Cambiar tu contraseña?','Las demás sesiones de administración tendrán que iniciar sesión de nuevo.','Cambiar contraseña'))return;$('save-admin-password').disabled=true;$('admin-password-error').textContent='';try{await api('/password',{method:'PUT',body:JSON.stringify({current_password:$('admin-current').value,password:$('admin-next').value})});$('admin-password-form').reset();$('admin-password-status').textContent='Contraseña de administrador cambiada';}catch(error){$('admin-password-error').textContent=error.message;}finally{$('save-admin-password').disabled=false;}});
 function section(which){const list=which==='profiles';$('profiles-section').hidden=!list;$('access-section').hidden=list;$('nav-profiles').setAttribute('aria-selected',String(list));$('nav-access').setAttribute('aria-selected',String(!list));$('status').textContent='';}
 function render(){
- $('profiles-body').replaceChildren();$('empty').hidden=profiles.length>0;
- for(const profile of profiles){const row=document.createElement('div');row.className='bot-row';const details=document.createElement('div');const name=document.createElement('div');name.className='model-name';name.textContent=profile.creator.name;details.append(name);const user=document.createElement('div');user.className='muted';user.textContent=(profile.creator.username?'@'+profile.creator.username+' · ':'')+'Token configurado';details.append(user);const feed=document.createElement('div');feed.className='muted';feed.textContent='Feed sin comprobar';feed.setAttribute('aria-live','polite');details.append(feed);const actions=document.createElement('div');actions.className='row-actions';const edit=document.createElement('button');edit.textContent='Editar';edit.setAttribute('aria-label','Editar '+profile.creator.name);edit.addEventListener('click',()=>openProfile(profile));const remove=document.createElement('button');remove.textContent='Eliminar';remove.className='danger';remove.setAttribute('aria-label','Eliminar '+profile.creator.name);remove.addEventListener('click',()=>deleteProfile(profile,remove));const verify=document.createElement('button');verify.textContent='Verificar feed';verify.setAttribute('aria-label','Verificar feed de '+profile.creator.name);verify.addEventListener('click',()=>verifyFeed(profile,feed,verify));actions.append(verify,edit,remove);row.append(details,actions);$('profiles-body').append(row);}
+ if(feedBusy){renderPending=true;return;}
+ feedRows.clear();$('profiles-body').replaceChildren();$('empty').hidden=profiles.length>0;
+ for(const profile of profiles){const row=document.createElement('div');row.className='bot-row';const details=document.createElement('div');const name=document.createElement('div');name.className='model-name';name.textContent=profile.creator.name;details.append(name);const user=document.createElement('div');user.className='muted';user.textContent=(profile.creator.username?'@'+profile.creator.username+' · ':'')+'Token configurado';details.append(user);const feed=document.createElement('div');feed.className='muted';feed.textContent=feedLabel(profile.feed);feed.setAttribute('aria-live','polite');details.append(feed);const actions=document.createElement('div');actions.className='row-actions';const edit=document.createElement('button');edit.textContent='Editar';edit.setAttribute('aria-label','Editar '+profile.creator.name);edit.addEventListener('click',()=>openProfile(profile));const remove=document.createElement('button');remove.textContent='Eliminar';remove.className='danger';remove.setAttribute('aria-label','Eliminar '+profile.creator.name);remove.addEventListener('click',()=>deleteProfile(profile,remove));const verify=document.createElement('button');verify.textContent='Verificar feed';verify.setAttribute('aria-label','Verificar feed de '+profile.creator.name);verify.addEventListener('click',()=>verifyFeed(profile,feed,verify));actions.append(verify,edit,remove);feedRows.set(profile.id,{profile,status:feed,button:verify});row.append(details,actions);$('profiles-body').append(row);}
+}
+const feedMessages={pending:'Feed pendiente de comprobar',ready:'Feed verificado',no_session:'Sin sesión guardada · Conecta AgencyKey',
+ login_required:'AgencyKey pide iniciar sesión · Reconecta',unavailable:'Feed sin acceso o no disponible',
+ feed_unverified:'Chrome no mostró las publicaciones de esta modelo',
+ connection_error:'La app no pudo abrir AgencyKey en tu PC',
+ desktop_update_required:'Actualiza la app de Windows y vuelve a verificar',
+ desktop_offline:'Abre la app de Windows y vuelve a verificar',expired:'La comprobación caducó',
+ cancelled:'Comprobación cancelada'};
+function feedLabel(result){
+ const time=result?.checked_at?new Date(result.checked_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
+ return (feedMessages[result?.status]||feedMessages.pending)+(time?' · '+time:'');
 }
 async function verifyFeed(profile, status, button){
- if(feedBusy){status.textContent='Espera a que termine la otra comprobación';return;}
- feedBusy=true;button.disabled=true;status.textContent='Abriendo el feed con la sesión guardada…';
+ if(feedBusy)return;
+ feedBusy=true;$('reload').disabled=true;
+ const buttons=[...feedRows.values()].map(row=>row.button);
+ for(const item of buttons)item.disabled=true;
+ status.textContent='Abriendo el feed con la sesión guardada…';
  try{
   let result=await api('/recording-session/feed/'+profile.id,{method:'POST',body:'{}'});
   const id=result.id;
@@ -58,18 +75,27 @@ async function verifyFeed(profile, status, button){
    await new Promise(resolve=>setTimeout(resolve,2500));
    result=await checkDesktopJob(id);
   }
-  const messages={ready:'Ruta del feed verificada',no_session:'Sin sesión guardada · Conecta AgencyKey',
-   login_required:'AgencyKey pide iniciar sesión · Reconecta',unavailable:'Feed sin acceso o no disponible',
-   feed_unverified:'Feed sin verificar · AgencyKey no abrió la ruta de esta modelo',
-   connection_error:'La app no pudo abrir AgencyKey en tu PC',
-   desktop_offline:'Abre la app de Windows e inténtalo de nuevo',expired:'La comprobación caducó',
-   cancelled:'Comprobación cancelada'};
-  const time=result.checked_at?new Date(result.checked_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
-  status.textContent=(messages[result.status]||'Feed sin verificar')+(time?' · '+time:'');
- }catch(error){status.textContent=error.message;}
- finally{button.disabled=false;feedBusy=false;}
+  const current=profiles.find(item=>item.id===profile.id&&item.creator.external_id===profile.creator.external_id);
+  if(current)current.feed=result;
+  status.textContent=feedLabel(result);
+ }catch(error){
+  const current=profiles.find(item=>item.id===profile.id&&item.creator.external_id===profile.creator.external_id);
+  if(current)current.feed={status:'connection_error'};
+  status.textContent=error.message;
+ }
+ finally{
+  for(const item of buttons)item.disabled=false;
+  button.disabled=false;$('reload').disabled=false;feedBusy=false;
+  if(renderPending){renderPending=false;render();}
+  void verifyPendingFeeds();
+ }
 }
-async function reload(){try{$('reload').disabled=true;$('profiles-error').textContent='';profiles=(await api('/profiles')).profiles;render();}catch(error){$('profiles-error').textContent=error.message;}finally{$('reload').disabled=false;}}
+async function verifyPendingFeeds(){
+ if(feedBusy||$('app-view').hidden)return;
+ const row=[...feedRows.values()].find(row=>row.profile.feed?.status==='pending');
+ if(row)await verifyFeed(row.profile,row.status,row.button);
+}
+async function reload(){try{$('reload').disabled=true;$('profiles-error').textContent='';profiles=(await api('/profiles')).profiles;render();}catch(error){$('profiles-error').textContent=error.message;}finally{$('reload').disabled=feedBusy;void verifyPendingFeeds();}}
 function lockForm(locked){['creator-id','telegram-token','cancel','save'].forEach(id=>$(id).disabled=locked);}
 async function openProfile(profile){
  editing=profile||null;$('profile-form').reset();$('creator-id').replaceChildren(new Option('Selecciona una modelo',''));$('creator-name').value='';$('dialog-title').textContent=profile?'Editar bot':'Añadir bot';$('keep-hint').hidden=!profile;$('telegram-token').required=!profile;$('form-error').textContent='Cargando modelos…';$('profile-dialog').showModal();lockForm(true);
@@ -87,7 +113,7 @@ $('nav-profiles').addEventListener('click',()=>section('profiles'));$('nav-acces
 function finishConfirm(value){const resolve=confirmResolve;confirmResolve=null;$('confirm-dialog').close();if(resolve)resolve(value);}
 function askConfirm(title,message,label){if(confirmResolve)return Promise.resolve(false);$('confirm-title').textContent=title;$('confirm-message').textContent=message;$('confirm-accept').textContent=label;$('confirm-dialog').showModal();$('confirm-cancel').focus();return new Promise(resolve=>confirmResolve=resolve);}
 $('confirm-cancel').addEventListener('click',()=>finishConfirm(false));$('confirm-accept').addEventListener('click',()=>finishConfirm(true));$('confirm-dialog').addEventListener('cancel',event=>{event.preventDefault();finishConfirm(false);});
-async function recordingStatus(){try{const data=await api('/recording-session');$('recording-session-status').textContent=data.configured?'Sesión guardada · Verifica el feed de cada modelo':'Sin sesión · conecta AgencyKey para grabar videos';$('connect-recording').textContent=data.configured?'Reconectar AgencyKey':'Conectar AgencyKey';}catch(error){$('recording-session-status').textContent=error.message;}}
+async function recordingStatus(){try{const data=await api('/recording-session');$('recording-session-status').textContent=data.configured?'Sesión guardada · Los feeds se comprueban automáticamente':'Sin sesión · conecta AgencyKey para grabar videos';$('connect-recording').textContent=data.configured?'Reconectar AgencyKey':'Conectar AgencyKey';}catch(error){$('recording-session-status').textContent=error.message;}}
 function stopRecordingPoll(){recordingGeneration++;clearTimeout(recordingTimer);recordingTimer=null;}
 const desktopJobRequest=(action,id)=>api('/recording-session/'+action,{method:'POST',body:JSON.stringify({id})});
 const checkDesktopJob=id=>desktopJobRequest('check',id);
@@ -97,7 +123,7 @@ async function checkRecording(generation){
   const data=await checkDesktopJob(recordingJob);
   if(generation!==recordingGeneration)return;
   if(data.status==='ready'){
-   stopRecordingPoll();recordingJob=null;$('recording-dialog').close();await recordingStatus();render();
+   stopRecordingPoll();recordingJob=null;$('recording-dialog').close();await recordingStatus();await reload();
    $('status').textContent='Sesión compartida guardada desde tu PC';return;
   }
   if(['queued','running','finishing'].includes(data.status)){

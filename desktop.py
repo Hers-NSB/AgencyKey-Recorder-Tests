@@ -204,9 +204,6 @@ class BotPanel:
         self.recording_label.grid(row=1, column=0, sticky='ew', padx=(0, 12))
         proof.bind('<Configure>', lambda event: self.recording_label.configure(wraplength=max(120, event.width-16)))
         self.proof.grid_remove()
-        self.show_recording_browser = tk.BooleanVar(master=body)
-        ttk.Checkbutton(body, text='Mostrar Chrome durante la grabación', variable=self.show_recording_browser,
-                        command=self.update_recording_browser).grid(row=5, column=0, sticky='w', padx=28, pady=(0, 8))
         log_title = tk.Frame(body, bg=SURFACE)
         log_title.grid(row=6, column=0, sticky='ew', padx=28, pady=(0, 8))
         label(log_title, 'ACTIVIDAD DEL BOT', color=MUTED, size=9, bold=True).pack(side='left')
@@ -298,14 +295,14 @@ class BotPanel:
         status = data['status']
         total, completed = data['total'], data['completed']
         if status == 'collecting':
-            detail = f'{total} en cola · Se publican del último reenviado al primero' if total else 'Esperando mensajes reenviados en Telegram'
+            detail = f'{total} en cola' if total else 'Esperando mensajes reenviados en Telegram'
             self.show_publication('Drop abierto', detail)
             return
         if status == 'cancelled':
             self.show_publication('Drop cancelado', 'Esperando un nuevo Drop en Telegram')
             return
         if status == 'done':
-            detail = data['stage'] or 'Orden del último reenviado al primero · Confirmación pendiente en Telegram'
+            detail = data['stage'] or 'Confirmación pendiente en Telegram'
             self.show_publication(f'{completed} de {total} publicados', detail, GREEN)
         elif status == 'paused':
             mention = data['mention']
@@ -353,13 +350,6 @@ class BotPanel:
                 return
         self.set_mode('starting')
         self.controller.start()
-
-    def update_recording_browser(self):
-        setting = self.controller.show_recording_browser
-        if self.show_recording_browser.get():
-            setting.set()
-        else:
-            setting.clear()
 
     def toggle_log(self):
         self.log_visible = not self.log_visible

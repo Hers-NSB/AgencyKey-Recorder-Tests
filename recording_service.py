@@ -90,12 +90,6 @@ async def session_ready(page, expected_url):
         return False
 
 
-async def agencykey_sign_in_visible(page):
-    auth_paths = {'auth', 'login', 'sign-in', 'signin', 'signup', '2fa', 'mfa', 'two-factor'}
-    return (bool(auth_paths.intersection(urlparse(page.url).path.lower().split('/')))
-            or await page.locator('input[type="password"]:visible').first.is_visible())
-
-
 async def agencykey_login_complete(page):
     from playwright.async_api import Error as PlaywrightError
 
@@ -103,7 +97,7 @@ async def agencykey_login_complete(page):
     if (current.scheme, current.netloc) != ('https', 'app.agencykey.com'):
         return False
     try:
-        return not await agencykey_sign_in_visible(page) and await page.locator('body').is_visible()
+        return not await recorder.agencykey_sign_in_visible(page) and await page.locator('body').is_visible()
     except PlaywrightError:
         return False
 
@@ -119,13 +113,10 @@ async def verify_feed_route(page, url):
     if not response.ok:
         return 'connection_error'
 
-    expected = urlparse(url)
-    current = urlparse(page.url)
-    if await agencykey_sign_in_visible(page):
-        return 'login_required'
-    if (current.scheme, current.netloc, current.path.rstrip('/')) != (
-            expected.scheme, expected.netloc, expected.path.rstrip('/')):
-        return 'feed_unverified'
+    try:
+        await recorder.wait_for_feed(page, url, deadline=monotonic() + 35)
+    except recorder.FeedAccessError as error:
+        return error.status
     return 'ready'
 
 
@@ -156,7 +147,7 @@ async def run_desktop_recording_job(client, job, stop_event):
                 page = await context.new_page()
                 if not connect:
                     url = recorder.model_profile_url(job['creator_id'])
-                    return {'status': await verify_feed_route(page, url)}
+                    return {'status': await verify_feed_route(page, url), 'feed_checked': True}
                 response = await page.goto(AGENCYKEY_SIGN_IN, wait_until='domcontentloaded', timeout=30000)
                 if response is not None and response.status >= 400:
                     return {'status': 'connection_error'}
@@ -178,6 +169,8 @@ async def run_desktop_recording_job(client, job, stop_event):
                 result = running.result()
             except Exception:
                 result = {'status': 'connection_error'}
+                if job['kind'] == 'feed':
+                    result['feed_checked'] = True
             await asyncio.to_thread(client.update_recording_job, job, **result)
     finally:
         for task in (running, cancelled):
@@ -187,12 +180,11 @@ async def run_desktop_recording_job(client, job, stop_event):
 
 
 class RecordingCoordinator:
-    def __init__(self, creator, *, events=None, stop_event=None, session_client=None, show_browser=None):
+    def __init__(self, creator, *, events=None, stop_event=None, session_client=None):
         self.creator, self.events, self.stop_event = creator, events, stop_event
         self.busy = False
         self.session_client = session_client
         self.completion_markup = None
-        self.show_browser = show_browser or (lambda: False)
         self.last_recording_step = None
 
     def emit(self, event, value):
@@ -294,10 +286,8 @@ class RecordingCoordinator:
                     async def refresh(state):
                         await asyncio.to_thread(self.session_client.refresh_recording_session, state, shared['revision'])
                     options['on_session_saved'] = refresh
-                visible = self.show_browser()
-                if visible:
-                    options['on_browser_failure'] = self.inspect_browser_failure
-                report_path = await recorder.record(config, headless=not visible, session_path=session_path(self.creator.external_id),
+                report_path = await recorder.record(config, headless=False,
+                    on_browser_failure=self.inspect_browser_failure, session_path=session_path(self.creator.external_id),
                     on_progress=self.progress, stop_event=self.stop_event, **options)
                 job['report'] = str(report_path)
             report, video = recorder.verified_video(report_path)
@@ -353,7 +343,7 @@ class RecordingCoordinator:
             self.emit('recording', {'stage': message, 'error': True, 'completed': 0, 'total': len(batch.order)})
             log.error('%s', message)
             try:
-                await bot.send_message(chat_id, '❌ No se pudo completar el video · Usa /video para reintentar')
+                await bot.send_message(chat_id, '❌ ' + message.removesuffix('.'))
             except TelegramError:
                 pass
         finally:

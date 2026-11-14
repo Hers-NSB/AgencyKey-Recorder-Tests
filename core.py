@@ -45,7 +45,6 @@ class Batch:
     finished_at: float | None = None
     started_wall_at: float | None = None
     session_total: int = 0
-    expire_text: bool = True
     slow: bool = False
     retry_at: float | None = None
 
@@ -126,7 +125,7 @@ class Batch:
                     if on_stage:
                         on_stage("Creando post en AgencyKey")
                     post_id = await agencykey.publish_text(self.creator.external_id, post.text,
-                                                           expire=self.expire_text, slow=self.slow)
+                                                           slow=self.slow)
             except PublishRateLimited as error:
                 self.status = "paused"
                 self.error = str(error)

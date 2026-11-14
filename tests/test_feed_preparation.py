@@ -9,7 +9,7 @@ import recorder
 
 class FeedPreparationTests(IsolatedAsyncioTestCase):
     async def test_waits_for_delayed_feed_then_checks_all_posts_and_returns_to_start(self):
-        page=SimpleNamespace(url='https://app.agencykey.com/models/52',wait_for_timeout=AsyncMock())
+        page=SimpleNamespace(url='file:///test-feed.html',wait_for_timeout=AsyncMock())
         frame=SimpleNamespace(evaluate=AsyncMock())
         order=[]
         async def seek(*args,**kwargs):

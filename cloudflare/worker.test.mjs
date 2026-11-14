@@ -214,3 +214,34 @@ test('admin queues a local Chrome connection and only the claiming app can compl
  assert.equal((await (await request(env,'POST',root+'/cancel',{id:feed.id},cookie)).json()).status,'cancelled');
  assert.deepEqual(await (await desktop(env,'PUT',claim,{id:feed.id,claim:next.claim})).json(),{active:false});
 });
+
+test('persists real feed checks across session refreshes and invalidates them when reconnecting', async()=>{
+ const root='/v1/admin/recording-session';
+ const claim='/v1/recording-desktop-job';
+ const state={cookies:[{name:'session',domain:'.agencykey.com',value:'test-only'}],origins:[]};
+ const login=await request(env,'POST','/v1/admin/login',{password:env.ADMIN_TOKEN});
+ const cookie={Cookie:login.headers.get('set-cookie').split(';')[0]};
+ const web=async(method,path,data)=>(await request(env,method,path,data,cookie)).json();
+ const profiles='/v1/admin/profiles';
+ const status=async()=>(await web('GET',profiles)).profiles[0].feed.status;
+ const complete=async(path,result)=>{
+   const queued=await web('POST',root+path,{});
+   const {job}=await (await desktop(env,'POST',claim)).json();
+   assert.equal(job.id,queued.id);
+   await desktop(env,'PUT',claim,{id:job.id,claim:job.claim,...result});
+   return web('POST',root+'/check',{id:job.id});
+ };
+ await web('PUT',profiles+'/'+firstId,input);
+ assert.equal(await status(),'no_session');
+ await complete('/connect',{status:'ready',state});
+ assert.equal(await status(),'pending');
+ assert.equal((await complete('/feed/'+firstId,{status:'ready'})).status,'desktop_update_required');
+ assert.equal((await complete('/feed/'+firstId,{status:'feed_unverified',feed_checked:true})).status,'feed_unverified');
+ assert.equal(await status(),'feed_unverified');
+ assert.equal((await complete('/feed/'+firstId,{status:'ready',feed_checked:true})).status,'ready');
+ const session=await (await desktop(env,'GET','/v1/recording-session')).json();
+ assert.equal((await desktop(env,'PUT','/v1/recording-session',{state,revision:session.revision})).status,200);
+ assert.equal(await status(),'ready');
+ await complete('/connect',{status:'ready',state});
+ assert.equal(await status(),'pending');
+});
