@@ -42,3 +42,19 @@ class FeedPreparationTests(IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(PlaywrightTimeoutError, 'imágenes visibles'):
             await recorder.images_ready(None, frame=frame)
         self.assertEqual(frame.wait_for_function.call_args.kwargs['timeout'], 20000)
+
+
+    async def test_opens_my_profile_before_scrolling_for_posts(self):
+        url = 'https://app.agencykey.com/models/52'
+        frame = object()
+        page = SimpleNamespace(url=url, wait_for_timeout=AsyncMock())
+        with patch.object(recorder, 'agencykey_sign_in_visible', new=AsyncMock(return_value=False)), \
+             patch.object(recorder, 'post_frame', new=AsyncMock(side_effect=[None, None, frame])), \
+             patch.object(recorder, 'open_my_profile', new=AsyncMock(return_value=True)) as open_profile, \
+             patch.object(recorder, 'scroll_frame', new=AsyncMock(return_value=frame)), \
+             patch.object(recorder, 'scroll_down', new=AsyncMock()) as scroll:
+            result = await recorder.wait_for_feed(page, url, deadline=recorder.monotonic() + 5)
+        self.assertIs(result, frame)
+        open_profile.assert_awaited_once_with(page)
+        scroll.assert_awaited_once_with(page, 340, frame=frame)
+        self.assertEqual([call.args for call in page.wait_for_timeout.await_args_list], [(700,), (500,)])

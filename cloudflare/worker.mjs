@@ -375,7 +375,7 @@ export async function saveSharedSession(env, state, revision, connection=crypto.
 }
 
 const desktopJobKey = 'recording_desktop_job';
-const desktopResults = new Set(['ready','login_required','unavailable','feed_unverified','connection_error','cancelled']);
+const desktopResults = new Set(['ready','login_required','unavailable','profile_menu_missing','feed_unverified','connection_error','cancelled']);
 
 async function readDesktopJob(env) {
   const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(desktopJobKey).first();

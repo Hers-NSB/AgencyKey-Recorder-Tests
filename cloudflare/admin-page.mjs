@@ -52,10 +52,11 @@ function render(){
 }
 const feedMessages={pending:'Feed pendiente de comprobar',ready:'Feed verificado',no_session:'Sin sesión guardada · Conecta AgencyKey',
  login_required:'AgencyKey pide iniciar sesión · Reconecta',unavailable:'Feed sin acceso o no disponible',
- feed_unverified:'Chrome no mostró las publicaciones de esta modelo',
+ profile_menu_missing:'Chrome abrió la modelo, pero no encontró Mi perfil',
+ feed_unverified:'Chrome abrió Mi perfil, pero no encontró publicaciones',
  connection_error:'La app no pudo abrir AgencyKey en tu PC',
  desktop_update_required:'Actualiza la app de Windows y vuelve a verificar',
- desktop_offline:'Abre la app de Windows y vuelve a verificar',expired:'La comprobación caducó',
+ desktop_offline:'La app de Windows no recibió la solicitud de verificación',expired:'La comprobación caducó',
  cancelled:'Comprobación cancelada'};
 function feedLabel(result){
  const time=result?.checked_at?new Date(result.checked_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
