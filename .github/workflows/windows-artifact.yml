@@ -1,0 +1,114 @@
+name: Compilar EXE como artefacto
+on:
+  push:
+    branches: [build/windows-pr15-artifact]
+permissions:
+  contents: read
+concurrency:
+  group: recorder-exe-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  encoder:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    env:
+      FFMPEG_REV: 946fcce07b6dcd0331c8cc609192aeff5e1924f8
+      X264_REV: 31e19f92f00c7003fa115047ce50978bc98c3a0d
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: encoder-cache
+        with:
+          path: vendor/encoder
+          key: encoder-win64-${{ env.FFMPEG_REV }}-${{ env.X264_REV }}-${{ hashFiles('scripts/build_minimal_ffmpeg.sh') }}
+      - name: Reuse identical compiled encoder
+        id: encoder-reuse
+        if: steps.encoder-cache.outputs.cache-hit != 'true' && env.FFMPEG_REV == '946fcce07b6dcd0331c8cc609192aeff5e1924f8' && env.X264_REV == '31e19f92f00c7003fa115047ce50978bc98c3a0d' && hashFiles('scripts/build_minimal_ffmpeg.sh') == '5cb18a355c3d9a66ad091a0df8dc743e9a708659e59ff302685c93b72f6295af'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: minimal-windows-encoder
+          run-id: 42714984226
+          github-token: ${{ github.token }}
+          path: vendor/encoder
+      - uses: actions/checkout@v4
+        if: steps.encoder-cache.outputs.cache-hit != 'true' && steps.encoder-reuse.outcome != 'success'
+        with:
+          repository: FFmpeg/FFmpeg
+          ref: ${{ env.FFMPEG_REV }}
+          path: third_party/ffmpeg
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: steps.encoder-cache.outputs.cache-hit != 'true' && steps.encoder-reuse.outcome != 'success'
+        with:
+          repository: mirror/x264
+          ref: ${{ env.X264_REV }}
+          path: third_party/x264
+          persist-credentials: false
+      - name: Install cross compiler
+        if: steps.encoder-cache.outputs.cache-hit != 'true' && steps.encoder-reuse.outcome != 'success'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64-posix nasm make pkg-config
+      - run: bash scripts/build_minimal_ffmpeg.sh
+        if: steps.encoder-cache.outputs.cache-hit != 'true' && steps.encoder-reuse.outcome != 'success'
+      - name: Include exact encoder sources
+        if: steps.encoder-cache.outputs.cache-hit != 'true' && steps.encoder-reuse.outcome != 'success'
+        run: |
+          mkdir encoder-sources
+          git -C third_party/ffmpeg archive HEAD > encoder-sources/ffmpeg.tar
+          git -C third_party/x264 archive HEAD > encoder-sources/x264.tar
+          cp scripts/build_minimal_ffmpeg.sh encoder-sources/
+          cp vendor/encoder/*LICENSE.txt encoder-sources/
+          tar -czf vendor/encoder/encoder-sources.tar.gz encoder-sources
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minimal-windows-encoder
+          path: vendor/encoder/
+          retention-days: 30
+          if-no-files-found: error
+  build:
+    needs: encoder
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-build.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: minimal-windows-encoder
+          path: vendor/encoder
+      - name: Prepare video recorder (no browser download)
+        run: python -m playwright install ffmpeg
+      - run: python recorder.py check-chrome
+      - run: python -m unittest discover -s tests -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --prefix cloudflare
+      - run: node --test cloudflare/worker.test.mjs cloudflare/recording-session.test.mjs
+      - run: node --test cloudflare/admin.test.mjs
+      - name: Build standalone executable
+        run: python -m PyInstaller --clean --noconfirm AgencyKeyRecorderTests.spec
+      - name: Test EXE without Python commands
+        env:
+          AGENCYKEY_RECORDER_DEMO_EXPORT: qa-output/scroll-demo.mp4
+        run: python scripts/smoke_exe.py dist/AgencyKeyRecorderTests.exe
+      - name: Preserve tested executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgencyKeyRecorderTests-Windows
+          path: |
+            dist/AgencyKeyRecorderTests.exe
+            LEEME-EXE.txt
+            qa-output/scroll-demo.mp4
+          if-no-files-found: error
+          retention-days: 30
