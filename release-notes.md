@@ -1,3 +1,3 @@
-- Detecta el feed de Mi perfil por su estructura y desplaza su contenedor con JavaScript.
-- Busca por ID las publicaciones del lote y confirma el encuadre antes de grabar.
-- La verificación iniciada en la web usa la misma búsqueda desde Chrome en la app de Windows.
+- Graba el comprobante directamente en la pestaña de Chrome, desde el primer post encuadrado hasta el último.
+- Guarda explícitamente el primer y el último fotograma y genera el MP4 sin marcadores de colores.
+- Mantiene la búsqueda de publicaciones por ID, la verificación del feed desde el panel web y la opción Repetir grabación.
