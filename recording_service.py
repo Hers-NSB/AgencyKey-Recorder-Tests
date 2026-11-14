@@ -116,7 +116,7 @@ async def verify_profile_route(page, url):
         return 'connection_error'
 
     try:
-        await recorder.wait_for_my_profile(page, url, deadline=monotonic() + 35)
+        await recorder.wait_for_feed(page, url, deadline=monotonic() + 35)
     except recorder.FeedAccessError as error:
         return error.status
     return 'ready'
@@ -128,6 +128,7 @@ PROFILE_ERRORS = {
     'wrong_profile': 'Chrome abrió otra ruta.',
     'profile_menu_missing': 'Chrome no encontró la opción Mi perfil.',
     'profile_not_visible': 'Mi perfil no terminó de cargar.',
+    'feed_unverified': 'Mi perfil abrió, pero no se detectaron publicaciones en el feed.',
     'connection_error': 'Chrome no pudo cargar AgencyKey.',
 }
 

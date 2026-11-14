@@ -55,7 +55,7 @@ const feedMessages={pending:'Mi perfil pendiente de verificar',ready:'Mi perfil 
  wrong_profile:'Chrome no abrió Mi perfil de la modelo seleccionada',
  profile_not_visible:'Chrome pulsó Mi perfil, pero la vista no terminó de cargar',
  profile_menu_missing:'Chrome abrió la modelo, pero no encontró Mi perfil',
- feed_unverified:'Actualiza la app de Windows y vuelve a verificar Mi perfil',
+ feed_unverified:'Mi perfil abrió, pero el feed no mostró publicaciones',
  connection_error:'La app no pudo abrir AgencyKey en tu PC',
  desktop_update_required:'Actualiza la app de Windows y vuelve a verificar',
  desktop_offline:'La app de Windows no recibió la solicitud de verificación',expired:'La comprobación caducó',
