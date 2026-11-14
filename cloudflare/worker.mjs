@@ -344,7 +344,7 @@ async function listAdminProfiles(env) {
     ORDER BY p.name COLLATE NOCASE`).all();
   return json({profiles: result.results.map(row => {
     const check = row.feed_result && JSON.parse(row.feed_result);
-    const feed = session.configured && check?.creator_id === row.creator_id && check.connection === session.connection
+    const feed = session.configured && check?.creator_id === row.creator_id && check.connection === session.connection && check.profile_checked === true
       ? {status:check.status, checked_at:check.checked_at}
       : {status:session.configured?'pending':'no_session'};
     return {...profile(row), feed};
@@ -375,7 +375,7 @@ export async function saveSharedSession(env, state, revision, connection=crypto.
 }
 
 const desktopJobKey = 'recording_desktop_job';
-const desktopResults = new Set(['ready','login_required','unavailable','profile_menu_missing','feed_unverified','connection_error','cancelled']);
+const desktopResults = new Set(['ready','login_required','unavailable','profile_menu_missing','wrong_profile','profile_not_visible','feed_unverified','connection_error','cancelled']);
 
 async function readDesktopJob(env) {
   const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(desktopJobKey).first();
@@ -458,8 +458,8 @@ async function desktopRecordingJob(request,env) {
     catch {job.status='connection_error';}
     await replaceDesktopJob(env,{raw:JSON.stringify(finishing)},job);
   } else if (job.kind === 'feed' && job.profile_id) {
-    if (input.status === 'ready' && input.feed_checked !== true) job.status = 'desktop_update_required';
-    const check = {creator_id:job.creator_id, connection:job.connection, status:job.status, checked_at:job.checked_at};
+    if (input.profile_checked !== true && job.status !== 'cancelled') job.status = 'desktop_update_required';
+    const check = {profile_checked:true, creator_id:job.creator_id, connection:job.connection, status:job.status, checked_at:job.checked_at};
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO settings(key,value)
         SELECT ?,? WHERE EXISTS (SELECT 1 FROM settings WHERE key = ? AND value = ?)

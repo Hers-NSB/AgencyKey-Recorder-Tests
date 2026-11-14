@@ -12,7 +12,7 @@ from bot import DropperBot
 from core import Batch, Post
 from recording_service import (
     AGENCYKEY_SIGN_IN, RecordingCoordinator, agencykey_login_complete,
-    run_desktop_recording_job, session_path, verify_feed_route,
+    run_desktop_recording_job, session_path, verify_profile_route,
 )
 import recorder
 
@@ -61,12 +61,13 @@ class DesktopRecordingJobTests(unittest.IsolatedAsyncioTestCase):
                                  update_recording_job=Mock(return_value={'active': False}))
         job = {'kind': 'feed', 'creator_id': 98}
         with patch.object(recorder, 'launch_browser', new=AsyncMock(return_value=browser)) as launch, \
-             patch.object(recorder, 'post_frame', new=AsyncMock(return_value=object())):
+             patch.object(recorder, 'my_profile_visible', new=AsyncMock(return_value=True)), \
+             patch.object(recorder, 'post_frame', new=AsyncMock(side_effect=AssertionError('Profile verification must not read posts'))):
             await run_desktop_recording_job(client, job, threading.Event())
         self.assertTrue(launch.call_args.kwargs['headless'])
         self.assertIs(browser.new_context.call_args.kwargs['storage_state'], state)
         page.goto.assert_awaited_once_with(url, wait_until='domcontentloaded', timeout=30000)
-        client.update_recording_job.assert_called_once_with(job, status='ready', feed_checked=True)
+        client.update_recording_job.assert_called_once_with(job, status='ready', profile_checked=True)
 
     async def test_feed_check_rejects_login_access_errors_and_other_models(self):
         origin = 'https://app.agencykey.com'
@@ -77,7 +78,7 @@ class DesktopRecordingJobTests(unittest.IsolatedAsyncioTestCase):
             ('/models/98', 403, False, 'unavailable'),
             ('/models/98', 404, False, 'unavailable'),
             ('/models/98', 500, False, 'connection_error'),
-            ('/models/52', 200, False, 'feed_unverified'),
+            ('/models/52', 200, False, 'wrong_profile'),
         ]:
             with self.subTest(path=path, status=status, password_visible=password_visible), \
                  patch.object(recorder, 'monotonic', side_effect=[0, 36]), \
@@ -87,7 +88,7 @@ class DesktopRecordingJobTests(unittest.IsolatedAsyncioTestCase):
                 page = SimpleNamespace(url=origin + path, goto=AsyncMock(return_value=response),
                                        wait_for_timeout=AsyncMock(),
                                        locator=Mock(return_value=SimpleNamespace(first=password)))
-                self.assertEqual(await verify_feed_route(page, origin + '/models/98'), result)
+                self.assertEqual(await verify_profile_route(page, origin + '/models/98'), result)
 
 
 class ProofTests(unittest.IsolatedAsyncioTestCase):

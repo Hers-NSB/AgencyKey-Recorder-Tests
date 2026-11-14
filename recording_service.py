@@ -102,7 +102,7 @@ async def agencykey_login_complete(page):
         return False
 
 
-async def verify_feed_route(page, url):
+async def verify_profile_route(page, url):
     response = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
     if response is None:
         return 'connection_error'
@@ -114,10 +114,20 @@ async def verify_feed_route(page, url):
         return 'connection_error'
 
     try:
-        await recorder.wait_for_feed(page, url, deadline=monotonic() + 35)
+        await recorder.wait_for_my_profile(page, url, deadline=monotonic() + 35)
     except recorder.FeedAccessError as error:
         return error.status
     return 'ready'
+
+
+PROFILE_ERRORS = {
+    'login_required': 'AgencyKey pide iniciar sesión desde el panel web.',
+    'unavailable': 'AgencyKey denegó el acceso o el perfil no existe.',
+    'wrong_profile': 'Chrome abrió otra ruta.',
+    'profile_menu_missing': 'Chrome no encontró la opción Mi perfil.',
+    'profile_not_visible': 'Mi perfil no terminó de cargar.',
+    'connection_error': 'Chrome no pudo cargar AgencyKey.',
+}
 
 
 async def run_desktop_recording_job(client, job, stop_event):
@@ -135,7 +145,7 @@ async def run_desktop_recording_job(client, job, stop_event):
                 return
         return
 
-    async def open_feed():
+    async def open_agencykey():
         connect = job['kind'] == 'connect'
         options = {'viewport': {'width': 1280, 'height': 720}}
         if not connect:
@@ -147,7 +157,10 @@ async def run_desktop_recording_job(client, job, stop_event):
                 page = await context.new_page()
                 if not connect:
                     url = recorder.model_profile_url(job['creator_id'])
-                    return {'status': await verify_feed_route(page, url), 'feed_checked': True}
+                    status = await verify_profile_route(page, url)
+                    if status != 'ready':
+                        log.warning('Verificación de Mi perfil | Modelo %s · %s', job['creator_id'], PROFILE_ERRORS[status])
+                    return {'status': status, 'profile_checked': True}
                 response = await page.goto(AGENCYKEY_SIGN_IN, wait_until='domcontentloaded', timeout=30000)
                 if response is not None and response.status >= 400:
                     return {'status': 'connection_error'}
@@ -160,17 +173,19 @@ async def run_desktop_recording_job(client, job, stop_event):
             finally:
                 await browser.close()
 
-    running = asyncio.create_task(open_feed())
+    running = asyncio.create_task(open_agencykey())
     cancelled = asyncio.create_task(check_cancelled())
     try:
         done, _ = await asyncio.wait((running, cancelled), return_when=asyncio.FIRST_COMPLETED)
         if running in done and not stop_event.is_set():
             try:
                 result = running.result()
-            except Exception:
+            except Exception as error:
+                detail = recorder.recording_error_detail(error)
+                log.error('Solicitud web de Chrome | %s', detail)
                 result = {'status': 'connection_error'}
                 if job['kind'] == 'feed':
-                    result['feed_checked'] = True
+                    result['profile_checked'] = True
             await asyncio.to_thread(client.update_recording_job, job, **result)
     finally:
         for task in (running, cancelled):
@@ -258,6 +273,7 @@ class RecordingCoordinator:
                                rejected=job.get('rejected', []))
 
     async def run(self, batch, bot, chat_id, previous=None):
+        self.last_recording_step = None
         job = dict(previous or {})
         job.update(batch_id=batch.id, chat_id=chat_id, creator_id=int(self.creator.external_id))
         job['post_ids_oldest_first'] = [batch.published_ids[n] for n in range(1, len(batch.order)+1)]
@@ -339,7 +355,8 @@ class RecordingCoordinator:
             elif isinstance(error, (ValueError, CloudError)):
                 message = detail
             else:
-                message = 'No se pudo completar el video. Usa /video para intentarlo de nuevo.'
+                step = self.last_recording_step or 'Preparando el comprobante'
+                message = f'{step}. {recorder.recording_error_detail(error)}'
             self.emit('recording', {'stage': message, 'error': True, 'completed': 0, 'total': len(batch.order)})
             log.error('%s', message)
             try:

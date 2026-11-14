@@ -124,7 +124,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "AgencyKey Recorder Tests · Chrome ligero ${GITHUB_RUN_NUMBER}" \
             --notes-file release-notes.md --latest
-      - name: Keep only the latest recorder release and tag
+      - name: Verify new release and retire the approved previous release
         if: github.ref == 'refs/heads/main'
         shell: bash
         env:
@@ -132,12 +132,18 @@ jobs:
         run: |
           set -euo pipefail
           keep="recorder-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          old="recorder-25-1"
           latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
           test "$latest" = "$keep"
-          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq '.[].tag_name' | while IFS= read -r old; do
-            if [[ "$old" == recorder-* && "$old" != "$keep" ]]; then
-              gh release delete "$old" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
-            fi
-          done
-
-
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$keep" --jq .object.sha)" = "$GITHUB_SHA"
+          mkdir -p verified-release
+          gh release download "$keep" --repo "$GITHUB_REPOSITORY" --dir verified-release \
+            --pattern AgencyKeyRecorderTests.exe --pattern LEEME-EXE.txt --pattern encoder-sources.tar.gz
+          cmp dist/AgencyKeyRecorderTests.exe verified-release/AgencyKeyRecorderTests.exe
+          cmp LEEME-EXE.txt verified-release/LEEME-EXE.txt
+          cmp vendor/encoder/encoder-sources.tar.gz verified-release/encoder-sources.tar.gz
+          if gh release view "$old" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$old" --jq .id)" = 444658484
+            gh release delete "$old" --repo "$GITHUB_REPOSITORY" --yes
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$old" --jq .ref
+          fi
