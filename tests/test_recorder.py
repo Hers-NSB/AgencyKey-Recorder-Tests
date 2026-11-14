@@ -138,7 +138,8 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
               panel.addEventListener('scroll', () => {
                 if (panel.scrollTop > 220 && !document.querySelector('[data-post-id]')) {
                   document.querySelector('#feed').innerHTML =
-                    '<article data-post-id="200" style="height:400px">Publicación</article>';
+                    '<article data-post-id="200" style="height:600px">Primera publicación</article>'
+                    + '<article data-post-id="100" style="height:370px">Última publicación</article>';
                 }
               });
             </script>
@@ -149,7 +150,10 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         frame = await recorder.wait_for_feed(self.page, url, deadline=recorder.monotonic() + 5,
                                              preferred_id='200')
         self.assertIs(frame, self.page.main_frame)
-        self.assertEqual((await recorder.seek_start(self.page, '200', timeout=5))['id'], '200')
+        first = await recorder.seek_start(self.page, '200', timeout=5)
+        self.assertEqual(first['id'], '200')
+        self.assertEqual(await recorder.capture_walk(self.page, ['200', '100'], timeout=7, frame=frame),
+                         ['200', '100'])
 
     async def test_model_navigation_activates_sidebar_my_profile(self):
         url = 'https://app.agencykey.com/models/52'

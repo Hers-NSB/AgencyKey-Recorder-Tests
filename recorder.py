@@ -365,7 +365,7 @@ async def seek_start(page, newest: str, timeout: float = 120) -> dict:
             await confirm_start(page, frame, newest)
             target['_frame'] = frame
             return target
-        await scroll_down(page, 260, frame=frame, find_panel=not cards)
+        await scroll_down(page, 260, frame=frame, find_panel=True)
     raise ValueError(f'El feed abrió, pero no se encontró el post {newest} del lote · Usa /video para reintentar')
 
 
@@ -387,7 +387,7 @@ async def agencykey_sign_in_visible(page):
 async def my_profile_visible(page):
     # Profile-specific controls also work when the sidebar has no ARIA selected state.
     edit = re.compile(r'^\s*(?:Editar perfil|Edit profile)\s*$', re.IGNORECASE)
-    search = re.compile(r'Buscar (?:la publicación|publicaciones) del usuario|Search (?:user )?posts', re.IGNORECASE)
+    search = re.compile(r'Buscar (?:la publicación|publicaciones) del usuario|Search (?:user.?s? )?posts', re.IGNORECASE)
     for frame in page.frames:
         if await frame_is_visible(page, frame):
             if (await frame.get_by_text(edit).first.is_visible()
@@ -540,7 +540,7 @@ async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 
         if last and 100 < last['bottom'] <= height - 20 and seen == ids:
             await page.wait_for_timeout(dwell * 1000)
             return seen
-        await scroll_down(page, frame=frame)
+        await scroll_down(page, frame=frame, find_panel=True)
     remaining = next((pid for pid in ids if pid not in seen), None)
     reason = f'Falta localizar el post {remaining}.' if remaining else f'No se pudo encuadrar el final del post {ids[-1]}.'
     raise ValueError(f'Recorrido incompleto: {len(seen)}/{len(ids)} posts. {reason}')
