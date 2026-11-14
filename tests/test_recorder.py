@@ -126,6 +126,35 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.page.locator('#postId_200').count(), 1)
         walk.assert_awaited_once()
 
+    async def test_profile_without_posts_and_nested_feed_with_data_ids(self):
+        url = 'https://app.agencykey.com/models/52'
+        await self.page.route(url, lambda route: route.fulfill(content_type='text/html', body="""
+            <main style="height:700px;overflow:auto;width:390px;margin-left:40px">
+              <button>Editar perfil</button><div style="height:900px">Encabezado</div>
+              <div id="feed"></div><div style="height:900px"></div>
+            </main>
+            <script>
+              const panel = document.querySelector('main');
+              panel.addEventListener('scroll', () => {
+                if (panel.scrollTop > 220 && !document.querySelector('[data-post-id]')) {
+                  document.querySelector('#feed').innerHTML =
+                    '<article data-post-id="200" style="height:600px">Primera publicación</article>'
+                    + '<article data-post-id="100" style="height:370px">Última publicación</article>';
+                }
+              });
+            </script>
+        """))
+        await self.page.goto(url)
+        await recorder.wait_for_my_profile(self.page, url, deadline=recorder.monotonic() + 3)
+        self.assertEqual(await self.page.locator('[data-post-id]').count(), 0)
+        frame = await recorder.wait_for_feed(self.page, url, deadline=recorder.monotonic() + 5,
+                                             preferred_id='200')
+        self.assertIs(frame, self.page.main_frame)
+        first = await recorder.seek_start(self.page, '200', timeout=5)
+        self.assertEqual(first['id'], '200')
+        self.assertEqual(await recorder.capture_walk(self.page, ['200', '100'], timeout=7, frame=frame),
+                         ['200', '100'])
+
     async def test_model_navigation_activates_sidebar_my_profile(self):
         url = 'https://app.agencykey.com/models/52'
         await self.page.route(url, lambda route: route.fulfill(content_type='text/html', body="""

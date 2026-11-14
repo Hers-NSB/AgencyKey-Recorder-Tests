@@ -48,12 +48,14 @@ function section(which){const list=which==='profiles';$('profiles-section').hidd
 function render(){
  if(feedBusy){renderPending=true;return;}
  feedRows.clear();$('profiles-body').replaceChildren();$('empty').hidden=profiles.length>0;
- for(const profile of profiles){const row=document.createElement('div');row.className='bot-row';const details=document.createElement('div');const name=document.createElement('div');name.className='model-name';name.textContent=profile.creator.name;details.append(name);const user=document.createElement('div');user.className='muted';user.textContent=(profile.creator.username?'@'+profile.creator.username+' · ':'')+'Token configurado';details.append(user);const feed=document.createElement('div');feed.className='muted';feed.textContent=feedLabel(profile.feed);feed.setAttribute('aria-live','polite');details.append(feed);const actions=document.createElement('div');actions.className='row-actions';const edit=document.createElement('button');edit.textContent='Editar';edit.setAttribute('aria-label','Editar '+profile.creator.name);edit.addEventListener('click',()=>openProfile(profile));const remove=document.createElement('button');remove.textContent='Eliminar';remove.className='danger';remove.setAttribute('aria-label','Eliminar '+profile.creator.name);remove.addEventListener('click',()=>deleteProfile(profile,remove));const verify=document.createElement('button');verify.textContent='Verificar feed';verify.setAttribute('aria-label','Verificar feed de '+profile.creator.name);verify.addEventListener('click',()=>verifyFeed(profile,feed,verify));actions.append(verify,edit,remove);feedRows.set(profile.id,{profile,status:feed,button:verify});row.append(details,actions);$('profiles-body').append(row);}
+ for(const profile of profiles){const row=document.createElement('div');row.className='bot-row';const details=document.createElement('div');const name=document.createElement('div');name.className='model-name';name.textContent=profile.creator.name;details.append(name);const user=document.createElement('div');user.className='muted';user.textContent=(profile.creator.username?'@'+profile.creator.username+' · ':'')+'Token configurado';details.append(user);const feed=document.createElement('div');feed.className='muted';feed.textContent=feedLabel(profile.feed);feed.setAttribute('aria-live','polite');details.append(feed);const actions=document.createElement('div');actions.className='row-actions';const edit=document.createElement('button');edit.textContent='Editar';edit.setAttribute('aria-label','Editar '+profile.creator.name);edit.addEventListener('click',()=>openProfile(profile));const remove=document.createElement('button');remove.textContent='Eliminar';remove.className='danger';remove.setAttribute('aria-label','Eliminar '+profile.creator.name);remove.addEventListener('click',()=>deleteProfile(profile,remove));const verify=document.createElement('button');verify.textContent='Verificar Mi perfil';verify.setAttribute('aria-label','Verificar Mi perfil de '+profile.creator.name);verify.addEventListener('click',()=>verifyFeed(profile,feed,verify));actions.append(verify,edit,remove);feedRows.set(profile.id,{profile,status:feed,button:verify});row.append(details,actions);$('profiles-body').append(row);}
 }
-const feedMessages={pending:'Feed pendiente de comprobar',ready:'Feed verificado',no_session:'Sin sesión guardada · Conecta AgencyKey',
- login_required:'AgencyKey pide iniciar sesión · Reconecta',unavailable:'Feed sin acceso o no disponible',
+const feedMessages={pending:'Mi perfil pendiente de verificar',ready:'Mi perfil verificado',no_session:'Sin sesión guardada · Conecta AgencyKey',
+ login_required:'AgencyKey pide iniciar sesión · Reconecta',unavailable:'Chrome no tiene acceso a Mi perfil',
+ wrong_profile:'Chrome no abrió Mi perfil de la modelo seleccionada',
+ profile_not_visible:'Chrome pulsó Mi perfil, pero la vista no terminó de cargar',
  profile_menu_missing:'Chrome abrió la modelo, pero no encontró Mi perfil',
- feed_unverified:'Chrome abrió Mi perfil, pero no encontró publicaciones',
+ feed_unverified:'Actualiza la app de Windows y vuelve a verificar Mi perfil',
  connection_error:'La app no pudo abrir AgencyKey en tu PC',
  desktop_update_required:'Actualiza la app de Windows y vuelve a verificar',
  desktop_offline:'La app de Windows no recibió la solicitud de verificación',expired:'La comprobación caducó',
@@ -67,12 +69,12 @@ async function verifyFeed(profile, status, button){
  feedBusy=true;$('reload').disabled=true;
  const buttons=[...feedRows.values()].map(row=>row.button);
  for(const item of buttons)item.disabled=true;
- status.textContent='Abriendo el feed con la sesión guardada…';
+ status.textContent='Abriendo Mi perfil con la sesión guardada…';
  try{
   let result=await api('/recording-session/feed/'+profile.id,{method:'POST',body:'{}'});
   const id=result.id;
   while(['queued','running','finishing'].includes(result.status)&&status.isConnected){
-   status.textContent=result.status==='queued'?'Esperando la app de Windows…':'Comprobando el feed en Chrome de tu PC…';
+   status.textContent=result.status==='queued'?'Esperando la app de Windows…':'Comprobando Mi perfil en Chrome de tu PC…';
    await new Promise(resolve=>setTimeout(resolve,2500));
    result=await checkDesktopJob(id);
   }
@@ -114,7 +116,7 @@ $('nav-profiles').addEventListener('click',()=>section('profiles'));$('nav-acces
 function finishConfirm(value){const resolve=confirmResolve;confirmResolve=null;$('confirm-dialog').close();if(resolve)resolve(value);}
 function askConfirm(title,message,label){if(confirmResolve)return Promise.resolve(false);$('confirm-title').textContent=title;$('confirm-message').textContent=message;$('confirm-accept').textContent=label;$('confirm-dialog').showModal();$('confirm-cancel').focus();return new Promise(resolve=>confirmResolve=resolve);}
 $('confirm-cancel').addEventListener('click',()=>finishConfirm(false));$('confirm-accept').addEventListener('click',()=>finishConfirm(true));$('confirm-dialog').addEventListener('cancel',event=>{event.preventDefault();finishConfirm(false);});
-async function recordingStatus(){try{const data=await api('/recording-session');$('recording-session-status').textContent=data.configured?'Sesión guardada · Los feeds se comprueban automáticamente':'Sin sesión · conecta AgencyKey para grabar videos';$('connect-recording').textContent=data.configured?'Reconectar AgencyKey':'Conectar AgencyKey';}catch(error){$('recording-session-status').textContent=error.message;}}
+async function recordingStatus(){try{const data=await api('/recording-session');$('recording-session-status').textContent=data.configured?'Sesión guardada · Mi perfil se verifica automáticamente':'Sin sesión · conecta AgencyKey para grabar videos';$('connect-recording').textContent=data.configured?'Reconectar AgencyKey':'Conectar AgencyKey';}catch(error){$('recording-session-status').textContent=error.message;}}
 function stopRecordingPoll(){recordingGeneration++;clearTimeout(recordingTimer);recordingTimer=null;}
 const desktopJobRequest=(action,id)=>api('/recording-session/'+action,{method:'POST',body:JSON.stringify({id})});
 const checkDesktopJob=id=>desktopJobRequest('check',id);

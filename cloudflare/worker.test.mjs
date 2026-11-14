@@ -215,7 +215,7 @@ test('admin queues a local Chrome connection and only the claiming app can compl
  assert.deepEqual(await (await desktop(env,'PUT',claim,{id:feed.id,claim:next.claim})).json(),{active:false});
 });
 
-test('persists real feed checks across session refreshes and invalidates them when reconnecting', async()=>{
+test('persists profile checks across session refreshes and invalidates them when reconnecting', async()=>{
  const root='/v1/admin/recording-session';
  const claim='/v1/recording-desktop-job';
  const state={cookies:[{name:'session',domain:'.agencykey.com',value:'test-only'}],origins:[]};
@@ -236,9 +236,9 @@ test('persists real feed checks across session refreshes and invalidates them wh
  await complete('/connect',{status:'ready',state});
  assert.equal(await status(),'pending');
  assert.equal((await complete('/feed/'+firstId,{status:'ready'})).status,'desktop_update_required');
- assert.equal((await complete('/feed/'+firstId,{status:'feed_unverified',feed_checked:true})).status,'feed_unverified');
- assert.equal(await status(),'feed_unverified');
- assert.equal((await complete('/feed/'+firstId,{status:'ready',feed_checked:true})).status,'ready');
+ assert.equal((await complete('/feed/'+firstId,{status:'feed_unverified',feed_checked:true})).status,'desktop_update_required');
+ assert.equal(await status(),'desktop_update_required');
+ assert.equal((await complete('/feed/'+firstId,{status:'ready',profile_checked:true})).status,'ready');
  const session=await (await desktop(env,'GET','/v1/recording-session')).json();
  assert.equal((await desktop(env,'PUT','/v1/recording-session',{state,revision:session.revision})).status,200);
  assert.equal(await status(),'ready');

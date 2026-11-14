@@ -150,16 +150,25 @@ async def login() -> None:
             await browser.close()
 
 
+POST_SELECTOR = '[id^="postId_"], [data-post-id]'
+POST_ID = r"""e => /^postId_([1-9][0-9]*)$/.exec(e.id)?.[1]
+    || (/^[1-9][0-9]*$/.test(e.dataset.postId) ? e.dataset.postId : null)"""
+
+
+def post_expression(script):
+    return script.replace('POST_SELECTOR', POST_SELECTOR).replace('POST_ID', f'({POST_ID})')
+
+
 # A recycled feed removes off-screen cards. Read only currently attached nodes.
-SNAPSHOT = r'''() => [...document.querySelectorAll('[id^="postId_"]')].map(e => {
+SNAPSHOT = post_expression(r'''() => [...document.querySelectorAll('POST_SELECTOR')].map(e => {
  const r=e.getBoundingClientRect();
- return {id:e.id.slice(7),top:r.top,bottom:r.bottom,height:r.height,
+ return {id:POST_ID(e),top:r.top,bottom:r.bottom,height:r.height,
  pinned:e.classList.contains('m-pinned'),
  visible:r.bottom>100 && r.top<innerHeight && r.width>0 && r.height>0};
-}).filter(p=>p.visible).sort((a,b)=>a.top-b.top)'''
+}).filter(p=>p.id && p.visible).sort((a,b)=>a.top-b.top)''')
 
-IMAGES_READY = r'''() => {
- const cards=[...document.querySelectorAll('[id^="postId_"]')];
+IMAGES_READY = post_expression(r'''() => {
+ const cards=[...document.querySelectorAll('POST_SELECTOR')].filter(POST_ID);
  return cards.every(card => {
   const c=card.getBoundingClientRect();
   if(c.bottom<=100 || c.top>=innerHeight) return true;
@@ -169,7 +178,7 @@ IMAGES_READY = r'''() => {
    return img.complete && img.naturalWidth>0;
   });
  });
-}'''
+}''')
 
 
 async def frame_is_visible(page, frame) -> bool:
@@ -201,9 +210,9 @@ async def post_frame(page, preferred_id=None):
         try:
             if not await frame_is_visible(page, frame):
                 continue
-            visible_ids = await frame.locator('[id^="postId_"]').evaluate_all(
+            visible_ids = await frame.locator(POST_SELECTOR).evaluate_all(post_expression(
                 """cards => cards.filter(e => e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})
-                    && e.getBoundingClientRect().height>0).map(e => e.id.slice(7))""")
+                    && e.getBoundingClientRect().height>0).map(POST_ID).filter(Boolean)"""))
         except PlaywrightError as error:
             if frame.is_detached() or 'Execution context was destroyed' in str(error):
                 continue
@@ -294,9 +303,30 @@ def wheel_steps(pixels: int, *, rng=None) -> list[tuple[int, int]]:
     return result
 
 
-async def scroll_down(page, pixels: int = 190, *, frame=None) -> None:
+async def scroll_down(page, pixels: int = 190, *, frame=None, find_panel=False, point=None) -> None:
     frame = frame or page.main_frame
     x, y, _ = await frame_geometry(page, frame)
+    if point is not None:
+        x, y = point
+    elif find_panel:
+        point = await frame.evaluate(r'''() => {
+            const panels = [...document.querySelectorAll('main, section, div')].flatMap(e => {
+                if (e.scrollHeight <= e.clientHeight + 20
+                        || !/auto|scroll/.test(getComputedStyle(e).overflowY)) return [];
+                const r = e.getBoundingClientRect();
+                const left = Math.max(0, r.left), right = Math.min(innerWidth, r.right);
+                const top = Math.max(0, r.top), bottom = Math.min(innerHeight, r.bottom);
+                if (right-left < 300 || bottom-top < 150) return [];
+                const x = left + (right-left) * .4, y = (top+bottom)/2;
+                return e.contains(document.elementFromPoint(x,y))
+                    ? [{x,y,area:(right-left)*(bottom-top)}] : [];
+            });
+            return panels.sort((a,b) => b.area-a.area)[0] ?? null;
+        }''')
+        if point:
+            box = await (await frame.frame_element()).bounding_box() if frame is not page.main_frame else None
+            if frame is page.main_frame or box:
+                x, y = point['x'] + (box['x'] if box else 0), point['y'] + (box['y'] if box else 0)
     await page.mouse.move(x, y)
     for delta, pause in wheel_steps(pixels):
         await page.mouse.wheel(0, delta)
@@ -310,10 +340,17 @@ async def seek_start(page, newest: str, timeout: float = 120) -> dict:
         cards = await frame.evaluate(SNAPSHOT)
         target = next((p for p in cards if p['id'] == newest and not p['pinned']), None)
         if target:
-            locator = frame.locator(f'[id="postId_{newest}"]:not(.m-pinned)').first
+            locator = frame.locator(
+                f'[id="postId_{newest}"]:not(.m-pinned):visible, '
+                f'[data-post-id="{newest}"]:not(.m-pinned):visible'
+            ).first
             await locator.evaluate('e => e.scrollIntoView({block:"start",behavior:"instant"})')
-            x, y, _ = await frame_geometry(page, frame)
-            await page.mouse.move(x, y)
+            box = await locator.bounding_box()
+            if not box:
+                raise ValueError(f'El post {newest} desapareció del panel de publicaciones.')
+            viewport = await page.evaluate('innerHeight')
+            point = (box['x'] + box['width'] / 2, min(viewport - 5, max(5, box['y'] + 30)))
+            await page.mouse.move(*point)
             await page.mouse.wheel(0, -115)
             await page.wait_for_timeout(500)
             await images_ready(page, frame=frame)
@@ -322,13 +359,13 @@ async def seek_start(page, newest: str, timeout: float = 120) -> dict:
                 top = await locator.evaluate('e => e.getBoundingClientRect().top')
                 if 95 <= top <= 145:
                     break
-                await scroll_down(page, round(top - 115), frame=frame)
+                await scroll_down(page, round(top - 115), frame=frame, point=point)
             else:
                 raise ValueError(f'No se pudo encuadrar el post {newest}. No se inició el comprobante.')
             await confirm_start(page, frame, newest)
             target['_frame'] = frame
             return target
-        await scroll_down(page, 260, frame=frame)
+        await scroll_down(page, 260, frame=frame, find_panel=True)
     raise ValueError(f'El feed abrió, pero no se encontró el post {newest} del lote · Usa /video para reintentar')
 
 
@@ -345,6 +382,18 @@ async def agencykey_sign_in_visible(page):
     return (any(part in {'login', 'sign-in', 'signin', 'auth', '2fa', 'mfa'}
                 for part in current.path.lower().split('/'))
             or await page.locator('input[type="password"]:visible').first.is_visible())
+
+
+async def my_profile_visible(page):
+    # Profile-specific controls also work when the sidebar has no ARIA selected state.
+    edit = re.compile(r'^\s*(?:Editar perfil|Edit profile)\s*$', re.IGNORECASE)
+    search = re.compile(r'Buscar (?:la publicación|publicaciones) del usuario|Search (?:user.?s? )?posts', re.IGNORECASE)
+    for frame in page.frames:
+        if await frame_is_visible(page, frame):
+            if (await frame.get_by_text(edit).first.is_visible()
+                    or await frame.get_by_placeholder(search).first.is_visible()):
+                return True
+    return False
 
 
 async def open_my_profile(page):
@@ -374,45 +423,74 @@ async def open_my_profile(page):
     return False
 
 
+async def wait_for_my_profile(page, profile_url, *, deadline):
+    from playwright.async_api import Error as PlaywrightError
+
+    expected = urlparse(profile_url)
+    activated = on_route = False
+    while monotonic() < deadline:
+        current = urlparse(page.url)
+        try:
+            if await agencykey_sign_in_visible(page):
+                raise FeedAccessError('login_required', 'AgencyKey pide iniciar sesión · Reconecta desde el panel web')
+            on_route = (current.scheme, current.netloc, current.path.rstrip('/')) == (
+                expected.scheme, expected.netloc, expected.path.rstrip('/'))
+            if on_route:
+                if await my_profile_visible(page):
+                    return
+                if not activated:
+                    activated = await open_my_profile(page)
+        except PlaywrightError as error:
+            if page.is_closed() or not transient_frame_error(error):
+                raise
+        await page.wait_for_timeout(300)
+    if not on_route:
+        raise FeedAccessError('wrong_profile', 'Chrome no abrió la ruta de la modelo seleccionada')
+    if not activated:
+        raise FeedAccessError('profile_menu_missing', 'Chrome abrió la modelo, pero no encontró Mi perfil')
+    raise FeedAccessError('profile_not_visible', 'Chrome pulsó Mi perfil, pero la vista no terminó de cargar')
+
+
+def transient_frame_error(error):
+    return any(message in str(error) for message in
+               ('Execution context was destroyed', 'Frame was detached', 'Frame has been detached'))
+
+
 async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
-    """Wait for posts in a visible panel, including feeds that mount while scrolling."""
+    """Mount the feed by scrolling the visible profile content."""
     expected = urlparse(profile_url) if profile_url else None
     from playwright.async_api import Error as PlaywrightError
 
-    current = urlparse(page.url)
-    profile_opened = False
+    on_route = profile_opened = False
     while monotonic() < deadline:
-        current = urlparse(page.url)
-        if await agencykey_sign_in_visible(page):
-            raise FeedAccessError('login_required', 'AgencyKey pide iniciar sesión · Reconecta desde el panel web')
-        if expected and (current.scheme, current.netloc, current.path.rstrip('/')) != (
-                expected.scheme, expected.netloc, expected.path.rstrip('/')):
-            await page.wait_for_timeout(500)
-            continue
-        frame = await post_frame(page, preferred_id)
-        if frame:
-            return frame
-        # The profile header can occupy the full view before lazy cards are mounted.
         try:
-            if expected and not profile_opened:
-                profile_opened = await open_my_profile(page)
-                if profile_opened:
-                    await page.wait_for_timeout(700)
-                    continue
-            await scroll_down(page, 340, frame=await scroll_frame(page))
+            if await agencykey_sign_in_visible(page):
+                raise FeedAccessError('login_required', 'AgencyKey pide iniciar sesión · Reconecta desde el panel web')
+            current = urlparse(page.url)
+            on_route = not expected or (current.scheme, current.netloc, current.path.rstrip('/')) == (
+                expected.scheme, expected.netloc, expected.path.rstrip('/'))
+            if on_route:
+                frame = await post_frame(page, preferred_id)
+                if frame:
+                    return frame
+                if expected and not profile_opened:
+                    if await my_profile_visible(page):
+                        profile_opened = True
+                    elif await open_my_profile(page):
+                        profile_opened = True
+                        await page.wait_for_timeout(700)
+                        continue
+                await scroll_down(page, 340, frame=await scroll_frame(page), find_panel=True)
         except PlaywrightError as error:
-            if page.is_closed():
-                raise
-            if not any(message in str(error) for message in
-                       ('Execution context was destroyed', 'Frame was detached', 'Frame has been detached')):
+            if page.is_closed() or not transient_frame_error(error):
                 raise
         await page.wait_for_timeout(500)
-    if expected and (current.scheme, current.netloc, current.path.rstrip('/')) != (
-            expected.scheme, expected.netloc, expected.path.rstrip('/')):
-        raise FeedAccessError('feed_unverified', 'Chrome no abrió el perfil de la modelo')
+    if expected and not on_route:
+        raise FeedAccessError('wrong_profile', 'Chrome no abrió la ruta de la modelo seleccionada')
     if expected and not profile_opened:
         raise FeedAccessError('profile_menu_missing', 'Chrome abrió la modelo, pero no encontró Mi perfil')
-    raise FeedAccessError('feed_unverified', 'Chrome abrió Mi perfil, pero no encontró publicaciones al bajar por el panel')
+    target = f' Se buscaba el post {preferred_id}.' if preferred_id else ''
+    raise FeedAccessError('feed_unverified', f'Mi perfil abrió, pero el feed no mostró publicaciones reconocibles.{target}')
 
 
 async def prepare_feed(page, ids, *, timeout=600, on_progress=None, profile_url=None):
@@ -426,11 +504,11 @@ async def prepare_feed(page, ids, *, timeout=600, on_progress=None, profile_url=
             on_progress(dict(value, stage='cargando feed e imágenes'))
     await capture_walk(page, ids, timeout=max(.1, deadline-monotonic()), frame=first['_frame'], on_progress=progress)
     # Reset every scrolling ancestor inside the active feed, without reloading the page.
-    await first['_frame'].evaluate('''() => {
-        const card=document.querySelector('[id^="postId_"]');
+    await first['_frame'].evaluate(post_expression('''() => {
+        const card=[...document.querySelectorAll('POST_SELECTOR')].find(e => POST_ID(e) && e.checkVisibility());
         for(let node=card?.parentElement;node;node=node.parentElement) node.scrollTop=0;
         window.scrollTo({top:0,behavior:'instant'});
-    }''')
+    }'''))
     await page.wait_for_timeout(500)
     return await seek_start(page, ids[0], timeout=max(.1, min(30, deadline-monotonic())))
 
@@ -462,8 +540,10 @@ async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 
         if last and 100 < last['bottom'] <= height - 20 and seen == ids:
             await page.wait_for_timeout(dwell * 1000)
             return seen
-        await scroll_down(page, frame=frame)
-    raise ValueError(f'Recorrido incompleto: {len(seen)}/{len(ids)} posts. No se enviará el video.')
+        await scroll_down(page, frame=frame, find_panel=True)
+    remaining = next((pid for pid in ids if pid not in seen), None)
+    reason = f'Falta localizar el post {remaining}.' if remaining else f'No se pudo encuadrar el final del post {ids[-1]}.'
+    raise ValueError(f'Recorrido incompleto: {len(seen)}/{len(ids)} posts. {reason}')
 
 
 def ffmpeg_path() -> str:
@@ -554,11 +634,12 @@ async def failure_diagnostics(page) -> list[dict]:
             continue
         try:
             cards = await frame.evaluate(SNAPSHOT)
-            images = await frame.evaluate(r'''() => [...document.querySelectorAll('[id^="postId_"] img')]
-                .filter(img => { const r=img.getBoundingClientRect();
+            images = await frame.evaluate(post_expression(r'''() => [...document.querySelectorAll('POST_SELECTOR')].filter(POST_ID)
+                .flatMap(card => [...card.querySelectorAll('img')].map(img => ({img,card})))
+                .filter(({img}) => { const r=img.getBoundingClientRect();
                     return r.width>0 && r.height>0 && r.bottom>100 && r.top<innerHeight; })
-                .map(img => ({post_id:img.closest('[id^="postId_"]').id.slice(7),
-                    complete:img.complete, loaded:img.naturalWidth>0}))''')
+                .map(({img,card}) => ({post_id:POST_ID(card),
+                    complete:img.complete, loaded:img.naturalWidth>0}))'''))
             result.append({'frame_index': index, 'visible': await frame_is_visible(page, frame),
                            'cards': cards, 'images': images})
         except Exception:
@@ -574,6 +655,32 @@ async def pause_failed_test(page) -> None:
         await asyncio.to_thread(input, 'Pulsa Enter en esta consola para cerrar Chrome: ')
     except EOFError:
         pass
+
+
+def recording_error_detail(error, *, page_closed=False):
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+    if isinstance(error, ValueError) and str(error):
+        return str(error)
+    if page_closed:
+        return 'Chrome se cerró durante la grabación.'
+    if isinstance(error, PlaywrightTimeoutError):
+        return IMAGE_TIMEOUT_MESSAGE if str(error) == IMAGE_TIMEOUT_MESSAGE else 'Chrome agotó el tiempo de espera.'
+    browser_errors = {
+        'ERR_NAME_NOT_RESOLVED': 'Chrome no pudo resolver la dirección de AgencyKey.',
+        'ERR_INTERNET_DISCONNECTED': 'Chrome detectó que la PC perdió la conexión a Internet.',
+        'ERR_NETWORK_CHANGED': 'La red cambió mientras Chrome cargaba AgencyKey.',
+        'ERR_CONNECTION_RESET': 'Se restableció la conexión con AgencyKey durante la carga.',
+        'ERR_CONNECTION_CLOSED': 'Se cerró la conexión con AgencyKey durante la carga.',
+        'ERR_TIMED_OUT': 'La conexión con AgencyKey agotó el tiempo de espera.',
+        'ERR_CERT_': 'Chrome rechazó el certificado de AgencyKey.',
+    }
+    for code, detail in browser_errors.items():
+        if code in str(error):
+            return detail
+    if isinstance(error, OSError):
+        return f'Windows no pudo acceder a un archivo o recurso ({type(error).__name__}).'
+    return f'Error inesperado ({type(error).__name__}).'
 
 
 async def record(config: dict, *, fixture: Path | None = None, headless: bool = False, dwell: float = 0,
@@ -651,7 +758,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                     first = await prepare_feed(page, config['post_ids_newest_first'], timeout=preload_limit,
                                                on_progress=on_progress, profile_url=None if fixture else url)
             except TimeoutError as exc:
-                raise ValueError('Se agotó la espera del feed. Usa /video para reintentar el comprobante') from exc
+                raise ValueError(f'Se agotó la precarga del lote iniciado por el post {report["first_post_id"]}.') from exc
             report['feed_preloaded'] = True
             print(f'Inicio del comprobante: post {config["post_ids_newest_first"][0]} · segundo plano: {headless}', flush=True)
             stage('marcar inicio del video')
@@ -664,26 +771,26 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                     await capture_walk(page, config['post_ids_newest_first'], dwell=dwell, timeout=walk_limit,
                                        frame=first['_frame'], seen=report['seen'], on_progress=on_progress)
             except TimeoutError as exc:
-                raise ValueError('Se agotó el tiempo de grabación · Usa /video para reintentar el comprobante') from exc
+                raise ValueError(f'Se agotó la grabación tras comprobar {len(report["seen"])}/{len(report["post_ids"])} posts.') from exc
             await page.wait_for_timeout(120)
             stage('marcar fin del video')
             await video_boundary(page)
         except Exception as exc:
             error = exc
-            from playwright.async_api import TimeoutError as PlaywrightTimeoutError
             report['error_type'] = type(exc).__name__
             if stop_event and stop_event.is_set():
                 exc = ValueError('Grabación detenida · Usa /video para reintentar el comprobante')
                 error = exc
                 report['error_type'] = 'RecordingStopped'
-            reason = str(exc) if isinstance(exc, ValueError) or (
-                isinstance(exc, PlaywrightTimeoutError) and str(exc) == IMAGE_TIMEOUT_MESSAGE
-            ) else (
-                'Se agotó el tiempo de espera del navegador.' if isinstance(exc, PlaywrightTimeoutError)
-                else 'Chrome se cerró durante la grabación.' if page.is_closed()
-                else 'Chrome no pudo completar este paso. Usa /video para intentarlo de nuevo.')
-            report['error'] = f'Etapa: {report["stage"]}. {reason}'
+            if isinstance(exc, FeedAccessError):
+                report['error_code'] = exc.status
+            reason = recording_error_detail(exc, page_closed=page.is_closed())
             report['next_post_id'] = next((pid for pid in report['post_ids'] if pid not in report['seen']), None)
+            if report['stage'] in {'cargando feed e imágenes', 'marcar inicio del video',
+                                   'recorrer posts / cargar imágenes'} and report['next_post_id']:
+                if not isinstance(exc, FeedAccessError) and not isinstance(exc, ValueError):
+                    reason += f' Siguiente post del lote: {report["next_post_id"]}.'
+            report['error'] = f'Etapa: {report["stage"]}. {reason}'
             try:
                 async with asyncio.timeout(5):
                     report['diagnostics'] = await failure_diagnostics(page)
