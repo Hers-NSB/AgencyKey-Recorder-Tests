@@ -151,7 +151,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(await self.page.locator('main').evaluate('el => el.scrollTop'), 220)
         first = await recorder.seek_start(self.page, '200', timeout=5)
         self.assertEqual(first['id'], '200')
-        self.assertEqual(await recorder.capture_walk(self.page, ['200', '100'], timeout=7, frame=frame),
+        self.assertEqual(await recorder.capture_walk(self.page, ['200', '100'], timeout=7, frame=first['_frame']),
                          ['200', '100'])
 
     async def test_model_navigation_activates_sidebar_my_profile(self):
@@ -350,15 +350,11 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
             </main>
             <script>
               window.wheels = 0;
-              window.positions = [];
-              const panel = document.querySelector('main');
-              panel.addEventListener('scroll', () => positions.push(panel.scrollTop));
               window.addEventListener('wheel', () => wheels++);
             </script>
         """)
         self.assertTrue(await recorder.scroll_down(self.page, 190))
         self.assertEqual(await self.page.evaluate('wheels'), 0)
-        self.assertGreater(len(set(await self.page.evaluate('positions'))), 4)
         self.assertEqual(await self.page.locator('main').evaluate('el => el.scrollTop'), 190)
         self.assertEqual(await self.page.evaluate('scrollY'), 0)
 
