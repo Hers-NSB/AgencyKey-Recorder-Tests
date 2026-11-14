@@ -20,7 +20,7 @@ mkdir -p "$encoder_root" "$prefix_root"
     --prefix="$encoder_root" --disable-autodetect --disable-everything \
     --disable-doc --disable-debug --disable-network --disable-ffprobe --disable-ffplay \
     --enable-small --enable-gpl --enable-libx264 --enable-encoder=libx264,rawvideo \
-    --enable-decoder=vp8 --enable-demuxer=matroska --enable-muxer=mp4,rawvideo \
+    --enable-decoder=mjpeg --enable-demuxer=concat,image2,jpeg_pipe --enable-parser=mjpeg --enable-muxer=mp4,rawvideo \
     --enable-protocol=file,pipe --enable-filter=scale,format,fps,trim,setpts,null,crop \
     --extra-cflags="-Os -I$prefix_root/include" --extra-ldflags="-static -L$prefix_root/lib"
   make -j2 ffmpeg.exe

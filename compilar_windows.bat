@@ -4,8 +4,6 @@ py -3.12 -m venv .venv
 if errorlevel 1 goto error
 .venv\Scripts\python -m pip install -r requirements-build.txt
 if errorlevel 1 goto error
-.venv\Scripts\python -m playwright install ffmpeg
-if errorlevel 1 goto error
 if not exist vendor\encoder\ffmpeg.exe (
  echo Falta vendor\encoder\ffmpeg.exe. Descarga el artefacto minimal-windows-encoder de GitHub Actions.
  goto error

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import math
@@ -22,8 +23,6 @@ FROZEN = bool(getattr(sys, 'frozen', False))
 DEFAULT_DATA_ROOT = (Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData' / 'Local')
                      / 'AgencyKeyRecorderTests') if FROZEN else RESOURCE_ROOT
 ROOT = Path(os.environ.get('AGENCYKEY_RECORDER_DATA_DIR', DEFAULT_DATA_ROOT)).expanduser().resolve()
-if FROZEN:
-    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(RESOURCE_ROOT / 'browser-tools')
 CONFIG = ROOT / 'config.local.json'
 STATE = ROOT / 'private' / 'session.json'
 
@@ -565,71 +564,98 @@ def ffmpeg_path() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
-BOUNDARY_JS = r"""async (visible) => {
-    document.getElementById('agencykey-recorder-boundary')?.remove();
-    if (visible) {
-        const marker=document.createElement('div'); marker.id='agencykey-recorder-boundary';
-        marker.style.cssText='all:initial!important;position:fixed!important;left:0!important;top:0!important;width:96px!important;height:48px!important;z-index:2147483647!important;pointer-events:none!important;background:linear-gradient(to right,rgb(251,0,251) 50%,rgb(0,251,80) 50%)!important;';
-        document.documentElement.appendChild(marker);
-    }
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-}"""
+class TabCapture:
+    """Save only frames captured between the verified start and end of the Drop."""
 
+    def __init__(self, folder: Path):
+        self.folder = folder
+        self.frames: list[tuple[float, str]] = []
+        self.pending: set[asyncio.Task] = set()
+        self.session = None
+        self.accepting = False
+        self.failure: Exception | None = None
 
-async def video_boundary(page) -> None:
-    # These synchronization frames are excluded from the exported video.
-    await page.evaluate(BOUNDARY_JS, True)
-    await page.wait_for_timeout(550)
-    await page.evaluate(BOUNDARY_JS, False)
-    await page.wait_for_timeout(120)
+    def save_frame(self, data: str) -> None:
+        name = f'frame-{len(self.frames):07}.jpg'
+        (self.folder / name).write_bytes(base64.b64decode(data, validate=True))
+        self.frames.append((monotonic(), name))
 
+    async def acknowledge(self, session_id: int) -> None:
+        try:
+            await self.session.send('Page.screencastFrameAck', {'sessionId': session_id})
+        except Exception as error:
+            if self.accepting:
+                self.failure = error
 
-def boundary_intervals(samples: bytes) -> tuple[float, float]:
-    if len(samples) % 6:
-        raise ValueError('No se pudo comprobar el inicio y fin del video.')
-    runs = []
-    first = None
-    for index in range(len(samples) // 6 + 1):
-        pixel = samples[index*6:index*6+6]
-        marker = (len(pixel) == 6 and pixel[0] > 210 and pixel[1] < 45 and pixel[2] > 210
-                  and pixel[3] < 45 and pixel[4] > 210 and 35 < pixel[5] < 135)
-        if marker and first is None:
-            first = index
-        elif not marker and first is not None:
-            if index - first >= 4:
-                runs.append((first, index))
-            first = None
-    if len(runs) != 2:
-        raise ValueError(f'No se verificaron los límites de grabación ({len(runs)}/2). No se enviará un video incompleto.')
-    start = (runs[0][1] + 1) / 25
-    end = (runs[1][0] - 1) / 25
-    if end <= start:
-        raise ValueError('El recorrido grabado no tiene una duración válida.')
-    return start, end
+    def receive(self, event: dict) -> None:
+        if self.accepting and self.failure is None:
+            try:
+                self.save_frame(event['data'])
+            except Exception as error:
+                self.failure = error
+        task = asyncio.create_task(self.acknowledge(event['sessionId']))
+        self.pending.add(task)
+        task.add_done_callback(self.pending.discard)
 
+    async def checkpoint(self) -> None:
+        # A still tab may emit no screencast event. Request the current frame explicitly.
+        async with asyncio.timeout(15):
+            result = await self.session.send('Page.captureScreenshot', {'format': 'jpeg', 'quality': 80})
+        self.save_frame(result['data'])
 
-def video_bounds(source: Path) -> tuple[float, float]:
-    result = subprocess.run([ffmpeg_path(), '-hide_banner', '-loglevel', 'error', '-i', str(source),
-                             '-an', '-vf', 'fps=25,crop=64:4:0:8,format=rgb24',
-                             '-pix_fmt', 'rgb24', '-threads', '1', '-c:v', 'rawvideo', '-f', 'rawvideo', 'pipe:1'],
-                            check=True, capture_output=True)
-    raw = result.stdout
-    frame_bytes = 64 * 4 * 3
-    if len(raw) % frame_bytes:
-        raise ValueError('No se pudieron leer los límites del video.')
-    samples = b''.join(raw[i + (64+8)*3:i + (64+8)*3+3] + raw[i + (64+48)*3:i + (64+48)*3+3]
-                       for i in range(0, len(raw), frame_bytes))
-    return boundary_intervals(samples)
+    async def start(self, page) -> None:
+        self.folder.mkdir()
+        self.session = await page.context.new_cdp_session(page)
+        async with asyncio.timeout(15):
+            await self.checkpoint()
+            self.session.on('Page.screencastFrame', self.receive)
+            self.accepting = True
+            await self.session.send('Page.startScreencast', {
+                'format': 'jpeg', 'quality': 80, 'maxWidth': 1280, 'maxHeight': 720,
+                'everyNthFrame': 1,
+            })
 
+    async def finish(self) -> None:
+        self.accepting = False
+        async with asyncio.timeout(15):
+            await self.session.send('Page.stopScreencast')
+            await self.checkpoint()
+        if self.failure:
+            raise ValueError('Chrome no pudo guardar el recorrido completo.') from self.failure
 
-def encode(source: Path, target: Path, start: float, duration: float) -> None:
-    command = [ffmpeg_path(), '-hide_banner', '-loglevel', 'error', '-y', '-i', str(source),
-               '-ss', str(max(0, start)), '-t', str(duration), '-an', '-vf', 'scale=854:480',
-               '-r', '20', '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
-               '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(target)]
-    subprocess.run(command, check=True, capture_output=True)
-    if not target.exists() or target.stat().st_size < 1000:
-        raise ValueError('No se pudo generar un video válido.')
+    async def close(self) -> None:
+        if self.session is None:
+            return
+        self.accepting = False
+        if self.pending:
+            try:
+                async with asyncio.timeout(5):
+                    await asyncio.gather(*self.pending, return_exceptions=True)
+            except TimeoutError:
+                pass
+        try:
+            await self.session.detach()
+        except Exception:
+            # The desktop stop command may have already closed the tab.
+            pass
+        self.session = None
+
+    def encode(self, target: Path) -> float:
+        manifest = self.folder / 'frames.ffconcat'
+        duration = self.frames[-1][0] - self.frames[0][0] + 0.30
+        with manifest.open('w', encoding='ascii') as stream:
+            stream.write('ffconcat version 1.0\n')
+            for index, (stamp, name) in enumerate(self.frames):
+                hold = max(.001, self.frames[index + 1][0] - stamp) if index + 1 < len(self.frames) else .30
+                stream.write(f"file '{name}'\nduration {hold:.6f}\n")
+            stream.write(f"file '{self.frames[-1][1]}'\n")
+        command = [ffmpeg_path(), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-i', str(manifest),
+                   '-t', f'{duration:.3f}', '-an', '-vf', 'fps=20,scale=854:480', '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
+                   '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(target)]
+        subprocess.run(command, check=True, capture_output=True)
+        if not target.exists() or target.stat().st_size < 1000:
+            raise ValueError('No se pudo generar un video válido.')
+        return duration
 
 
 async def failure_diagnostics(page) -> list[dict]:
@@ -704,8 +730,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
               'profile_url': config['profile_url'], 'resolution': '854x480', 'seen': [], 'created_at_utc': run_id,
               'first_post_id': config['post_ids_newest_first'][0], 'headless': headless, 'post_hold_seconds': dwell}
     save_json(report_path, report)
-    started = ended = 0.0
-    raw = None
+    capture = TabCapture(output / 'raw')
     error = None
     def stage(value):
         report['stage'] = value
@@ -715,8 +740,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
     async with async_playwright() as pw:
         stage('iniciando Chrome')
         browser = await launch_browser(pw, headless=headless)
-        options = {'viewport': {'width': 1280, 'height': 720},
-                   'record_video_dir': str(output / 'raw'), 'record_video_size': {'width': 854, 'height': 480}}
+        options = {'viewport': {'width': 1280, 'height': 720}}
         if not fixture:
             options['storage_state'] = session_state if session_state is not None else str(state)
         context = await browser.new_context(**options)
@@ -773,7 +797,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             report['start_verified'] = await confirm_start(
                 page, first['_frame'], report['first_post_id'],
                 **({} if fixture else {'image_timeout': SLOW_IMAGE_TIMEOUT_MS}))
-            await video_boundary(page)
+            await capture.start(page)
             stage('recorrer posts / cargar imágenes')
             walk_limit = 30 if fixture else FEED_IDLE_TIMEOUT_SECONDS
             try:
@@ -785,8 +809,11 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 raise ValueError(f'Se agotó la grabación tras comprobar {len(report["seen"])}/{len(report["post_ids"])} posts.') from exc
             await page.wait_for_timeout(120)
             stage('marcar fin del video')
-            await video_boundary(page)
+            await capture.finish()
+            if len(report['post_ids']) > 1 and len(capture.frames) <= 2:
+                raise ValueError('Chrome no entregó fotogramas durante el recorrido.')
         except Exception as exc:
+            await capture.close()
             error = exc
             report['error_type'] = type(exc).__name__
             if stop_event and stop_event.is_set():
@@ -816,6 +843,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 else:
                     await pause_failed_test(page)
         finally:
+            await capture.close()
             monitor_task.cancel()
             try:
                 await monitor_task
@@ -836,21 +864,17 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                             on_progress({'stage': 'Aviso: no se pudo actualizar la sesión guardada',
                                          'completed': len(report['seen']), 'total': len(report['post_ids'])})
                 await context.close()
-                # Failed runs discard raw capture; asking for its path can itself
-                # fail when Chrome closed before the video artifact was created.
-                if not error and page.video:
-                    raw = Path(await page.video.path())
             finally:
                 await browser.close()
     try:
         if error:
             raise ValueError(report['error']) from error
-        stage('verificar límites del video')
-        started, ended = await asyncio.to_thread(video_bounds, raw)
+        if report['seen'] != report['post_ids']:
+            raise ValueError('No se capturaron todos los posts del comprobante.')
         stage('convertir video a MP4')
         video = output / 'comprobante.mp4'
-        await asyncio.to_thread(encode, raw, video, started, ended - started)
-        report.update(status='complete', stage='completo', duration_seconds=round(ended-started, 2),
+        duration = await asyncio.to_thread(capture.encode, video)
+        report.update(status='complete', stage='completo', duration_seconds=round(duration, 2),
                       bytes=video.stat().st_size, sha256=hashlib.sha256(video.read_bytes()).hexdigest(),
                       video='comprobante.mp4')
         if on_progress:
@@ -859,14 +883,13 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         return report_path
     except Exception as exc:
         report.setdefault('error_type', type(exc).__name__)
+        report.setdefault('error', recording_error_detail(exc))
         raise
     finally:
         save_json(report_path, report)
         # Never retain setup/login navigation or incomplete captures.
-        if raw and raw.exists():
-            raw.unlink()
-        if (output / 'raw').exists():
-            shutil.rmtree(output / 'raw')
+        if capture.folder.exists():
+            shutil.rmtree(capture.folder)
 
 
 def verified_video(report_path: Path) -> tuple[dict, Path]:

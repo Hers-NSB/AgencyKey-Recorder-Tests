@@ -87,8 +87,6 @@ jobs:
         with:
           name: minimal-windows-encoder
           path: vendor/encoder
-      - name: Prepare video recorder (no browser download)
-        run: python -m playwright install ffmpeg
       - run: python recorder.py check-chrome
       - run: python -m unittest discover -s tests -v
       - uses: actions/setup-node@v4
@@ -122,9 +120,9 @@ jobs:
           gh release create "recorder-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}" \
             dist/AgencyKeyRecorderTests.exe LEEME-EXE.txt vendor/encoder/encoder-sources.tar.gz \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "AgencyKey Recorder Tests · Búsqueda de publicaciones en Mi perfil" \
+            --title "AgencyKey Recorder Tests · Captura directa del comprobante" \
             --notes-file release-notes.md --latest
-      - name: Verify new release and retire the approved previous release
+      - name: Verify released Windows downloads
         if: github.ref == 'refs/heads/main'
         shell: bash
         env:
@@ -132,7 +130,6 @@ jobs:
         run: |
           set -euo pipefail
           keep="recorder-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
-          old="recorder-28-1"
           latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
           test "$latest" = "$keep"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$keep" --jq .object.sha)" = "$GITHUB_SHA"
@@ -142,8 +139,3 @@ jobs:
           cmp dist/AgencyKeyRecorderTests.exe verified-release/AgencyKeyRecorderTests.exe
           cmp LEEME-EXE.txt verified-release/LEEME-EXE.txt
           cmp vendor/encoder/encoder-sources.tar.gz verified-release/encoder-sources.tar.gz
-          if gh release view "$old" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$old" --jq .id)" = 445558986
-            gh release delete "$old" --repo "$GITHUB_REPOSITORY" --yes
-            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$old" --jq .ref
-          fi

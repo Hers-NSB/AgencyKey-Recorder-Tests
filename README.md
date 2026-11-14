@@ -54,7 +54,7 @@ La app muestra la etapa del fallo y, si corresponde, el ID de la publicación bu
 
 El EXE guarda trabajos e informes en `%LOCALAPPDATA%\AgencyKeyRecorderTests`; no usa la entrada de acceso de Dropper. El servidor usa un Worker, una base D1, cookies y secretos propios. No se han copiado tokens de bots de producción ni las contraseñas privadas de Dropper: se configuran en la web nueva.
 
-La grabación solo se considera completa si se verificaron todos los IDs, sus imágenes visibles y los límites del video. No se envían videos incompletos o alterados. Si el panel se oculta, cambia de pestaña o se recarga, se rechaza el recorrido. No se comprueban fondos CSS/canvas, reproducción de videos DRM ni expansión automática de textos. El límite conservador de subida es 49 MB.
+La grabación solo se considera completa si se verificaron todos los IDs, sus imágenes visibles y los fotogramas de inicio y cierre en la misma pestaña. No se envían videos incompletos o alterados. Si el panel se oculta, cambia de pestaña o se recarga, se rechaza el recorrido. No se comprueban fondos CSS/canvas, reproducción de videos DRM ni expansión automática de textos. El límite conservador de subida es 49 MB.
 
 ## Herramientas de grabación manual
 
@@ -71,7 +71,7 @@ Al abrir el EXE con doble clic, la consola técnica se oculta automáticamente. 
 
 ## Desarrollo y compilación
 
-Python 3.12, Node.js 24 y Chrome instalado. Instala `requirements-build.txt`, ejecuta `npm ci --prefix cloudflare` y prepara la herramienta de video con `python -m playwright install ffmpeg` (no instala navegadores).
+Python 3.12, Node.js 24 y Chrome instalado. Instala `requirements-build.txt`, ejecuta `npm ci --prefix cloudflare`.
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -81,7 +81,7 @@ python desktop.py --smoke-test
 python -m PyInstaller --clean --noconfirm AgencyKeyRecorderTests.spec
 ```
 
-El codificador mínimo se construye y verifica en `.github/workflows/windows-exe.yml`. El EXE incluye la app, los perfiles de subida de respaldo, el controlador Chrome y los codificadores; no descarga navegadores ni codificadores en el primer uso. Las fuentes y licencias del codificador se publican junto al EXE.
+El codificador mínimo se construye y verifica en `.github/workflows/windows-exe.yml`. El EXE incluye la app, los perfiles de subida de respaldo, el controlador Chrome y el codificador; no descarga navegadores ni codificadores en el primer uso. Las fuentes y licencias del codificador se publican junto al EXE.
 
 ## Servidor independiente
 
