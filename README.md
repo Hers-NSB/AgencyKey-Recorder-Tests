@@ -41,7 +41,9 @@ La prueba publica contenido real en la modelo configurada. Las pruebas de CI usa
 
 Un fallo de grabación o envío no vuelve a publicar los posts. La app muestra la etapa y el error; los informes y videos completos se conservan localmente.
 
-- `/video`: genera de nuevo o reintenta el comprobante del último Drop. Los envíos confirmados no se duplican.
+- **Repetir grabación** aparece en el aviso de error del comprobante y vuelve a grabar los posts del mismo Drop. También puedes usar `/video` para recuperar el último comprobante.
+- Al abrir un Drop, **Cancelar Drop** aparece tras recibir el primer mensaje.
+- Chrome dispone de dos minutos por intento para abrir el perfil. Durante el recorrido, cada post verificado reinicia la espera de tres minutos sin avance.
 - Si Telegram perdió la respuesta durante la subida, comprueba primero el chat. `/video reenviar` confirma que quieres volver a enviar ese comprobante.
 - Los posts confirmados manualmente necesitan su ID para poder incluirlos en el video: `/id NUMERO ID_O_ENLACE`, por ejemplo `/id 2 2873212320`. Después usa `/video`. El programa no inventa IDs ni vuelve a publicar esos posts.
 - **Detener** detiene nuevas publicaciones y solicita cancelar la grabación en curso. Los Drops de publicación pendientes siguen siendo memoria de sesión, igual que en Dropper; los trabajos de comprobante conservan IDs y estado para recuperarlos con `/video` tras reiniciar.

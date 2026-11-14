@@ -256,6 +256,9 @@ async def frame_geometry(page, frame):
 
 
 IMAGE_TIMEOUT_MESSAGE = 'Las imágenes visibles del feed tardaron demasiado en cargar'
+PROFILE_LOAD_TIMEOUT_MS = 120_000
+FEED_IDLE_TIMEOUT_SECONDS = 180
+SLOW_IMAGE_TIMEOUT_MS = 120_000
 
 
 async def images_ready(page, timeout: int = 20000, *, frame=None) -> None:
@@ -266,9 +269,9 @@ async def images_ready(page, timeout: int = 20000, *, frame=None) -> None:
         raise PlaywrightTimeoutError(IMAGE_TIMEOUT_MESSAGE) from error
 
 
-async def confirm_start(page, frame, newest: str) -> dict:
+async def confirm_start(page, frame, newest: str, *, image_timeout: int = 20_000) -> dict:
     # Recheck after images settle: a recycled feed can replace the node while awaiting.
-    await images_ready(page, frame=frame)
+    await images_ready(page, timeout=image_timeout, frame=frame)
     if not await frame_is_visible(page, frame):
         raise ValueError('El primer post está en un panel oculto. No se inició el comprobante.')
     await frame.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
@@ -333,7 +336,7 @@ async def scroll_down(page, pixels: int = 190, *, frame=None, find_panel=False, 
         await page.wait_for_timeout(pause)
 
 
-async def seek_start(page, newest: str, timeout: float = 120) -> dict:
+async def seek_start(page, newest: str, timeout: float = 120, *, image_timeout: int = 20_000) -> dict:
     deadline = monotonic() + timeout
     while monotonic() < deadline:
         frame = await scroll_frame(page, newest)
@@ -353,7 +356,7 @@ async def seek_start(page, newest: str, timeout: float = 120) -> dict:
             await page.mouse.move(*point)
             await page.mouse.wheel(0, -115)
             await page.wait_for_timeout(500)
-            await images_ready(page, frame=frame)
+            await images_ready(page, timeout=image_timeout, frame=frame)
             # A selector match is not sufficient: verify the requested post is actually framed.
             for _ in range(3):
                 top = await locator.evaluate('e => e.getBoundingClientRect().top')
@@ -362,7 +365,7 @@ async def seek_start(page, newest: str, timeout: float = 120) -> dict:
                 await scroll_down(page, round(top - 115), frame=frame, point=point)
             else:
                 raise ValueError(f'No se pudo encuadrar el post {newest}. No se inició el comprobante.')
-            await confirm_start(page, frame, newest)
+            await confirm_start(page, frame, newest, image_timeout=image_timeout)
             target['_frame'] = frame
             return target
         await scroll_down(page, 260, frame=frame, find_panel=True)
@@ -496,13 +499,19 @@ async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
 async def prepare_feed(page, ids, *, timeout=600, on_progress=None, profile_url=None):
     """Warm the batch and its lazy images before marking the video start."""
     deadline = monotonic() + timeout
-    await wait_for_feed(page, profile_url, deadline=min(deadline, monotonic() + 35),
+    live = profile_url is not None
+    seek_timeout = FEED_IDLE_TIMEOUT_SECONDS if live else 30
+    image_options = {'image_timeout': SLOW_IMAGE_TIMEOUT_MS} if live else {}
+    await wait_for_feed(page, profile_url, deadline=min(deadline, monotonic() + (seek_timeout if live else 35)),
                         preferred_id=ids[0])
-    first = await seek_start(page, ids[0], timeout=max(.1, min(30, deadline-monotonic())))
+    first = await seek_start(page, ids[0], timeout=seek_timeout if live else max(.1, min(30, deadline-monotonic())),
+                             **image_options)
     def progress(value):
         if on_progress:
             on_progress(dict(value, stage='cargando feed e imágenes'))
-    await capture_walk(page, ids, timeout=max(.1, deadline-monotonic()), frame=first['_frame'], on_progress=progress)
+    await capture_walk(page, ids, timeout=seek_timeout if live else max(.1, deadline-monotonic()),
+                       frame=first['_frame'], on_progress=progress, **image_options,
+                       **({'reset_on_progress': True} if live else {}))
     # Reset every scrolling ancestor inside the active feed, without reloading the page.
     await first['_frame'].evaluate(post_expression('''() => {
         const card=[...document.querySelectorAll('POST_SELECTOR')].find(e => POST_ID(e) && e.checkVisibility());
@@ -510,10 +519,13 @@ async def prepare_feed(page, ids, *, timeout=600, on_progress=None, profile_url=
         window.scrollTo({top:0,behavior:'instant'});
     }'''))
     await page.wait_for_timeout(500)
-    return await seek_start(page, ids[0], timeout=max(.1, min(30, deadline-monotonic())))
+    return await seek_start(page, ids[0], timeout=seek_timeout if live else max(.1, min(30, deadline-monotonic())),
+                            **image_options)
 
 
-async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 600, *, frame=None, seen=None, on_progress=None) -> list[str]:
+async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 600, *,
+                       frame=None, seen=None, on_progress=None, reset_on_progress=False,
+                       image_timeout: int = 20_000) -> list[str]:
     frame = frame or await post_frame(page) or page.main_frame
     seen = [] if seen is None else seen
     deadline = monotonic() + timeout
@@ -522,7 +534,7 @@ async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 
             raise ValueError('El panel de publicaciones se recargó. Repite únicamente la grabación.')
         if not await frame_is_visible(page, frame):
             raise ValueError('El panel de publicaciones quedó oculto durante el recorrido. Repite la grabación.')
-        await images_ready(page, frame=frame)
+        await images_ready(page, timeout=image_timeout, frame=frame)
         _, _, height = await frame_geometry(page, frame)
         cards = await frame.evaluate(SNAPSHOT)
         for card in cards:
@@ -536,6 +548,8 @@ async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 
                 on_progress({'stage': 'grabando', 'completed': len(seen), 'total': len(ids), 'post_id': card['id']})
             print(f'Grabando {len(seen)}/{len(ids)} · ID {card["id"]}', flush=True)
             await page.wait_for_timeout(dwell * 1000)
+            if reset_on_progress:
+                deadline = monotonic() + timeout
         last = next((p for p in cards if p['id'] == ids[-1] and not p['pinned']), None)
         if last and 100 < last['bottom'] <= height - 20 and seen == ids:
             await page.wait_for_timeout(dwell * 1000)
@@ -731,17 +745,19 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             stage('abrir perfil')
             print('Etapa: abrir perfil', flush=True)
             url = fixture.resolve().as_uri() if fixture else config['profile_url']
-            from playwright.async_api import Error as BrowserError
+            from playwright.async_api import Error as BrowserError, TimeoutError as BrowserTimeout
+            navigation_timeout = 45_000 if fixture else PROFILE_LOAD_TIMEOUT_MS
             try:
-                response = await page.goto(url, wait_until='domcontentloaded', timeout=45000)
+                response = await page.goto(url, wait_until='domcontentloaded', timeout=navigation_timeout)
             except BrowserError as error:
                 transient = ('ERR_NETWORK_CHANGED', 'ERR_INTERNET_DISCONNECTED', 'ERR_CONNECTION_RESET',
                              'ERR_TIMED_OUT', 'ERR_CONNECTION_CLOSED')
-                if fixture or (stop_event and stop_event.is_set()) or not any(code in str(error) for code in transient):
+                retryable = isinstance(error, BrowserTimeout) or any(code in str(error) for code in transient)
+                if fixture or (stop_event and stop_event.is_set()) or not retryable:
                     raise
                 stage('reintentando abrir el perfil por un fallo de conexión')
                 await asyncio.sleep(2)
-                response = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+                response = await page.goto(url, wait_until='domcontentloaded', timeout=navigation_timeout)
 
             if not fixture and response is not None:
                 if response.status == 401:
@@ -752,9 +768,9 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                     raise ValueError('AgencyKey no pudo cargar el perfil. Usa /video para intentarlo de nuevo.')
             stage('cargando feed e imágenes')
             print(f'Etapa: {report["stage"]} · ID {report["first_post_id"]}', flush=True)
-            preload_limit = 45 if fixture else min(180, 55 + 4 * len(report['post_ids']))
+            preload_limit = 45 if fixture else FEED_IDLE_TIMEOUT_SECONDS
             try:
-                async with asyncio.timeout(preload_limit):
+                async with asyncio.timeout(preload_limit if fixture else None):
                     first = await prepare_feed(page, config['post_ids_newest_first'], timeout=preload_limit,
                                                on_progress=on_progress, profile_url=None if fixture else url)
             except TimeoutError as exc:
@@ -762,14 +778,17 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             report['feed_preloaded'] = True
             print(f'Inicio del comprobante: post {config["post_ids_newest_first"][0]} · segundo plano: {headless}', flush=True)
             stage('marcar inicio del video')
-            report['start_verified'] = await confirm_start(page, first['_frame'], report['first_post_id'])
+            report['start_verified'] = await confirm_start(
+                page, first['_frame'], report['first_post_id'],
+                **({} if fixture else {'image_timeout': SLOW_IMAGE_TIMEOUT_MS}))
             await video_boundary(page)
             stage('recorrer posts / cargar imágenes')
-            walk_limit = 30 if fixture else max(preload_limit, 30 + len(report['post_ids']) * (dwell + 4))
+            walk_limit = 30 if fixture else FEED_IDLE_TIMEOUT_SECONDS
             try:
-                async with asyncio.timeout(walk_limit):
+                async with asyncio.timeout(walk_limit if fixture else None):
                     await capture_walk(page, config['post_ids_newest_first'], dwell=dwell, timeout=walk_limit,
-                                       frame=first['_frame'], seen=report['seen'], on_progress=on_progress)
+                                       frame=first['_frame'], seen=report['seen'], on_progress=on_progress,
+                                       **({} if fixture else {'reset_on_progress': True, 'image_timeout': SLOW_IMAGE_TIMEOUT_MS}))
             except TimeoutError as exc:
                 raise ValueError(f'Se agotó la grabación tras comprobar {len(report["seen"])}/{len(report["post_ids"])} posts.') from exc
             await page.wait_for_timeout(120)

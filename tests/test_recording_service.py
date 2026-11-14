@@ -172,6 +172,20 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
                 await coordinator.run(batch,bot,42)
             bot.send_video.assert_not_awaited()
             self.assertEqual(json.loads(coordinator.job_path(42).read_text())['status'],'error')
+            button = bot.send_message.call_args.kwargs['reply_markup'].inline_keyboard[0][0]
+            self.assertIn('Repetir grabación', button.text)
+            query = SimpleNamespace(data=button.callback_data, answer=AsyncMock())
+            update = SimpleNamespace(callback_query=query, effective_chat=SimpleNamespace(id=42))
+            context = SimpleNamespace(user_data={}, bot=bot, application=object())
+            publisher = DropperBot(SimpleNamespace(), batch.creator, coordinator)
+            with patch.object(coordinator, 'start', new_callable=AsyncMock) as retry:
+                await publisher.retry_recording(update, context)
+                self.assertEqual(retry.call_args.args[0].published_ids, batch.published_ids)
+                retry.assert_awaited_once()
+                query.data = 'proof-retry:' + '0' * 32
+                await publisher.retry_recording(update, context)
+                retry.assert_awaited_once()
+                self.assertTrue(query.answer.call_args.kwargs['show_alert'])
 
     async def test_integrated_telegram_error_uses_safe_network_diagnosis(self):
         import httpx

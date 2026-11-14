@@ -8,6 +8,7 @@ from telegram.constants import ChatType
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     ApplicationHandlerStop,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     TypeHandler,
@@ -17,6 +18,7 @@ from telegram.ext import (
 from agencykey import AgencyKey, AgencyKeyError
 from config import log
 from core import Batch, Post, SessionStats
+from recording_service import RETRY_RECORDING_PREFIX
 
 NEW_BATCH = "🔄 Nuevo Drop"
 PUBLISH = "📤 Publicar"
@@ -64,7 +66,7 @@ class DropperBot:
             raise ApplicationHandlerStop
         batch = context.user_data.get("batch")
         message = update.effective_message
-        if message and (not batch or batch.status in {"collecting", "done"}):
+        if message and not getattr(update, "callback_query", None) and (not batch or batch.status in {"collecting", "done"}):
             if message.text not in CONTROL_TEXTS | {"/publicar"} or message.forward_origin or message.photo:
                 context.user_data.setdefault("prepublish_ids", set()).add(message.message_id)
         pending_error = context.user_data.get("telegram_error")
@@ -76,9 +78,9 @@ class DropperBot:
         batch = context.user_data.get("batch")
         rows = []
         if batch and batch.status == "collecting":
-            if batch.received:
-                rows.append([PUBLISH_NORMAL, PUBLISH_SLOW])
-            rows.append([CANCEL])
+            if not batch.received:
+                return ReplyKeyboardRemove()
+            rows.extend([[PUBLISH_NORMAL, PUBLISH_SLOW], [CANCEL]])
         elif batch and batch.status == "paused":
             rows.append([CONTINUE, RESUME_SLOW] if batch.retry_at is not None else [CONTINUE])
             rows.append([CANCEL])
@@ -243,6 +245,20 @@ class DropperBot:
             return
         await self.recording.start(batch, context.bot, update.effective_chat.id, context.application,
                                    resend=getattr(context, 'args', []) == ['reenviar'])
+
+    async def retry_recording(self, update, context):
+        query = update.callback_query
+        chat_id = update.effective_chat.id
+        batch = self.recording.restore_batch(chat_id) if self.recording else None
+        if not batch or query.data != f'{RETRY_RECORDING_PREFIX}{batch.id}':
+            await query.answer('Este comprobante ya no está disponible para reintentar.', show_alert=True)
+            return
+        active = context.user_data.get('batch')
+        if active and active.status == 'publishing':
+            await query.answer('Espera a que termine la publicación en curso.', show_alert=True)
+            return
+        await query.answer()
+        await self.recording.start(batch, context.bot, chat_id, context.application)
 
     async def manual_id(self, update, context):
         from recorder import post_id
@@ -467,6 +483,7 @@ def register(app, agencykey, creator, recording=None, events=None):
     app.add_handler(CommandHandler("cancelar", bot.cancel))
     app.add_handler(CommandHandler("continuar", bot.resume))
     app.add_handler(CommandHandler('video', bot.video))
+    app.add_handler(CallbackQueryHandler(bot.retry_recording, pattern=rf'^{RETRY_RECORDING_PREFIX}[0-9a-f]{{32}}$'))
     app.add_handler(CommandHandler('id', bot.manual_id))
     app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, bot.menu))
     app.add_error_handler(on_error)
