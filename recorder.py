@@ -329,31 +329,41 @@ async def seek_start(page, newest: str, timeout: float = 120) -> dict:
             target['_frame'] = frame
             return target
         await scroll_down(page, 260, frame=frame)
-    raise ValueError('No se localizó el primer post. Revisa los IDs, la modelo y si la sesión sigue iniciada.')
+    raise ValueError(f'El feed abrió, pero no se encontró el post {newest} del lote · Usa /video para reintentar')
 
 
-async def prepare_feed(page, ids, *, timeout=600, on_progress=None, profile_url=None):
-    """Warm the entire batch, including lazy images, before marking the video start.
+class FeedAccessError(ValueError):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
 
-    Virtual feeds remove off-screen cards, so waiting for all nodes at once never completes.
-    """
-    deadline = monotonic() + timeout
-    feed_deadline = min(deadline, monotonic() + 35)
+
+async def agencykey_sign_in_visible(page):
+    current = urlparse(page.url)
+    if current.netloc != 'app.agencykey.com':
+        return False
+    return (any(part in {'login', 'sign-in', 'signin', 'auth', '2fa', 'mfa'}
+                for part in current.path.lower().split('/'))
+            or await page.locator('input[type="password"]:visible').first.is_visible())
+
+
+async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
+    """Wait for posts in a visible panel, including feeds that mount while scrolling."""
     expected = urlparse(profile_url) if profile_url else None
     from playwright.async_api import Error as PlaywrightError
 
-    while monotonic() < feed_deadline:
+    current = urlparse(page.url)
+    while monotonic() < deadline:
         current = urlparse(page.url)
-        path = current.path.lower().split('/')
-        if current.netloc == 'app.agencykey.com' and any(
-                part in {'login', 'sign-in', 'signin', 'auth', '2fa', 'mfa'} for part in path):
-            raise ValueError('AgencyKey volvió a pedir inicio de sesión. Pulsa «Conectar AgencyKey» en el panel web.')
+        if await agencykey_sign_in_visible(page):
+            raise FeedAccessError('login_required', 'AgencyKey pide iniciar sesión · Reconecta desde el panel web')
         if expected and (current.scheme, current.netloc, current.path.rstrip('/')) != (
                 expected.scheme, expected.netloc, expected.path.rstrip('/')):
             await page.wait_for_timeout(500)
             continue
-        if await post_frame(page, ids[0]):
-            break
+        frame = await post_frame(page, preferred_id)
+        if frame:
+            return frame
         # The profile header can occupy the full view before lazy cards are mounted.
         try:
             await scroll_down(page, 220, frame=await scroll_frame(page))
@@ -364,8 +374,17 @@ async def prepare_feed(page, ids, *, timeout=600, on_progress=None, profile_url=
                        ('Execution context was destroyed', 'Frame was detached', 'Frame has been detached')):
                 raise
         await page.wait_for_timeout(500)
-    else:
-        raise ValueError('No pudimos abrir las publicaciones de esta modelo. Comprueba su acceso con «Verificar feed» en el panel web.')
+    if expected and (current.scheme, current.netloc, current.path.rstrip('/')) != (
+            expected.scheme, expected.netloc, expected.path.rstrip('/')):
+        raise FeedAccessError('feed_unverified', 'Chrome no abrió el perfil de la modelo')
+    raise FeedAccessError('feed_unverified', 'El perfil abrió, pero Chrome no mostró publicaciones en el feed')
+
+
+async def prepare_feed(page, ids, *, timeout=600, on_progress=None, profile_url=None):
+    """Warm the batch and its lazy images before marking the video start."""
+    deadline = monotonic() + timeout
+    await wait_for_feed(page, profile_url, deadline=min(deadline, monotonic() + 35),
+                        preferred_id=ids[0])
     first = await seek_start(page, ids[0], timeout=max(.1, min(30, deadline-monotonic())))
     def progress(value):
         if on_progress:

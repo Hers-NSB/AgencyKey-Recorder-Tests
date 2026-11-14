@@ -14,7 +14,18 @@ export const input = {creator_id: 52, telegram_token: firstToken, api_key: 'agen
 export function makeEnvironment() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('./schema.sql', import.meta.url), 'utf8'));
-  const DB = {prepare(sql) {
+  const DB = {async batch(statements) {
+    sqlite.exec('BEGIN');
+    try {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      sqlite.exec('COMMIT');
+      return results;
+    } catch (error) {
+      sqlite.exec('ROLLBACK');
+      throw error;
+    }
+  }, prepare(sql) {
     let params = [];
     return {bind(...values) {params = values; return this;},
       async first() {return sqlite.prepare(sql).get(...params)||null;},

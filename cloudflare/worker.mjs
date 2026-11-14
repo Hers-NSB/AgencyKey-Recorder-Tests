@@ -337,6 +337,20 @@ async function verifyBot(token) {
   return token.split(':')[0];
 }
 
+async function listAdminProfiles(env) {
+  const session = await sharedSession(env);
+  const result = await env.DB.prepare(`SELECT p.*, s.value AS feed_result
+    FROM profiles p LEFT JOIN settings s ON s.key = 'feed_check:' || p.id
+    ORDER BY p.name COLLATE NOCASE`).all();
+  return json({profiles: result.results.map(row => {
+    const check = row.feed_result && JSON.parse(row.feed_result);
+    const feed = session.configured && check?.creator_id === row.creator_id && check.connection === session.connection
+      ? {status:check.status, checked_at:check.checked_at}
+      : {status:session.configured?'pending':'no_session'};
+    return {...profile(row), feed};
+  }), recording_session:session});
+}
+
 async function listProfiles(env) {
   const result = await env.DB.prepare(`SELECT ${columns} FROM profiles ORDER BY name COLLATE NOCASE`).all();
   return json({profiles: result.results.map(profile), recording_session:await sharedSession(env)});
@@ -346,13 +360,13 @@ export async function sharedSession(env, includeState=false) {
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'recording_session'").first();
   if (!row) return {configured:false, revision:null};
   const value = JSON.parse(row.value);
-  return {configured:true, revision:value.revision, updated_at:value.updated_at,
+  return {configured:true, revision:value.revision, updated_at:value.updated_at, connection:value.connection ?? value.revision,
     ...(includeState ? {state:await decrypt(value.sealed,'recording_session',env)} : {})};
 }
 
-export async function saveSharedSession(env, state, revision) {
+export async function saveSharedSession(env, state, revision, connection=crypto.randomUUID()) {
   try {state=cleanStorageState(state);} catch {throw new ApiError(400,'Sesión de AgencyKey inválida');}
-  const value={revision:crypto.randomUUID(),updated_at:new Date().toISOString(),sealed:await encrypt(state,'recording_session',env)};
+  const value={revision:crypto.randomUUID(),connection,updated_at:new Date().toISOString(),sealed:await encrypt(state,'recording_session',env)};
   const saved=await env.DB.prepare(`INSERT INTO settings(key,value) VALUES ('recording_session',?)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE json_extract(settings.value,'$.revision') = ? RETURNING key`)
     .bind(JSON.stringify(value),revision).first();
@@ -403,7 +417,7 @@ async function recordingAdmin(request, env, path) {
     const session=await sharedSession(env);
     if (feed && !session.configured) return json({status:'no_session'});
     const job={id:crypto.randomUUID(),owner,kind:connect?'connect':'feed',
-      ...(profile?{creator_id:profile.creator_id}:{}),revision:session.revision,status:'queued',expires:Date.now()+45000};
+      ...(profile?{profile_id:feed[1],creator_id:profile.creator_id,connection:session.connection}:{}),revision:session.revision,status:'queued',expires:Date.now()+45000};
     if (!await replaceDesktopJob(env,entry,job)) throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
     return json({id:job.id,status:job.status},202);
   }
@@ -443,6 +457,18 @@ async function desktopRecordingJob(request,env) {
     try {await saveSharedSession(env,input.state,job.revision);}
     catch {job.status='connection_error';}
     await replaceDesktopJob(env,{raw:JSON.stringify(finishing)},job);
+  } else if (job.kind === 'feed' && job.profile_id) {
+    if (input.status === 'ready' && input.feed_checked !== true) job.status = 'desktop_update_required';
+    const check = {creator_id:job.creator_id, connection:job.connection, status:job.status, checked_at:job.checked_at};
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO settings(key,value)
+        SELECT ?,? WHERE EXISTS (SELECT 1 FROM settings WHERE key = ? AND value = ?)
+        AND EXISTS (SELECT 1 FROM profiles WHERE id = ? AND creator_id = ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+        .bind('feed_check:'+job.profile_id,JSON.stringify(check),desktopJobKey,entry.raw,job.profile_id,job.creator_id),
+      env.DB.prepare('UPDATE settings SET value = ? WHERE key = ? AND value = ?')
+        .bind(JSON.stringify(job),desktopJobKey,entry.raw),
+    ]);
   } else if (!await replaceDesktopJob(env,entry,job)) {
     return json({active:false});
   }
@@ -493,7 +519,7 @@ async function adminHandle(request, env, path) {
     await env.DB.prepare("INSERT INTO settings(key, value) VALUES ('app_access', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(value).run();
     return json({code});
   }
-  if (path === '/v1/admin/profiles' && request.method === 'GET') return listProfiles(env);
+  if (path === '/v1/admin/profiles' && request.method === 'GET') return listAdminProfiles(env);
   if (path === '/v1/admin/resolve' && request.method === 'POST') {
     const input = await body(request);
     const id = creatorId(input.creator_id);
@@ -563,8 +589,9 @@ async function handle(request, env) {
     }
     if (request.method==='PUT') {
       const input=await body(request,524288);
-      if (typeof input.revision!=='string' || !(await sharedSession(env)).configured) throw new ApiError(409,'Conecta AgencyKey desde la web');
-      return json(await saveSharedSession(env,input.state,input.revision));
+      const session=await sharedSession(env);
+      if (typeof input.revision!=='string' || !session.configured) throw new ApiError(409,'Conecta AgencyKey desde la web');
+      return json(await saveSharedSession(env,input.state,input.revision,session.connection));
     }
     throw new ApiError(405,'Método no permitido');
   }

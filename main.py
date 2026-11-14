@@ -8,7 +8,7 @@ from config import log
 
 
 def main(stop_event=None, on_ready=None, credentials=None, creator=None, recording_events=None,
-         recording_session_client=None, show_recording_browser=None) -> None:
+         recording_session_client=None) -> None:
     if not credentials or creator is None:
         raise ValueError("Configura el bot y su modelo desde la app de escritorio")
     if stop_event is not None and stop_event.is_set():
@@ -20,7 +20,7 @@ def main(stop_event=None, on_ready=None, credentials=None, creator=None, recordi
     options = telegram_connection_options()
     proxy = options.pop('proxy', None)
     recording = RecordingCoordinator(creator, events=recording_events, stop_event=stop_event,
-                                     session_client=recording_session_client, show_browser=show_recording_browser)
+                                     session_client=recording_session_client)
     agencykey = AgencyKey(api_key)
     if stop_event is not None:
         agencykey.stop_requested = stop_event.is_set

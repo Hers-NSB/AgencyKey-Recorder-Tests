@@ -43,7 +43,6 @@ class BotController:
         self.events = events
         self.runner = runner or self._run_bot
         self.stop_event = threading.Event()
-        self.show_recording_browser = threading.Event()
         self.thread = None
 
     @property
@@ -87,6 +86,5 @@ class BotController:
             self.events.put(('setup_stage', self.creator.name))
         if not stop_event.is_set():
             main(stop_event=stop_event, on_ready=on_ready, credentials=self.credentials, creator=self.creator,
-                 recording_events=self.events, recording_session_client=self.session_client,
-                 show_recording_browser=self.show_recording_browser.is_set)
+                 recording_events=self.events, recording_session_client=self.session_client)
 

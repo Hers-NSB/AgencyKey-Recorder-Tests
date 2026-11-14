@@ -22,12 +22,15 @@ NEW_BATCH = "🔄 Nuevo Drop"
 PUBLISH = "📤 Publicar"
 PUBLISH_NORMAL = "📤 Publicar normal"
 PUBLISH_SLOW = "🐢 Publicar lento"
-KEEP_TEXT = "Conservar solo texto"
-EXPIRE_TEXT = "Eliminar solo texto tras 24 h"
 RESUME_SLOW = "🐢 Continuar lento"
-CONTROL_TEXTS = {PUBLISH, PUBLISH_NORMAL, PUBLISH_SLOW, KEEP_TEXT, EXPIRE_TEXT}
+CONTROL_TEXTS = {PUBLISH, PUBLISH_NORMAL, PUBLISH_SLOW}
 CANCEL = "❌ Cancelar Drop"
 CONTINUE = "▶️ Continuar"
+
+
+def without_final_periods(text):
+    return '\n'.join(line[:-1] if line.endswith('.') and not line.endswith('..') else line
+                     for line in text.split('\n'))
 
 
 class DropperBot:
@@ -73,8 +76,8 @@ class DropperBot:
         batch = context.user_data.get("batch")
         rows = []
         if batch and batch.status == "collecting":
-            rows.append([PUBLISH_NORMAL, PUBLISH_SLOW])
-            rows.append([KEEP_TEXT if batch.expire_text else EXPIRE_TEXT])
+            if batch.received:
+                rows.append([PUBLISH_NORMAL, PUBLISH_SLOW])
             rows.append([CANCEL])
         elif batch and batch.status == "paused":
             rows.append([CONTINUE, RESUME_SLOW] if batch.retry_at is not None else [CONTINUE])
@@ -97,7 +100,7 @@ class DropperBot:
         self.show_batch(context.user_data["batch"])
         log.info("Drop abierto para %s", self.creator.name)
         await self.reply(update, context,
-            f"🔄 {self.creator.name}\nReenvía tus mensajes y elige Publicar normal o Publicar lento. El texto sin foto caduca tras 24 horas.",
+            f"🔄 {self.creator.name}\nReenvía tus mensajes",
             reply_markup=self.keyboard(context))
 
     async def menu(self, update, context):
@@ -106,8 +109,7 @@ class DropperBot:
             await self.receive(update, context)
             return
         handlers = {NEW_BATCH: self.start, PUBLISH: self.publish, PUBLISH_NORMAL: self.publish,
-                    PUBLISH_SLOW: self.publish, KEEP_TEXT: self.set_text_expiration,
-                    EXPIRE_TEXT: self.set_text_expiration, CANCEL: self.cancel,
+                    PUBLISH_SLOW: self.publish, CANCEL: self.cancel,
                     CONTINUE: self.resume, RESUME_SLOW: self.resume}
         if message.text in handlers:
             await handlers[message.text](update, context)
@@ -141,14 +143,6 @@ class DropperBot:
         log.info("Drop %s | Post #%d en cola | Foto: %s.", batch.id, len(batch.received), bool(photo_id))
         context.user_data.setdefault("prepublish_ids", set()).add(message.message_id)
         self.schedule_queue_notice(context, update.effective_chat.id, batch)
-
-    async def set_text_expiration(self, update, context):
-        batch = context.user_data.get("batch")
-        if batch is None or batch.status != "collecting":
-            await self.status(update, context)
-            return
-        batch.expire_text = update.effective_message.text == EXPIRE_TEXT
-        await self.reply(update, context, self.queue_text(batch), reply_markup=self.keyboard(context))
 
     async def publish(self, update, context):
         if self.recording and self.recording.busy:
@@ -218,7 +212,7 @@ class DropperBot:
             elif loading:
                 try:
                     await context.bot.edit_message_text(
-                        text, chat_id=chat_id, message_id=loading.message_id,
+                        without_final_periods(text), chat_id=chat_id, message_id=loading.message_id,
                     )
                 except TelegramError:
                     log.debug("No se pudo actualizar el progreso", exc_info=True)
@@ -280,14 +274,12 @@ class DropperBot:
         context.user_data["queue_notice_task"] = asyncio.create_task(self.queue_notice(context, chat_id, batch))
 
     def queue_text(self, batch):
-        text = f"✅ {len(batch.received)} posts en cola · Del último reenviado al primero"
-        if any(post.photo_id is None for post in batch.received.values()):
-            expiration = "se elimina tras 24 horas" if batch.expire_text else "se conserva"
-            text += f"\nSolo texto · {expiration}"
+        text = f"✅ {len(batch.received)} posts en cola"
         if batch.rejected:
             text += (f"\n⚠️ {len(batch.rejected)} mensajes rechazados"
                      "\nEnvía cada foto con su texto como mensaje individual")
         return text
+
     async def queue_notice(self, context, chat_id, batch):
         try:
             while True:
@@ -295,17 +287,20 @@ class DropperBot:
                 if context.user_data.get("batch") is not batch or batch.status != "collecting":
                     return
                 version = (len(batch.received), len(batch.rejected))
-                await self.update_queue_notice(context, chat_id, self.queue_text(batch))
+                await self.update_queue_notice(context, chat_id, self.queue_text(batch), bool(version[0]))
                 if version == (len(batch.received), len(batch.rejected)):
                     return
         except TelegramError:
             log.exception("No se pudo confirmar la cola")
 
-    async def update_queue_notice(self, context, chat_id, text):
+    async def update_queue_notice(self, context, chat_id, text, has_posts):
         message_id = context.user_data.get("queue_notice_id")
+        # Telegram requires a new message to replace the reply keyboard.
+        if has_posts and not context.user_data.get("queue_keyboard_has_posts"):
+            message_id = None
         if message_id:
             try:
-                await context.bot.edit_message_text(text, chat_id=chat_id, message_id=message_id)
+                await context.bot.edit_message_text(without_final_periods(text), chat_id=chat_id, message_id=message_id)
                 return
             except BadRequest as error:
                 if "message is not modified" in str(error).lower():
@@ -313,11 +308,12 @@ class DropperBot:
                 log.debug("Se recreará el aviso de cola", exc_info=True)
         message = await context.bot.send_message(chat_id, text, reply_markup=self.keyboard(context))
         context.user_data["queue_notice_id"] = message.message_id
+        context.user_data["queue_keyboard_has_posts"] = has_posts
         context.user_data.setdefault("prepublish_ids", set()).add(message.message_id)
 
     @staticmethod
     async def reply(update, context, text, **kwargs):
-        message = await update.effective_message.reply_text(text, **kwargs)
+        message = await update.effective_message.reply_text(without_final_periods(text), **kwargs)
         batch = context.user_data.get("batch")
         if not batch or batch.status in {"collecting", "done"}:
             context.user_data.setdefault("prepublish_ids", set()).add(message.message_id)
@@ -333,6 +329,7 @@ class DropperBot:
                 log.warning("No se pudo borrar el mensaje %s", message_id, exc_info=True)
         batch.cleanup_ids.clear()
         context.user_data.pop("queue_notice_id", None)
+        context.user_data.pop("queue_keyboard_has_posts", None)
         if failed:
             await self.notify(context, chat_id, f"🧹 No se pudieron borrar {failed} mensajes")
 
@@ -340,7 +337,7 @@ class DropperBot:
     async def notify(context, chat_id, text, reply_markup=None):
         log.info("Telegram | Chat %s | %s", chat_id, text)
         try:
-            await context.bot.send_message(chat_id, text, reply_markup=reply_markup)
+            await context.bot.send_message(chat_id, without_final_periods(text), reply_markup=reply_markup)
             return True
         except TelegramError:
             log.exception("Telegram | Chat %s | No se pudo entregar el aviso.", chat_id)
@@ -432,6 +429,7 @@ class DropperBot:
             return
         self.cancel_queue_notice(context)
         context.user_data.pop("queue_notice_id", None)
+        context.user_data.pop("queue_keyboard_has_posts", None)
         del context.user_data["batch"]
         batch.status = "cancelled"
         self.show_batch(batch)

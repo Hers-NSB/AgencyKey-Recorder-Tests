@@ -1,7 +1,7 @@
 name: Ejecutable Windows
 on:
   push:
-    branches: [main, feat/independent-publisher-recorder, fix/session-ui-autosave]
+    branches: [main, feat/independent-publisher-recorder, fix/session-ui-autosave, fix/telegram-feed-verification]
   workflow_dispatch:
 permissions:
   contents: read

@@ -60,12 +60,13 @@ class DesktopRecordingJobTests(unittest.IsolatedAsyncioTestCase):
         client = SimpleNamespace(recording_session=Mock(return_value={'state': state}),
                                  update_recording_job=Mock(return_value={'active': False}))
         job = {'kind': 'feed', 'creator_id': 98}
-        with patch.object(recorder, 'launch_browser', new=AsyncMock(return_value=browser)) as launch:
+        with patch.object(recorder, 'launch_browser', new=AsyncMock(return_value=browser)) as launch, \
+             patch.object(recorder, 'post_frame', new=AsyncMock(return_value=object())):
             await run_desktop_recording_job(client, job, threading.Event())
         self.assertTrue(launch.call_args.kwargs['headless'])
         self.assertIs(browser.new_context.call_args.kwargs['storage_state'], state)
         page.goto.assert_awaited_once_with(url, wait_until='domcontentloaded', timeout=30000)
-        client.update_recording_job.assert_called_once_with(job, status='ready')
+        client.update_recording_job.assert_called_once_with(job, status='ready', feed_checked=True)
 
     async def test_feed_check_rejects_login_access_errors_and_other_models(self):
         origin = 'https://app.agencykey.com'
@@ -78,10 +79,13 @@ class DesktopRecordingJobTests(unittest.IsolatedAsyncioTestCase):
             ('/models/98', 500, False, 'connection_error'),
             ('/models/52', 200, False, 'feed_unverified'),
         ]:
-            with self.subTest(path=path, status=status, password_visible=password_visible):
+            with self.subTest(path=path, status=status, password_visible=password_visible), \
+                 patch.object(recorder, 'monotonic', side_effect=[0, 36]), \
+                 patch('recording_service.monotonic', return_value=0):
                 password = SimpleNamespace(is_visible=AsyncMock(return_value=password_visible))
                 response = SimpleNamespace(status=status, ok=status == 200)
                 page = SimpleNamespace(url=origin + path, goto=AsyncMock(return_value=response),
+                                       wait_for_timeout=AsyncMock(),
                                        locator=Mock(return_value=SimpleNamespace(first=password)))
                 self.assertEqual(await verify_feed_route(page, origin + '/models/98'), result)
 
@@ -96,7 +100,7 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_visible_recording_uses_desktop_failure_callback(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(recorder, 'ROOT', Path(folder)):
-            coordinator = RecordingCoordinator(Creator(52, 'Modelo', None), show_browser=lambda: True)
+            coordinator = RecordingCoordinator(Creator(52, 'Modelo', None))
             bot = SimpleNamespace(send_message=AsyncMock())
             with patch.object(recorder, 'record', new=AsyncMock(side_effect=ValueError('No se encontró el perfil'))) as record:
                 await coordinator.run(self.batch(), bot, 42)
@@ -112,7 +116,7 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Chrome queda abierto', emit.call_args.args[1]['stage'])
         self.assertTrue(emit.call_args.args[1]['error'])
 
-    async def test_background_proof_uses_newest_first_ids_and_sends_only_verified_mp4(self):
+    async def test_visible_proof_uses_newest_first_ids_and_sends_only_verified_mp4(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(recorder, 'ROOT', Path(folder)):
             video, report_path = Path(folder)/'video.mp4', Path(folder)/'report.json'
             video.write_bytes(b'fixture')
@@ -122,7 +126,7 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(recorder, 'verified_video', return_value=({'seen':['103','102','101']}, video)):
                 await coordinator.run(self.batch(), bot, 42)
             self.assertEqual(record.call_args.args[0]['post_ids_newest_first'], ['103','102','101'])
-            self.assertTrue(record.call_args.kwargs['headless'])
+            self.assertFalse(record.call_args.kwargs['headless'])
             self.assertEqual(record.call_args.kwargs['session_path'], session_path(52))
             bot.send_video.assert_awaited_once()
             job = json.loads(coordinator.job_path(42).read_text())
