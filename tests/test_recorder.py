@@ -51,18 +51,26 @@ class ScrollPlanTests(unittest.TestCase):
                     self.assertTrue(all(pause <= 31 for _, pause in steps))
 
 
-class RecordingBoundaryTests(unittest.TestCase):
-    def test_markers_define_content_not_browser_startup_time(self):
-        ordinary = bytes((24, 43, 73, 24, 43, 73))
-        marker = bytes((249, 3, 249, 3, 249, 80))
-        raw = ordinary*100 + marker*12 + ordinary*200 + marker*12 + ordinary*3
-        start, end = recorder.boundary_intervals(raw)
-        self.assertAlmostEqual(start, 113/25)
-        self.assertAlmostEqual(end, 311/25)
-
-    def test_missing_marker_refuses_complete_video(self):
-        with self.assertRaises(ValueError):
-            recorder.boundary_intervals(bytes((0,0,0,0,0,0))*100)
+class TabCaptureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_still_tab_uses_explicit_first_and_last_frames(self):
+        import base64
+        frame = base64.b64encode(b'fixture').decode('ascii')
+        session = Mock()
+        session.send = AsyncMock(return_value={'data': frame})
+        session.detach = AsyncMock()
+        page = Mock()
+        page.context.new_cdp_session = AsyncMock(return_value=session)
+        with tempfile.TemporaryDirectory() as directory:
+            capture = recorder.TabCapture(Path(directory) / 'raw')
+            await capture.start(page)
+            await capture.finish()
+            await capture.close()
+            self.assertEqual([call.args[0] for call in session.send.await_args_list], [
+                'Page.captureScreenshot', 'Page.startScreencast', 'Page.stopScreencast',
+                'Page.captureScreenshot',
+            ])
+            self.assertEqual(len(capture.frames), 2)
+            self.assertTrue(all((capture.folder / name).read_bytes() == b'fixture' for _, name in capture.frames))
 
 
 class TokenInputTests(unittest.TestCase):
@@ -203,7 +211,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(recorder, 'ROOT', Path(directory)), patch.object(recorder, 'STATE', state), \
                  patch.object(recorder, 'prepare_feed', new=AsyncMock(return_value={'_frame': None})), \
                  patch.object(recorder, 'confirm_start', new=AsyncMock(return_value={'post_id': '300', 'visible': True})), \
-                 patch.object(recorder, 'video_boundary', new=AsyncMock()), \
+                 patch.object(recorder.TabCapture, 'start', new=AsyncMock()), \
                  patch.object(recorder, 'capture_walk', side_effect=fail_walk), \
                  patch.object(recorder, 'pause_failed_test', side_effect=inspect_open_browser) as pause, \
                  patch.object(recorder, 'launch_browser', new=AsyncMock(return_value=self.browser)):
@@ -292,6 +300,30 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         await self.page.locator('#postId_200').evaluate('e => e.id="postId_999"')
         with self.assertRaisesRegex(ValueError, 'ya no está encuadrado'):
             await recorder.confirm_start(self.page, first['_frame'], '200')
+
+    async def test_direct_capture_exports_the_first_and_last_viewport(self):
+        import subprocess
+
+        await self.page.set_content('<style>body{background:#00bb00}</style>')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = recorder.TabCapture(root / 'raw')
+            try:
+                await capture.start(self.page)
+                await self.page.evaluate("document.body.style.background = '#dd0000'")
+                await self.page.wait_for_timeout(250)
+                await capture.finish()
+            finally:
+                await capture.close()
+            video = root / 'capture.mp4'
+            capture.encode(video)
+            pixels = subprocess.run([recorder.ffmpeg_path(), '-v', 'error', '-i', str(video),
+                '-vf', 'scale=1:1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1'],
+                check=True, capture_output=True).stdout
+            self.assertGreater(pixels[1], 150)
+            self.assertGreater(pixels[-3], 170)
+            self.assertLess(pixels[-2], 40)
+            self.assertGreater(len(capture.frames), 2)
 
     async def test_export_starts_on_requested_post_in_visible_iframe(self):
         from html import escape

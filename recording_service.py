@@ -28,7 +28,6 @@ RECORDING_STEPS = {
     'recorrer posts / cargar imágenes': 'Grabando las publicaciones y sus fotos',
     'grabando': 'Grabando las publicaciones',
     'marcar fin del video': 'Terminando la grabación',
-    'verificar límites del video': 'Comprobando que el video esté completo',
     'convertir video a MP4': 'Preparando el archivo de video',
     'video listo': 'Video listo',
     'enviando video': 'Enviando el video a Telegram',
