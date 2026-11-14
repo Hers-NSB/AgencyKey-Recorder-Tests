@@ -565,44 +565,68 @@ def ffmpeg_path() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
-BOUNDARY_JS = r"""async (visible) => {
+BOUNDARY_JS = r"""async (boundary) => {
     document.getElementById('agencykey-recorder-boundary')?.remove();
-    if (visible) {
+    if (boundary) {
         const marker=document.createElement('div'); marker.id='agencykey-recorder-boundary';
-        marker.style.cssText='all:initial!important;position:fixed!important;left:0!important;top:0!important;width:96px!important;height:48px!important;z-index:2147483647!important;pointer-events:none!important;background:linear-gradient(to right,rgb(251,0,251) 50%,rgb(0,251,80) 50%)!important;';
+        const colors = boundary === 'start' ? ['#fb00fb', '#00fb50'] : ['#00fb50', '#fb00fb'];
+        marker.style.cssText='all:initial!important;position:fixed!important;left:0!important;top:0!important;width:192px!important;height:64px!important;z-index:2147483647!important;pointer-events:none!important;';
+        marker.style.setProperty('background', `linear-gradient(to right,${colors[0]} 50%,${colors[1]} 50%)`, 'important');
         document.documentElement.appendChild(marker);
+        // Keep producing frames even when the rest of the page is still.
+        marker.animate([{transform:'translateX(0px)'},{transform:'translateX(4px)'}],
+            {duration:400,direction:'alternate',iterations:Infinity});
     }
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 }"""
 
 
-async def video_boundary(page) -> None:
-    # These synchronization frames are excluded from the exported video.
-    await page.evaluate(BOUNDARY_JS, True)
-    await page.wait_for_timeout(550)
-    await page.evaluate(BOUNDARY_JS, False)
+async def video_boundary(page, boundary: str) -> None:
+    # The synchronization frames are excluded from the exported video.
+    await page.evaluate(BOUNDARY_JS, boundary)
+    await page.wait_for_timeout(1200)
+    await page.evaluate(BOUNDARY_JS, None)
     await page.wait_for_timeout(120)
+
+
+def boundary_kind(pixel: bytes) -> str | None:
+    if len(pixel) != 6:
+        return None
+
+    def magenta(rgb):
+        return rgb[0] > 210 and rgb[1] < 45 and rgb[2] > 210
+
+    def green(rgb):
+        return rgb[0] < 45 and rgb[1] > 210 and 35 < rgb[2] < 135
+
+    left, right = pixel[:3], pixel[3:]
+    if magenta(left) and green(right):
+        return 'start'
+    if green(left) and magenta(right):
+        return 'end'
+    return None
 
 
 def boundary_intervals(samples: bytes) -> tuple[float, float]:
     if len(samples) % 6:
         raise ValueError('No se pudo comprobar el inicio y fin del video.')
-    runs = []
-    first = None
+    runs = {'start': [], 'end': []}
+    active = None
+    first = 0
     for index in range(len(samples) // 6 + 1):
-        pixel = samples[index*6:index*6+6]
-        marker = (len(pixel) == 6 and pixel[0] > 210 and pixel[1] < 45 and pixel[2] > 210
-                  and pixel[3] < 45 and pixel[4] > 210 and 35 < pixel[5] < 135)
-        if marker and first is None:
-            first = index
-        elif not marker and first is not None:
-            if index - first >= 4:
-                runs.append((first, index))
-            first = None
-    if len(runs) != 2:
-        raise ValueError(f'No se verificaron los límites de grabación ({len(runs)}/2). No se enviará un video incompleto.')
-    start = (runs[0][1] + 1) / 25
-    end = (runs[1][0] - 1) / 25
+        marker = boundary_kind(samples[index*6:index*6+6])
+        if marker == active:
+            continue
+        if active and index - first >= 4:
+            runs[active].append((first, index))
+        active, first = marker, index
+    if not runs['start'] or not runs['end']:
+        missing = 'inicio y fin' if not any(runs.values()) else 'inicio' if not runs['start'] else 'fin'
+        raise ValueError(f'No se detectó el marcador de {missing}. El comprobante no se enviará.')
+    if len(runs['start']) != 1 or len(runs['end']) != 1:
+        raise ValueError('Se detectaron marcadores de video duplicados. El comprobante no se enviará.')
+    start = (runs['start'][0][1] + 1) / 25
+    end = (runs['end'][0][0] - 1) / 25
     if end <= start:
         raise ValueError('El recorrido grabado no tiene una duración válida.')
     return start, end
@@ -610,15 +634,24 @@ def boundary_intervals(samples: bytes) -> tuple[float, float]:
 
 def video_bounds(source: Path) -> tuple[float, float]:
     result = subprocess.run([ffmpeg_path(), '-hide_banner', '-loglevel', 'error', '-i', str(source),
-                             '-an', '-vf', 'fps=25,crop=64:4:0:8,format=rgb24',
+                             '-an', '-vf', 'fps=25,crop=128:12:0:8,format=rgb24',
                              '-pix_fmt', 'rgb24', '-threads', '1', '-c:v', 'rawvideo', '-f', 'rawvideo', 'pipe:1'],
                             check=True, capture_output=True)
     raw = result.stdout
-    frame_bytes = 64 * 4 * 3
+    frame_bytes = 128 * 12 * 3
     if len(raw) % frame_bytes:
         raise ValueError('No se pudieron leer los límites del video.')
-    samples = b''.join(raw[i + (64+8)*3:i + (64+8)*3+3] + raw[i + (64+48)*3:i + (64+48)*3+3]
-                       for i in range(0, len(raw), frame_bytes))
+    # Sample several rows so a small obstruction does not hide a boundary.
+    samples = bytearray()
+    for start in range(0, len(raw), frame_bytes):
+        pairs = []
+        for row in (2, 6, 10):
+            left = start + (128 * row + 20) * 3
+            right = start + (128 * row + 104) * 3
+            pairs.append(raw[left:left+3] + raw[right:right+3])
+        kinds = [boundary_kind(pair) for pair in pairs]
+        index = next((i for i, kind in enumerate(kinds) if kind and kinds.count(kind) >= 2), None)
+        samples.extend(pairs[index] if index is not None else bytes(6))
     return boundary_intervals(samples)
 
 
@@ -773,7 +806,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             report['start_verified'] = await confirm_start(
                 page, first['_frame'], report['first_post_id'],
                 **({} if fixture else {'image_timeout': SLOW_IMAGE_TIMEOUT_MS}))
-            await video_boundary(page)
+            await video_boundary(page, 'start')
             stage('recorrer posts / cargar imágenes')
             walk_limit = 30 if fixture else FEED_IDLE_TIMEOUT_SECONDS
             try:
@@ -785,7 +818,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 raise ValueError(f'Se agotó la grabación tras comprobar {len(report["seen"])}/{len(report["post_ids"])} posts.') from exc
             await page.wait_for_timeout(120)
             stage('marcar fin del video')
-            await video_boundary(page)
+            await video_boundary(page, 'end')
         except Exception as exc:
             error = exc
             report['error_type'] = type(exc).__name__
@@ -859,6 +892,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         return report_path
     except Exception as exc:
         report.setdefault('error_type', type(exc).__name__)
+        report.setdefault('error', recording_error_detail(exc))
         raise
     finally:
         save_json(report_path, report)

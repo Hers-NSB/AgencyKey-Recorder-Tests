@@ -55,10 +55,18 @@ class RecordingBoundaryTests(unittest.TestCase):
     def test_markers_define_content_not_browser_startup_time(self):
         ordinary = bytes((24, 43, 73, 24, 43, 73))
         marker = bytes((249, 3, 249, 3, 249, 80))
-        raw = ordinary*100 + marker*12 + ordinary*200 + marker*12 + ordinary*3
+        end_marker = marker[3:] + marker[:3]
+        raw = ordinary*100 + marker*12 + ordinary*200 + end_marker*12 + ordinary*3
         start, end = recorder.boundary_intervals(raw)
         self.assertAlmostEqual(start, 113/25)
         self.assertAlmostEqual(end, 311/25)
+
+    def test_single_boundary_identifies_which_marker_is_missing(self):
+        start = bytes((249, 3, 249, 3, 249, 80))
+        end = start[3:] + start[:3]
+        for samples, missing in ((start * 12, 'fin'), (end * 12, 'inicio')):
+            with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, f'marcador de {missing}'):
+                recorder.boundary_intervals(samples)
 
     def test_missing_marker_refuses_complete_video(self):
         with self.assertRaises(ValueError):
