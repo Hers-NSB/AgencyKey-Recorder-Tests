@@ -38,12 +38,12 @@ class ValidationTests(unittest.TestCase):
                 recorder.verified_video(path)
 
 
-class WheelPlanTests(unittest.TestCase):
+class ScrollPlanTests(unittest.TestCase):
     def test_distance_and_direction_are_preserved(self):
         import random
         for pixels in (0, 1, -1, 190, 260, -115):
             for seed in range(10):
-                steps = recorder.wheel_steps(pixels, rng=random.Random(seed))
+                steps = recorder.scroll_steps(pixels, rng=random.Random(seed))
                 self.assertEqual(sum(delta for delta, _ in steps), pixels)
                 self.assertTrue(all(delta * pixels > 0 and pause > 0 for delta, pause in steps))
                 if pixels:
@@ -127,6 +127,8 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         walk.assert_awaited_once()
 
     async def test_profile_without_posts_and_nested_feed_with_data_ids(self):
+        from recording_service import verify_profile_route
+
         url = 'https://app.agencykey.com/models/52'
         await self.page.route(url, lambda route: route.fulfill(content_type='text/html', body="""
             <main style="height:700px;overflow:auto;width:390px;margin-left:40px">
@@ -145,12 +147,8 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
               });
             </script>
         """))
-        await self.page.goto(url)
-        await recorder.wait_for_my_profile(self.page, url, deadline=recorder.monotonic() + 3)
-        self.assertEqual(await self.page.locator('[data-post-id]').count(), 0)
-        frame = await recorder.wait_for_feed(self.page, url, deadline=recorder.monotonic() + 5,
-                                             preferred_id='200')
-        self.assertIs(frame, self.page.main_frame)
+        self.assertEqual(await verify_profile_route(self.page, url), 'ready')
+        self.assertGreater(await self.page.locator('main').evaluate('el => el.scrollTop'), 220)
         first = await recorder.seek_start(self.page, '200', timeout=5)
         self.assertEqual(first['id'], '200')
         self.assertEqual(await recorder.capture_walk(self.page, ['200', '100'], timeout=7, frame=frame),
@@ -344,24 +342,25 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any(item['name']=='recorder-refresh-fixture' and item['value']=='yes'
                                 for origin in saved['origins'] for item in origin.get('localStorage',[])))
 
-    async def test_wheel_scroll_has_visible_intermediate_positions(self):
-        await self.page.set_content('<div style="height:3000px;background:linear-gradient(white,blue)">Prueba rueda</div>')
-        await self.page.evaluate("""() => {
-            window.wheelEvents=[];window.scrollSamples=[];
-            addEventListener('wheel',e=>wheelEvents.push({delta:e.deltaY,time:performance.now(),trusted:e.isTrusted}));
-            addEventListener('scroll',()=>scrollSamples.push(scrollY));
-        }""")
-        await recorder.scroll_down(self.page, 190)
-        await self.page.wait_for_timeout(180)
-        events = await self.page.evaluate('wheelEvents')
-        positions = await self.page.evaluate('scrollSamples')
-        self.assertGreater(len(events), 6)
-        self.assertTrue(all(event['trusted'] and 0 < event['delta'] < 40 for event in events))
-        self.assertAlmostEqual(sum(event['delta'] for event in events), 190, delta=1)
-        self.assertGreater(events[-1]['time'] - events[0]['time'], 250)
-        self.assertGreater(len(set(positions)), 4)
-        self.assertTrue(all(left <= right for left, right in zip(positions, positions[1:])))
-        self.assertAlmostEqual(await self.page.evaluate('scrollY'), 190, delta=3)
+    async def test_dom_scroll_uses_page_mode_ancestor_without_wheel(self):
+        await self.page.set_content("""
+            <main id="content" style="height:420px;overflow-y:auto">
+              <div class="js-compact-sticky-header">Mi perfil</div>
+              <section class="vue-recycle-scroller ready" page-mode style="height:3000px"></section>
+            </main>
+            <script>
+              window.wheels = 0;
+              window.positions = [];
+              const panel = document.querySelector('main');
+              panel.addEventListener('scroll', () => positions.push(panel.scrollTop));
+              window.addEventListener('wheel', () => wheels++);
+            </script>
+        """)
+        self.assertTrue(await recorder.scroll_down(self.page, 190))
+        self.assertEqual(await self.page.evaluate('wheels'), 0)
+        self.assertGreater(len(set(await self.page.evaluate('positions'))), 4)
+        self.assertEqual(await self.page.locator('main').evaluate('el => el.scrollTop'), 190)
+        self.assertEqual(await self.page.evaluate('scrollY'), 0)
 
     async def test_start_is_selected_post_not_first_feed_post(self):
         await self.page.goto((recorder.RESOURCE_ROOT / 'tests/feed.html').as_uri())

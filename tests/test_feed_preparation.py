@@ -90,5 +90,5 @@ class FeedPreparationTests(IsolatedAsyncioTestCase):
             result = await recorder.wait_for_feed(page, url, deadline=recorder.monotonic() + 5)
         self.assertIs(result, frame)
         open_profile.assert_awaited_once_with(page)
-        scroll.assert_awaited_once_with(page, 340, frame=frame, find_panel=True)
+        scroll.assert_awaited_once_with(page, 340, frame=frame, smooth=False)
         self.assertEqual([call.args for call in page.wait_for_timeout.await_args_list], [(700,), (500,)])

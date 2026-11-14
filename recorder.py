@@ -150,6 +150,8 @@ async def login() -> None:
             await browser.close()
 
 
+PROFILE_HEADER = 'main#content .js-compact-sticky-header'
+PROFILE_FEED = '.vue-recycle-scroller[page-mode]'
 POST_SELECTOR = '[id^="postId_"], [data-post-id]'
 POST_ID = r"""e => /^postId_([1-9][0-9]*)$/.exec(e.id)?.[1]
     || (/^[1-9][0-9]*$/.test(e.dataset.postId) ? e.dataset.postId : null)"""
@@ -164,14 +166,16 @@ SNAPSHOT = post_expression(r'''() => [...document.querySelectorAll('POST_SELECTO
  const r=e.getBoundingClientRect();
  return {id:POST_ID(e),top:r.top,bottom:r.bottom,height:r.height,
  pinned:e.classList.contains('m-pinned'),
- visible:r.bottom>100 && r.top<innerHeight && r.width>0 && r.height>0};
+ visible:r.bottom>100 && r.top<innerHeight && r.right>0 && r.left<innerWidth
+  && r.width>0 && r.height>0 && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})};
 }).filter(p=>p.id && p.visible).sort((a,b)=>a.top-b.top)''')
 
 IMAGES_READY = post_expression(r'''() => {
  const cards=[...document.querySelectorAll('POST_SELECTOR')].filter(POST_ID);
  return cards.every(card => {
   const c=card.getBoundingClientRect();
-  if(c.bottom<=100 || c.top>=innerHeight) return true;
+  if(c.bottom<=100 || c.top>=innerHeight || c.right<=0 || c.left>=innerWidth
+     || !card.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return true;
   return [...card.querySelectorAll('img')].every(img => {
    const r=img.getBoundingClientRect();
    if(!r.width || !r.height || r.bottom<=100 || r.top>=innerHeight) return true;
@@ -212,7 +216,7 @@ async def post_frame(page, preferred_id=None):
                 continue
             visible_ids = await frame.locator(POST_SELECTOR).evaluate_all(post_expression(
                 """cards => cards.filter(e => e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})
-                    && e.getBoundingClientRect().height>0).map(POST_ID).filter(Boolean)"""))
+                    && e.getBoundingClientRect().height>0 && e.getBoundingClientRect().right>0).map(POST_ID).filter(Boolean)"""))
         except PlaywrightError as error:
             if frame.is_detached() or 'Execution context was destroyed' in str(error):
                 continue
@@ -231,13 +235,19 @@ async def scroll_frame(page, preferred_id=None):
     # A profile header can fill a visible iframe before the recycled posts are mounted.
     largest, area = page.main_frame, 0
     for frame in page.frames:
-        if frame is page.main_frame or not await frame_is_visible(page, frame):
+        if not await frame_is_visible(page, frame):
+            continue
+        if await frame.locator(PROFILE_FEED).first.is_visible():
+            return frame
+        if frame is page.main_frame:
             continue
         box = await (await frame.frame_element()).bounding_box()
         if box and box['width'] >= 400 and box['height'] >= 250:
             size = box['width'] * box['height']
             if size > area:
                 largest, area = frame, size
+    if await page.main_frame.locator(PROFILE_HEADER).first.is_visible():
+        return page.main_frame
     return largest
 
 
@@ -284,8 +294,8 @@ async def confirm_start(page, frame, newest: str, *, image_timeout: int = 20_000
             'top': round(target['top'], 2), 'images_ready': True, 'visible': True}
 
 
-def wheel_steps(pixels: int, *, rng=None) -> list[tuple[int, int]]:
-    """Continuous wheel events, without a rest between gestures."""
+def scroll_steps(pixels: int, *, rng=None) -> list[tuple[int, int]]:
+    """Small increments for smooth DOM scrolling."""
     rng = rng or random
     distance = abs(round(pixels))
     if not distance:
@@ -306,39 +316,46 @@ def wheel_steps(pixels: int, *, rng=None) -> list[tuple[int, int]]:
     return result
 
 
-async def scroll_down(page, pixels: int = 190, *, frame=None, find_panel=False, point=None) -> None:
+DOM_SCROLL = post_expression(r'''async ({steps, anchor, selectors}) => {
+    const displayed = e => e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+    const find = selector => [...document.querySelectorAll(selector)].find(displayed);
+    const root = document.scrollingElement;
+    const card = [...document.querySelectorAll('POST_SELECTOR')].find(e =>
+        displayed(e) && (anchor === POST_ID(e) || (!anchor &&
+        e.getBoundingClientRect().bottom > 100 && e.getBoundingClientRect().top < innerHeight)));
+    const origin = card || find(selectors.feed) || find(selectors.header) ||
+        find('main, [role="main"]');
+    const candidates = [];
+    for (let node = origin; node; node = node.parentElement) {
+        if (node !== root && node.clientHeight > 0 &&
+            /^(auto|scroll|overlay)$/.test(getComputedStyle(node).overflowY)) {
+            candidates.push(node);
+        }
+    }
+    if (root) candidates.push(root);
+    const distance = steps.reduce((total, [delta]) => total + delta, 0);
+    for (const node of candidates) {
+        const before = node.scrollTop;
+        const destination = Math.max(0, Math.min(before + distance, node.scrollHeight - node.clientHeight));
+        if (Math.abs(destination - before) < 1) continue;
+        let target = before;
+        for (const [delta, pause] of steps) {
+            target += delta;
+            node.scrollTo({top: target, behavior: 'instant'});
+            if (pause) await new Promise(resolve => setTimeout(resolve, pause));
+        }
+        if (Math.sign(node.scrollTop - before) === Math.sign(distance)) return true;
+    }
+    return false;
+}''')
+
+
+async def scroll_down(page, pixels: int = 190, *, frame=None, anchor=None, smooth=True) -> bool:
     frame = frame or page.main_frame
-    x, y, _ = await frame_geometry(page, frame)
-    if point is not None:
-        x, y = point
-    elif find_panel:
-        point = await frame.evaluate(r'''() => {
-            const panels = [...document.querySelectorAll('main, section, div')].flatMap(e => {
-                if (e.scrollHeight <= e.clientHeight + 20
-                        || !/auto|scroll/.test(getComputedStyle(e).overflowY)) return [];
-                const r = e.getBoundingClientRect();
-                const left = Math.max(0, r.left), right = Math.min(innerWidth, r.right);
-                const top = Math.max(0, r.top), bottom = Math.min(innerHeight, r.bottom);
-                if (right-left < 300 || bottom-top < 150) return [];
-                if (e.scrollTop + e.clientHeight >= e.scrollHeight - 2) return [];
-                for (const [fx,fy] of [[.4,.5],[.7,.5],[.5,.7],[.5,.3]]) {
-                    const x = left + (right-left)*fx, y = top + (bottom-top)*fy;
-                    if (e.contains(document.elementFromPoint(x,y))) {
-                        return [{x,y,area:(right-left)*(bottom-top)}];
-                    }
-                }
-                return [];
-            });
-            return panels.sort((a,b) => b.area-a.area)[0] ?? null;
-        }''')
-        if point:
-            box = await (await frame.frame_element()).bounding_box() if frame is not page.main_frame else None
-            if frame is page.main_frame or box:
-                x, y = point['x'] + (box['x'] if box else 0), point['y'] + (box['y'] if box else 0)
-    await page.mouse.move(x, y)
-    for delta, pause in wheel_steps(pixels):
-        await page.mouse.wheel(0, delta)
-        await page.wait_for_timeout(pause)
+    steps = scroll_steps(pixels) if smooth else [(pixels, 0)]
+    return await frame.evaluate(DOM_SCROLL, {
+        'steps': steps, 'anchor': anchor, 'selectors': {'feed': PROFILE_FEED, 'header': PROFILE_HEADER},
+    })
 
 
 async def seek_start(page, newest: str, timeout: float = 120, *, image_timeout: int = 20_000) -> dict:
@@ -352,28 +369,18 @@ async def seek_start(page, newest: str, timeout: float = 120, *, image_timeout: 
                 f'[id="postId_{newest}"]:not(.m-pinned):visible, '
                 f'[data-post-id="{newest}"]:not(.m-pinned):visible'
             ).first
-            await locator.evaluate('e => e.scrollIntoView({block:"start",behavior:"instant"})')
-            box = await locator.bounding_box()
-            if not box:
-                raise ValueError(f'El post {newest} desapareció del panel de publicaciones.')
-            viewport = await page.evaluate('innerHeight')
-            point = (box['x'] + box['width'] / 2, min(viewport - 5, max(5, box['y'] + 30)))
-            await page.mouse.move(*point)
-            await page.mouse.wheel(0, -115)
-            await page.wait_for_timeout(500)
-            await images_ready(page, timeout=image_timeout, frame=frame)
-            # A selector match is not sufficient: verify the requested post is actually framed.
             for _ in range(3):
-                top = await locator.evaluate('e => e.getBoundingClientRect().top')
+                top = await locator.evaluate('e => e.getBoundingClientRect().top', timeout=3000)
                 if 95 <= top <= 145:
                     break
-                await scroll_down(page, round(top - 115), frame=frame, point=point)
-            else:
-                raise ValueError(f'No se pudo encuadrar el post {newest}. No se inició el comprobante.')
+                if not await scroll_down(page, round(top - 115), frame=frame, anchor=newest, smooth=False):
+                    break
+                await page.wait_for_timeout(100)
             await confirm_start(page, frame, newest, image_timeout=image_timeout)
             target['_frame'] = frame
             return target
-        await scroll_down(page, 260, frame=frame, find_panel=True)
+        if not await scroll_down(page, 260, frame=frame, smooth=False):
+            await page.wait_for_timeout(250)
     raise ValueError(f'El feed abrió, pero no se encontró el post {newest} del lote · Usa /video para reintentar')
 
 
@@ -398,7 +405,8 @@ async def my_profile_visible(page):
     search = re.compile(r'Buscar (?:la publicación|publicaciones) del usuario|Search (?:user.?s? )?posts', re.IGNORECASE)
     for frame in page.frames:
         if await frame_is_visible(page, frame):
-            if (await frame.get_by_text(edit).first.is_visible()
+            if (await frame.locator(PROFILE_HEADER).first.is_visible()
+                    or await frame.get_by_text(edit).first.is_visible()
                     or await frame.get_by_placeholder(search).first.is_visible()):
                 return True
     return False
@@ -437,34 +445,6 @@ async def open_my_profile(page):
     return False
 
 
-async def wait_for_my_profile(page, profile_url, *, deadline):
-    from playwright.async_api import Error as PlaywrightError
-
-    expected = urlparse(profile_url)
-    activated = on_route = False
-    while monotonic() < deadline:
-        current = urlparse(page.url)
-        try:
-            if await agencykey_sign_in_visible(page):
-                raise FeedAccessError('login_required', 'AgencyKey pide iniciar sesión · Reconecta desde el panel web')
-            on_route = (current.scheme, current.netloc, current.path.rstrip('/')) == (
-                expected.scheme, expected.netloc, expected.path.rstrip('/'))
-            if on_route:
-                if await my_profile_visible(page):
-                    return
-                if not activated:
-                    activated = await open_my_profile(page)
-        except PlaywrightError as error:
-            if page.is_closed() or not transient_frame_error(error):
-                raise
-        await page.wait_for_timeout(300)
-    if not on_route:
-        raise FeedAccessError('wrong_profile', 'Chrome no abrió la ruta de la modelo seleccionada')
-    if not activated:
-        raise FeedAccessError('profile_menu_missing', 'Chrome abrió la modelo, pero no encontró Mi perfil')
-    raise FeedAccessError('profile_not_visible', 'Chrome pulsó Mi perfil, pero la vista no terminó de cargar')
-
-
 def transient_frame_error(error):
     return any(message in str(error) for message in
                ('Execution context was destroyed', 'Frame was detached', 'Frame has been detached'))
@@ -494,7 +474,7 @@ async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
                         profile_opened = True
                         await page.wait_for_timeout(700)
                         continue
-                await scroll_down(page, 340, frame=await scroll_frame(page), find_panel=True)
+                await scroll_down(page, 340, frame=await scroll_frame(page), smooth=False)
         except PlaywrightError as error:
             if page.is_closed() or not transient_frame_error(error):
                 raise
@@ -565,7 +545,8 @@ async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 
         if last and 100 < last['bottom'] <= height - 20 and seen == ids:
             await page.wait_for_timeout(dwell * 1000)
             return seen
-        await scroll_down(page, frame=frame, find_panel=True)
+        if not await scroll_down(page, frame=frame):
+            await page.wait_for_timeout(250)
     remaining = next((pid for pid in ids if pid not in seen), None)
     reason = f'Falta localizar el post {remaining}.' if remaining else f'No se pudo encuadrar el final del post {ids[-1]}.'
     raise ValueError(f'Recorrido incompleto: {len(seen)}/{len(ids)} posts. {reason}')

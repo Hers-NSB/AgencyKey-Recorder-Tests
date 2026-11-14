@@ -61,10 +61,11 @@ class DesktopRecordingJobTests(unittest.IsolatedAsyncioTestCase):
                                  update_recording_job=Mock(return_value={'active': False}))
         job = {'kind': 'feed', 'creator_id': 98}
         with patch.object(recorder, 'launch_browser', new=AsyncMock(return_value=browser)) as launch, \
-             patch.object(recorder, 'my_profile_visible', new=AsyncMock(return_value=True)), \
-             patch.object(recorder, 'post_frame', new=AsyncMock(side_effect=AssertionError('Profile verification must not read posts'))):
+             patch.object(recorder, 'wait_for_feed', new=AsyncMock()) as check_feed:
             await run_desktop_recording_job(client, job, threading.Event())
         self.assertTrue(launch.call_args.kwargs['headless'])
+        check_feed.assert_awaited_once()
+        self.assertEqual(check_feed.call_args.args, (page, url))
         self.assertIs(browser.new_context.call_args.kwargs['storage_state'], state)
         page.goto.assert_awaited_once_with(url, wait_until='domcontentloaded', timeout=30000)
         client.update_recording_job.assert_called_once_with(job, status='ready', profile_checked=True)
