@@ -126,6 +126,18 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.page.locator('#postId_200').count(), 1)
         walk.assert_awaited_once()
 
+    async def test_model_navigation_activates_sidebar_my_profile(self):
+        url = 'https://app.agencykey.com/models/52'
+        await self.page.route(url, lambda route: route.fulfill(content_type='text/html', body="""
+            <h1>Mi perfil</h1>
+            <nav><button onclick="document.querySelector('article').hidden = false">Mi perfil</button></nav>
+            <article id="postId_200" style="height: 300px" hidden>Post de prueba</article>
+        """))
+        await self.page.goto(url)
+        frame = await recorder.wait_for_feed(self.page, url, deadline=recorder.monotonic() + 5)
+        self.assertIs(frame, self.page.main_frame)
+        self.assertTrue(await frame.locator('#postId_200').is_visible())
+
     async def test_out_of_order_fails(self):
         await self.page.goto((recorder.RESOURCE_ROOT / 'tests/feed.html').as_uri())
         await recorder.seek_start(self.page, '300', timeout=3)

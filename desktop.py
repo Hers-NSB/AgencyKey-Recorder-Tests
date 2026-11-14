@@ -442,6 +442,7 @@ class DropperWindow:
         self.checking_updates = False
         self.next_recording_job = monotonic()
         self.recording_job_running = threading.Event()
+        self.recording_job_error = None
         self.recording_job_stop = threading.Event()
         self.update_hint = tk.StringVar()
         root.title('AgencyKey Recorder Tests · Centro de bots')
@@ -878,11 +879,15 @@ class DropperWindow:
         def run():
             try:
                 job = client.claim_recording_job()
+                self.recording_job_error = None
                 if job and not self.recording_job_stop.is_set():
                     from recording_service import run_desktop_recording_job
                     asyncio.run(run_desktop_recording_job(client, job, self.recording_job_stop))
-            except CloudError:
-                pass
+            except CloudError as error:
+                detail = str(error)
+                if detail != self.recording_job_error:
+                    logging.getLogger('agencykey-recorder').warning('Solicitud web de Chrome: %s', detail)
+                    self.recording_job_error = detail
             finally:
                 self.recording_job_running.clear()
 
@@ -915,7 +920,7 @@ class DropperWindow:
                     self.refresh_sidebar()
         active = sum(panel.controller.running for panel in self.panels.values())
         if self.client and self.cloud_online and not self.refreshing:
-            self.status.set(f'{active} bots activos')
+            self.status.set(f'Solicitud web: {self.recording_job_error}' if self.recording_job_error else f'{active} bots activos')
         if self.closing and not active:
             self.destroy()
             return

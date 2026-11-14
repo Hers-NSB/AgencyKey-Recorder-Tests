@@ -347,12 +347,40 @@ async def agencykey_sign_in_visible(page):
             or await page.locator('input[type="password"]:visible').first.is_visible())
 
 
+async def open_my_profile(page):
+    """Activate the model's profile from its navigation when available."""
+    label = re.compile(r'^\s*(?:Mi perfil|My profile)\s*$', re.IGNORECASE)
+    for frame in page.frames:
+        if not await frame_is_visible(page, frame):
+            continue
+        matches = frame.get_by_text(label)
+        navigation = frame.locator('nav, aside, [role="navigation"]').get_by_text(label)
+        for control in [*await navigation.all(), *await matches.all()]:
+            if not await control.is_visible():
+                continue
+            state = await control.evaluate("""element => {
+                const item = element.closest('button, a, [role="button"], [role="tab"], [role="menuitem"]');
+                if (!item && !element.closest('nav, aside, [role="navigation"]')
+                    && getComputedStyle(element).cursor !== 'pointer') return 'text';
+                return element.closest(
+                    '[aria-current="page"], [aria-current="true"], [aria-selected="true"], [aria-pressed="true"]'
+                ) ? 'selected' : 'available';
+            }""")
+            if state == 'text':
+                continue
+            if state == 'available':
+                await control.click(timeout=1500)
+            return True
+    return False
+
+
 async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
     """Wait for posts in a visible panel, including feeds that mount while scrolling."""
     expected = urlparse(profile_url) if profile_url else None
     from playwright.async_api import Error as PlaywrightError
 
     current = urlparse(page.url)
+    profile_opened = False
     while monotonic() < deadline:
         current = urlparse(page.url)
         if await agencykey_sign_in_visible(page):
@@ -366,7 +394,12 @@ async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
             return frame
         # The profile header can occupy the full view before lazy cards are mounted.
         try:
-            await scroll_down(page, 220, frame=await scroll_frame(page))
+            if expected and not profile_opened:
+                profile_opened = await open_my_profile(page)
+                if profile_opened:
+                    await page.wait_for_timeout(700)
+                    continue
+            await scroll_down(page, 340, frame=await scroll_frame(page))
         except PlaywrightError as error:
             if page.is_closed():
                 raise
@@ -377,7 +410,9 @@ async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
     if expected and (current.scheme, current.netloc, current.path.rstrip('/')) != (
             expected.scheme, expected.netloc, expected.path.rstrip('/')):
         raise FeedAccessError('feed_unverified', 'Chrome no abrió el perfil de la modelo')
-    raise FeedAccessError('feed_unverified', 'El perfil abrió, pero Chrome no mostró publicaciones en el feed')
+    if expected and not profile_opened:
+        raise FeedAccessError('profile_menu_missing', 'Chrome abrió la modelo, pero no encontró Mi perfil')
+    raise FeedAccessError('feed_unverified', 'Chrome abrió Mi perfil, pero no encontró publicaciones al bajar por el panel')
 
 
 async def prepare_feed(page, ids, *, timeout=600, on_progress=None, profile_url=None):

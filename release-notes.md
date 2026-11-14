@@ -1,3 +1,4 @@
+- Chrome abre **Mi perfil** para buscar el feed al verificar y al grabar. La web indica si la app no recibió la solicitud o si Chrome no pudo encontrar Mi perfil.
 - Los ritmos de publicación aparecen al recibir el primer mensaje válido del lote.
 - Los mensajes conservan su texto y foto, y los de solo texto se publican sin caducidad automática.
 - Chrome abre automáticamente para grabar el comprobante.
