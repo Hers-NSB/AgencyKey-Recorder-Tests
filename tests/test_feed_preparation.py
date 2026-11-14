@@ -8,6 +8,22 @@ import recorder
 
 
 class FeedPreparationTests(IsolatedAsyncioTestCase):
+    async def test_recording_can_exceed_initial_deadline_when_posts_keep_appearing(self):
+        cards = [
+            [{'id': '200', 'pinned': False, 'top': 115, 'bottom': 230}],
+            [{'id': '100', 'pinned': False, 'top': 115, 'bottom': 230}],
+        ]
+        page = SimpleNamespace(wait_for_timeout=AsyncMock())
+        frame = SimpleNamespace(is_detached=lambda: False, evaluate=AsyncMock(side_effect=cards))
+        with patch.object(recorder, 'monotonic', side_effect=[0, 1, 9, 15, 16]), \
+             patch.object(recorder, 'frame_is_visible', new=AsyncMock(return_value=True)), \
+             patch.object(recorder, 'frame_geometry', new=AsyncMock(return_value=(0, 0, 720))), \
+             patch.object(recorder, 'images_ready', new=AsyncMock()), \
+             patch.object(recorder, 'scroll_down', new=AsyncMock()):
+            seen = await recorder.capture_walk(page, ['200', '100'], timeout=10, frame=frame,
+                                               reset_on_progress=True)
+        self.assertEqual(seen, ['200', '100'])
+
     async def test_waits_for_delayed_feed_then_checks_all_posts_and_returns_to_start(self):
         page=SimpleNamespace(url='file:///test-feed.html',wait_for_timeout=AsyncMock())
         frame=SimpleNamespace(evaluate=AsyncMock())

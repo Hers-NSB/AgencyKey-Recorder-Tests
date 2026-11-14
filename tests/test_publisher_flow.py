@@ -230,9 +230,7 @@ class KeyboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.user_data['batch'].creator, creator)
         api.list_creators.assert_not_awaited()
         self.assertNotIn('Selecciona', event.message.reply_text.call_args.args[0])
-        keyboard = event.message.reply_text.call_args.kwargs['reply_markup']
-        labels = [button.text for row in keyboard.keyboard for button in row]
-        self.assertEqual(labels, [CANCEL])
+        self.assertIsInstance(event.message.reply_text.call_args.kwargs['reply_markup'], ReplyKeyboardRemove)
 
     async def test_first_forward_opens_batch_without_losing_photo(self):
         ctx = context()
@@ -297,6 +295,13 @@ class KeyboardTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(expected, labels)
                 self.assertNotIn("📋 Estado", labels)
                 self.assertNotIn("👤 Seleccionar modelo", labels)
+
+    async def test_cancel_appears_only_after_collecting_the_first_post(self):
+        ctx = context()
+        bot = DropperBot(SimpleNamespace(), Creator(1, "Modelo", "modelo"))
+        ctx.user_data["batch"] = batch_with_posts(1)
+        labels = [button.text for row in bot.keyboard(ctx).keyboard for button in row]
+        self.assertIn(CANCEL, labels)
 
 
 if __name__ == "__main__":

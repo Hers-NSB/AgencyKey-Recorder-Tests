@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from time import time, monotonic
 from urllib.parse import urlparse
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 
 import recorder
@@ -15,6 +16,7 @@ from cloud_client import CloudError
 
 
 AGENCYKEY_SIGN_IN = 'https://app.agencykey.com/auth/signin'
+RETRY_RECORDING_PREFIX = 'proof-retry:'
 RECORDING_STEPS = {
     'preparando comprobante': 'Preparando el comprobante',
     'cargando sesión de AgencyKey': 'Abriendo la sesión guardada de AgencyKey',
@@ -347,6 +349,10 @@ class RecordingCoordinator:
             except TelegramError:
                 pass
         except Exception as error:
+            if job.get('status') == 'sent':
+                log.exception('El video fue enviado, pero falló el cierre del comprobante.')
+                return
+            job.pop('report', None)
             job.update(status='error', error_type=type(error).__name__)
             detail = str(error) if isinstance(error, (ValueError, CloudError)) else type(error).__name__
             if detail.startswith('Etapa: '):
@@ -359,8 +365,12 @@ class RecordingCoordinator:
                 message = f'{step}. {recorder.recording_error_detail(error)}'
             self.emit('recording', {'stage': message, 'error': True, 'completed': 0, 'total': len(batch.order)})
             log.error('%s', message)
+            recorder.save_json(path, job)
+            retry = InlineKeyboardMarkup([[InlineKeyboardButton(
+                '🎥 Repetir grabación', callback_data=f'{RETRY_RECORDING_PREFIX}{batch.id}'
+            )]])
             try:
-                await bot.send_message(chat_id, '❌ ' + message.removesuffix('.'))
+                await bot.send_message(chat_id, '❌ ' + message.removesuffix('.'), reply_markup=retry)
             except TelegramError:
                 pass
         finally:

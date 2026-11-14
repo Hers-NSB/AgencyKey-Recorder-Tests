@@ -1,3 +1,3 @@
-- **Verificar Mi perfil** confirma desde el panel web que Chrome abrió el perfil de la modelo, aunque esté vacío.
-- Antes de grabar, Chrome baja al panel de publicaciones y busca los IDs del lote.
-- La app de Windows muestra la etapa, el ID cuando corresponde y la causa de los fallos de Chrome, el feed, la grabación y el envío.
+- Cancelar Drop aparece en el bot después de recibir el primer mensaje del lote.
+- Chrome espera más al abrir perfiles y cargar fotos. La espera del recorrido se reinicia con cada post verificado.
+- El botón Repetir grabación recupera el comprobante de los posts ya publicados.

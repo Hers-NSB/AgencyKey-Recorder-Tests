@@ -22,6 +22,7 @@ usan Chrome de tu PC y no consumen minutos de Cloudflare Browser Run.
 Conserva los ajustes de publicacion de Dropper, pero usa web, base,
 acceso y bots independientes. Requiere Chrome instalado. No necesita Python.
 Datos: %LOCALAPPDATA%\AgencyKeyRecorderTests.
+Repetir grabacion vuelve a generar el comprobante desde el aviso de error.
 /video recupera el comprobante. Para un post manual usa /id NUMERO ID.
 Comprueba el chat antes de /video reenviar si la entrega quedo incierta.
 El comando menu abre las herramientas manuales de grabacion.
