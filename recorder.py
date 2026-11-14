@@ -320,9 +320,14 @@ async def scroll_down(page, pixels: int = 190, *, frame=None, find_panel=False, 
                 const left = Math.max(0, r.left), right = Math.min(innerWidth, r.right);
                 const top = Math.max(0, r.top), bottom = Math.min(innerHeight, r.bottom);
                 if (right-left < 300 || bottom-top < 150) return [];
-                const x = left + (right-left) * .4, y = (top+bottom)/2;
-                return e.contains(document.elementFromPoint(x,y))
-                    ? [{x,y,area:(right-left)*(bottom-top)}] : [];
+                if (e.scrollTop + e.clientHeight >= e.scrollHeight - 2) return [];
+                for (const [fx,fy] of [[.4,.5],[.7,.5],[.5,.7],[.5,.3]]) {
+                    const x = left + (right-left)*fx, y = top + (bottom-top)*fy;
+                    if (e.contains(document.elementFromPoint(x,y))) {
+                        return [{x,y,area:(right-left)*(bottom-top)}];
+                    }
+                }
+                return [];
             });
             return panels.sort((a,b) => b.area-a.area)[0] ?? null;
         }''')
@@ -402,6 +407,7 @@ async def my_profile_visible(page):
 async def open_my_profile(page):
     """Activate the model's profile from its navigation when available."""
     label = re.compile(r'^\s*(?:Mi perfil|My profile)\s*$', re.IGNORECASE)
+    from playwright.async_api import TimeoutError as PlaywrightTimeout
     for frame in page.frames:
         if not await frame_is_visible(page, frame):
             continue
@@ -410,18 +416,23 @@ async def open_my_profile(page):
         for control in [*await navigation.all(), *await matches.all()]:
             if not await control.is_visible():
                 continue
-            state = await control.evaluate("""element => {
+            try:
+                state = await control.evaluate("""element => {
                 const item = element.closest('button, a, [role="button"], [role="tab"], [role="menuitem"]');
                 if (!item && !element.closest('nav, aside, [role="navigation"]')
                     && getComputedStyle(element).cursor !== 'pointer') return 'text';
                 return element.closest(
                     '[aria-current="page"], [aria-current="true"], [aria-selected="true"], [aria-pressed="true"]'
                 ) ? 'selected' : 'available';
-            }""")
-            if state == 'text':
+                }""", timeout=1500)
+                if state == 'text':
+                    continue
+                if state == 'available':
+                    await control.click(timeout=1500)
+            except PlaywrightTimeout:
+                if await my_profile_visible(page):
+                    return True
                 continue
-            if state == 'available':
-                await control.click(timeout=1500)
             return True
     return False
 

@@ -8,6 +8,23 @@ import recorder
 
 
 class FeedPreparationTests(IsolatedAsyncioTestCase):
+    async def test_profile_control_timeout_does_not_abort_feed_discovery(self):
+        control = SimpleNamespace(
+            is_visible=AsyncMock(return_value=True),
+            evaluate=AsyncMock(return_value='available'),
+            click=AsyncMock(side_effect=PlaywrightTimeoutError('intercepted')),
+        )
+        matches = SimpleNamespace(all=AsyncMock(return_value=[control]))
+        frame = SimpleNamespace(
+            get_by_text=lambda _: matches,
+            locator=lambda _: SimpleNamespace(get_by_text=lambda _: matches),
+        )
+        page = SimpleNamespace(frames=[frame])
+        with patch.object(recorder, 'frame_is_visible', new=AsyncMock(return_value=True)), \
+             patch.object(recorder, 'my_profile_visible', new=AsyncMock(return_value=True)):
+            self.assertTrue(await recorder.open_my_profile(page))
+        control.click.assert_awaited_once()
+
     async def test_recording_can_exceed_initial_deadline_when_posts_keep_appearing(self):
         cards = [
             [{'id': '200', 'pinned': False, 'top': 115, 'bottom': 230}],

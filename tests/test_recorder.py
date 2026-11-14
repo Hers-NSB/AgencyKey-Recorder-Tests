@@ -133,6 +133,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
               <button>Editar perfil</button><div style="height:900px">Encabezado</div>
               <div id="feed"></div><div style="height:900px"></div>
             </main>
+            <div style="position:fixed;left:185px;top:335px;width:45px;height:75px"></div>
             <script>
               const panel = document.querySelector('main');
               panel.addEventListener('scroll', () => {
