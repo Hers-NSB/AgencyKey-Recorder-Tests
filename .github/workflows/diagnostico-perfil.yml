@@ -32,3 +32,4 @@ jobs:
           name: AgencyKeyDiagnosticoPerfil
           path: dist/AgencyKeyDiagnosticoPerfil.exe
           if-no-files-found: error
+# Compilación del diagnóstico independiente
