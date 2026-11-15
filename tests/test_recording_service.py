@@ -100,25 +100,41 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
         batch.status = 'done'
         return batch
 
-    async def test_visible_recording_uses_desktop_failure_callback(self):
+    async def test_integrated_recording_is_headless(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(recorder, 'ROOT', Path(folder)):
             coordinator = RecordingCoordinator(Creator(52, 'Modelo', None))
             bot = SimpleNamespace(send_message=AsyncMock())
             with patch.object(recorder, 'record', new=AsyncMock(side_effect=ValueError('No se encontró el perfil'))) as record:
                 await coordinator.run(self.batch(), bot, 42)
-            self.assertFalse(record.call_args.kwargs['headless'])
-            self.assertEqual(record.call_args.kwargs['on_browser_failure'], coordinator.inspect_browser_failure)
+            self.assertTrue(record.call_args.kwargs['headless'])
 
-    async def test_visible_failure_explains_what_to_do_and_waits_for_chrome_to_close(self):
-        coordinator = RecordingCoordinator(Creator(52, 'Modelo', None))
-        page = SimpleNamespace(is_closed=Mock(side_effect=[False, True]))
-        with patch.object(coordinator, 'emit') as emit, patch('recording_service.asyncio.sleep', new_callable=AsyncMock) as sleep:
-            await coordinator.inspect_browser_failure(page, 'abrir perfil', 'Se agotó la espera.')
-        sleep.assert_awaited_once()
-        self.assertIn('Chrome queda abierto', emit.call_args.args[1]['stage'])
-        self.assertTrue(emit.call_args.args[1]['error'])
+    async def test_background_profile_is_reused_for_the_same_drop(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(recorder, 'ROOT', Path(folder)):
+            batch = self.batch()
+            state = {'cookies': [], 'origins': []}
+            profile = recorder.model_profile_url(batch.creator.external_id)
+            page = SimpleNamespace(url=profile)
+            context = object()
+            session = Mock(return_value={'state': state, 'revision': 1})
+            coordinator = RecordingCoordinator(batch.creator, session_client=SimpleNamespace(recording_session=session))
+            bot = SimpleNamespace(send_message=AsyncMock())
+            with patch.object(recorder, 'open_recording_page', new=AsyncMock(return_value=(page, context))) as opening, \
+                 patch.object(recorder, 'navigate_recording_page', new=AsyncMock()) as navigation, \
+                 patch.object(recorder, 'open_my_profile', new=AsyncMock()), \
+                 patch.object(recorder, 'record', new=AsyncMock(side_effect=ValueError('prueba'))) as record:
+                preparation = coordinator.prepare_browser()
+                try:
+                    await preparation.task
+                    record.assert_not_awaited()
+                    navigation.assert_awaited_once_with(page, profile, stop_event=None)
+                    await coordinator.run(batch, bot, 42, preparation=preparation)
+                finally:
+                    await preparation.close()
+            self.assertEqual(opening.call_args.kwargs, {'headless': True, 'storage_state': state})
+            self.assertEqual(record.call_args.kwargs['prepared_page'], (page, context))
+            session.assert_called_once()
 
-    async def test_visible_proof_uses_newest_first_ids_and_sends_only_verified_mp4(self):
+    async def test_headless_proof_uses_newest_first_ids_and_sends_only_verified_mp4(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(recorder, 'ROOT', Path(folder)):
             video, report_path = Path(folder)/'video.mp4', Path(folder)/'report.json'
             video.write_bytes(b'fixture')
@@ -128,7 +144,7 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(recorder, 'verified_video', return_value=({'seen':['103','102','101']}, video)):
                 await coordinator.run(self.batch(), bot, 42)
             self.assertEqual(record.call_args.args[0]['post_ids_newest_first'], ['103','102','101'])
-            self.assertFalse(record.call_args.kwargs['headless'])
+            self.assertTrue(record.call_args.kwargs['headless'])
             self.assertEqual(record.call_args.kwargs['session_path'], session_path(52))
             bot.send_video.assert_awaited_once()
             job = json.loads(coordinator.job_path(42).read_text())
@@ -218,7 +234,7 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_completed_drop_schedules_proof_with_original_chat(self):
         batch=Batch(Creator(52,'Modelo',None));batch.order=[1];batch.received={1:Post('text',None)}
-        recording=SimpleNamespace(busy=False,start=AsyncMock())
+        recording=SimpleNamespace(busy=False,start=AsyncMock(),prepare_browser=lambda: None)
         bot=DropperBot(SimpleNamespace(publish_text=AsyncMock(return_value=101)),batch.creator,recording)
         from test_publisher_flow import context,update
         ctx=context();ctx.application=object();ctx.user_data['batch']=batch

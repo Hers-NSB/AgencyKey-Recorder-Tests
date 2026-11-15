@@ -132,7 +132,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
              patch.object(recorder, 'capture_walk', new=AsyncMock()) as walk:
             await recorder.prepare_feed(self.page, ['200'], timeout=5)
         self.assertEqual(await self.page.locator('#postId_200').count(), 1)
-        walk.assert_awaited_once()
+        walk.assert_not_awaited()
 
     async def test_profile_without_posts_and_nested_feed_with_data_ids(self):
         from recording_service import verify_profile_route
@@ -205,11 +205,13 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
             raise TimeoutError('secret browser URL?token=PRIVATE')
         async def inspect_open_browser(page):
             self.assertFalse(page.is_closed())
+        async def first_post(page, *args, **kwargs):
+            return {'_frame': page.main_frame}
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / 'session.json'
             await self.page.context.storage_state(path=str(state))
             with patch.object(recorder, 'ROOT', Path(directory)), patch.object(recorder, 'STATE', state), \
-                 patch.object(recorder, 'prepare_feed', new=AsyncMock(return_value={'_frame': None})), \
+                 patch.object(recorder, 'prepare_feed', new=AsyncMock(side_effect=first_post)), \
                  patch.object(recorder, 'confirm_start', new=AsyncMock(return_value={'post_id': '300', 'visible': True})), \
                  patch.object(recorder.TabCapture, 'start', new=AsyncMock()), \
                  patch.object(recorder, 'capture_walk', side_effect=fail_walk), \

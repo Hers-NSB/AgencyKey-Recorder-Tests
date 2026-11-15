@@ -11,7 +11,8 @@ AGENCYKEY RECORDER TESTS - APP INDEPENDIENTE
    en la fila de la modelo para reintentar.
 4. En la app selecciona un bot e inicialo. En Telegram usa /start,
    reenvia los mensajes y elige Publicar normal o Publicar lento.
-5. La app abre Chrome, carga los posts y las imagenes y graba el video.
+5. La app prepara Chrome en segundo plano mientras publica. Cuando carga
+   el primer post, empieza a grabar y verifica los demas durante el recorrido.
 6. El resumen final llega DESPUES del video. Su tiempo incluye todo el
    proceso desde Publicar hasta que Telegram confirma la entrega del video.
 

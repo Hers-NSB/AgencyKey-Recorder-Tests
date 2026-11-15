@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
@@ -205,11 +206,25 @@ async def frame_is_visible(page, frame) -> bool:
     return not frame.is_detached()
 
 
-async def post_frame(page, preferred_id=None):
+def frame_matches_model(frame, profile_url):
+    if not profile_url:
+        return True
+    model_id = urlparse(profile_url).path.rstrip('/').rsplit('/', 1)[-1]
+    while frame.parent_frame is not None:
+        host = urlparse(frame.url).hostname or ''
+        if host.startswith('of-') and host.endswith('.agencykey.com') and host != f'of-{model_id}.agencykey.com':
+            return False
+        frame = frame.parent_frame
+    return True
+
+
+async def post_frame(page, preferred_id=None, *, profile_url=None):
     from playwright.async_api import Error as PlaywrightError
 
     first = None
     for frame in page.frames:
+        if not frame_matches_model(frame, profile_url):
+            continue
         try:
             if not await frame_is_visible(page, frame):
                 continue
@@ -227,14 +242,14 @@ async def post_frame(page, preferred_id=None):
     return first
 
 
-async def scroll_frame(page, preferred_id=None):
-    found = await post_frame(page, preferred_id)
+async def scroll_frame(page, preferred_id=None, *, profile_url=None):
+    found = await post_frame(page, preferred_id, profile_url=profile_url)
     if found:
         return found
     # A profile header can fill a visible iframe before the recycled posts are mounted.
     largest, area = page.main_frame, 0
     for frame in page.frames:
-        if not await frame_is_visible(page, frame):
+        if not frame_matches_model(frame, profile_url) or not await frame_is_visible(page, frame):
             continue
         if await frame.locator(PROFILE_FEED).first.is_visible():
             return frame
@@ -357,10 +372,12 @@ async def scroll_down(page, pixels: int = 190, *, frame=None, anchor=None, smoot
     })
 
 
-async def seek_start(page, newest: str, timeout: float = 120, *, image_timeout: int = 20_000) -> dict:
+async def seek_start(page, newest: str, timeout: float = 120, *, image_timeout: int = 20_000, profile_url=None) -> dict:
     deadline = monotonic() + timeout
     while monotonic() < deadline:
-        frame = await scroll_frame(page, newest)
+        if profile_url and not same_profile_route(page.url, profile_url):
+            raise FeedAccessError('wrong_profile', 'El perfil activo cambió antes de iniciar el comprobante')
+        frame = await scroll_frame(page, newest, profile_url=profile_url)
         cards = await frame.evaluate(SNAPSHOT)
         target = next((p for p in cards if p['id'] == newest and not p['pinned']), None)
         if target:
@@ -449,6 +466,12 @@ def transient_frame_error(error):
                ('Execution context was destroyed', 'Frame was detached', 'Frame has been detached'))
 
 
+def same_profile_route(current_url, expected_url):
+    current, expected = urlparse(current_url), urlparse(expected_url)
+    return (current.scheme, current.netloc, current.path.rstrip('/')) == (
+        expected.scheme, expected.netloc, expected.path.rstrip('/'))
+
+
 async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
     """Mount the feed by scrolling the visible profile content."""
     expected = urlparse(profile_url) if profile_url else None
@@ -459,11 +482,9 @@ async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
         try:
             if await agencykey_sign_in_visible(page):
                 raise FeedAccessError('login_required', 'AgencyKey pide iniciar sesión · Reconecta desde el panel web')
-            current = urlparse(page.url)
-            on_route = not expected or (current.scheme, current.netloc, current.path.rstrip('/')) == (
-                expected.scheme, expected.netloc, expected.path.rstrip('/'))
+            on_route = not expected or same_profile_route(page.url, profile_url)
             if on_route:
-                frame = await post_frame(page, preferred_id)
+                frame = await post_frame(page, preferred_id, profile_url=profile_url)
                 if frame:
                     return frame
                 if expected and not profile_opened:
@@ -473,7 +494,7 @@ async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
                         profile_opened = True
                         await page.wait_for_timeout(700)
                         continue
-                await scroll_down(page, 340, frame=await scroll_frame(page), smooth=False)
+                await scroll_down(page, 340, frame=await scroll_frame(page, profile_url=profile_url), smooth=False)
         except PlaywrightError as error:
             if page.is_closed() or not transient_frame_error(error):
                 raise
@@ -486,40 +507,26 @@ async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
     raise FeedAccessError('feed_unverified', f'Mi perfil abrió, pero el feed no mostró publicaciones reconocibles.{target}')
 
 
-async def prepare_feed(page, ids, *, timeout=600, on_progress=None, profile_url=None):
-    """Warm the batch and its lazy images before marking the video start."""
+async def prepare_feed(page, ids, *, timeout=600, profile_url=None):
+    """Wait for the first post. The recording verifies the rest as it scrolls."""
     deadline = monotonic() + timeout
-    live = profile_url is not None
-    seek_timeout = FEED_IDLE_TIMEOUT_SECONDS if live else 30
-    image_options = {'image_timeout': SLOW_IMAGE_TIMEOUT_MS} if live else {}
-    await wait_for_feed(page, profile_url, deadline=min(deadline, monotonic() + (seek_timeout if live else 35)),
+    seek_timeout = FEED_IDLE_TIMEOUT_SECONDS if profile_url else 30
+    await wait_for_feed(page, profile_url, deadline=min(deadline, monotonic() + seek_timeout),
                         preferred_id=ids[0])
-    first = await seek_start(page, ids[0], timeout=seek_timeout if live else max(.1, min(30, deadline-monotonic())),
-                             **image_options)
-    def progress(value):
-        if on_progress:
-            on_progress(dict(value, stage='cargando feed e imágenes'))
-    await capture_walk(page, ids, timeout=seek_timeout if live else max(.1, deadline-monotonic()),
-                       frame=first['_frame'], on_progress=progress, **image_options,
-                       **({'reset_on_progress': True} if live else {}))
-    # Reset every scrolling ancestor inside the active feed, without reloading the page.
-    await first['_frame'].evaluate(post_expression('''() => {
-        const card=[...document.querySelectorAll('POST_SELECTOR')].find(e => POST_ID(e) && e.checkVisibility());
-        for(let node=card?.parentElement;node;node=node.parentElement) node.scrollTop=0;
-        window.scrollTo({top:0,behavior:'instant'});
-    }'''))
-    await page.wait_for_timeout(500)
-    return await seek_start(page, ids[0], timeout=seek_timeout if live else max(.1, min(30, deadline-monotonic())),
-                            **image_options)
+    options = {'image_timeout': SLOW_IMAGE_TIMEOUT_MS, 'profile_url': profile_url} if profile_url else {}
+    return await seek_start(page, ids[0], timeout=max(.1, min(seek_timeout, deadline - monotonic())), **options)
 
 
 async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 600, *,
                        frame=None, seen=None, on_progress=None, reset_on_progress=False,
-                       image_timeout: int = 20_000) -> list[str]:
+                       image_timeout: int = 20_000, profile_url=None) -> list[str]:
     frame = frame or await post_frame(page) or page.main_frame
     seen = [] if seen is None else seen
     deadline = monotonic() + timeout
     while monotonic() < deadline:
+        if profile_url and (not same_profile_route(page.url, profile_url)
+                            or not frame_matches_model(frame, profile_url)):
+            raise FeedAccessError('wrong_profile', 'El perfil activo cambió durante el comprobante')
         if frame.is_detached():
             raise ValueError('El panel de publicaciones se recargó. Repite únicamente la grabación.')
         if not await frame_is_visible(page, frame):
@@ -715,10 +722,62 @@ def recording_error_detail(error, *, page_closed=False):
     return f'Error inesperado ({type(error).__name__}).'
 
 
+async def open_recording_page(stack, *, headless, storage_state=None):
+    from playwright.async_api import async_playwright
+    playwright = await stack.enter_async_context(async_playwright())
+    browser = await launch_browser(playwright, headless=headless)
+    stack.push_async_callback(browser.close)
+    options = {'viewport': {'width': 1280, 'height': 720}}
+    if storage_state is not None:
+        options['storage_state'] = storage_state
+    context = await browser.new_context(**options)
+    stack.push_async_callback(context.close)
+    return await context.new_page(), context
+
+
+async def navigate_recording_page(page, url, *, fixture=None, stop_event=None, stage=None):
+    from playwright.async_api import Error as BrowserError, TimeoutError as BrowserTimeout
+    navigation_timeout = 45_000 if fixture else PROFILE_LOAD_TIMEOUT_MS
+    try:
+        response = await page.goto(url, wait_until='domcontentloaded', timeout=navigation_timeout)
+    except BrowserError as error:
+        transient = ('ERR_NETWORK_CHANGED', 'ERR_INTERNET_DISCONNECTED', 'ERR_CONNECTION_RESET',
+                     'ERR_TIMED_OUT', 'ERR_CONNECTION_CLOSED')
+        retryable = isinstance(error, BrowserTimeout) or any(code in str(error) for code in transient)
+        if fixture or (stop_event and stop_event.is_set()) or not retryable:
+            raise
+        if stage:
+            stage('reintentando abrir el perfil por un fallo de conexión')
+        await asyncio.sleep(2)
+        response = await page.goto(url, wait_until='domcontentloaded', timeout=navigation_timeout)
+
+    if not fixture and response is not None:
+        if response.status == 401:
+            raise ValueError('AgencyKey pide iniciar sesión · Reconecta desde la web')
+        if response.status in (403, 404):
+            raise ValueError('AgencyKey no permite abrir las publicaciones de esta modelo. Revisa sus permisos en el panel web.')
+        if response.status >= 500:
+            raise ValueError('AgencyKey no pudo cargar el perfil. Usa /video para intentarlo de nuevo.')
+
+
+async def page_has_post(page, url, post_id):
+    from playwright.async_api import Error as PlaywrightError
+    if not same_profile_route(page.url, url):
+        return False
+    try:
+        frame = await post_frame(page, post_id, profile_url=url)
+        return frame is not None and any(
+            card['id'] == post_id and not card['pinned'] for card in await frame.evaluate(SNAPSHOT)
+        )
+    except PlaywrightError as error:
+        if transient_frame_error(error):
+            return False
+        raise
+
+
 async def record(config: dict, *, fixture: Path | None = None, headless: bool = False, dwell: float = 0,
                  session_path: Path | None = None, on_progress=None, on_preview=None, stop_event=None,
-                 session_state=None, on_session_saved=None, on_browser_failure=None) -> Path:
-    from playwright.async_api import async_playwright
+                 session_state=None, on_session_saved=None, on_browser_failure=None, prepared_page=None) -> Path:
     state = session_path or STATE
     if not fixture and session_state is None and not state.exists():
         raise ValueError('Conecta la sesión compartida de AgencyKey desde la web.')
@@ -737,14 +796,13 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         if on_progress:
             on_progress({'stage': value, 'completed': len(report['seen']), 'total': len(report['post_ids'])})
 
-    async with async_playwright() as pw:
-        stage('iniciando Chrome')
-        browser = await launch_browser(pw, headless=headless)
-        options = {'viewport': {'width': 1280, 'height': 720}}
-        if not fixture:
-            options['storage_state'] = session_state if session_state is not None else str(state)
-        context = await browser.new_context(**options)
-        page = await context.new_page()
+    async with AsyncExitStack() as stack:
+        if prepared_page is None:
+            stage('iniciando Chrome')
+            storage = None if fixture else (session_state if session_state is not None else str(state))
+            page, context = await open_recording_page(stack, headless=headless, storage_state=storage)
+        else:
+            page, context = prepared_page
         async def monitor():
             while not page.is_closed():
                 if stop_event and stop_event.is_set():
@@ -761,39 +819,22 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             stage('abrir perfil')
             print('Etapa: abrir perfil', flush=True)
             url = fixture.resolve().as_uri() if fixture else config['profile_url']
-            from playwright.async_api import Error as BrowserError, TimeoutError as BrowserTimeout
-            navigation_timeout = 45_000 if fixture else PROFILE_LOAD_TIMEOUT_MS
-            try:
-                response = await page.goto(url, wait_until='domcontentloaded', timeout=navigation_timeout)
-            except BrowserError as error:
-                transient = ('ERR_NETWORK_CHANGED', 'ERR_INTERNET_DISCONNECTED', 'ERR_CONNECTION_RESET',
-                             'ERR_TIMED_OUT', 'ERR_CONNECTION_CLOSED')
-                retryable = isinstance(error, BrowserTimeout) or any(code in str(error) for code in transient)
-                if fixture or (stop_event and stop_event.is_set()) or not retryable:
-                    raise
-                stage('reintentando abrir el perfil por un fallo de conexión')
-                await asyncio.sleep(2)
-                response = await page.goto(url, wait_until='domcontentloaded', timeout=navigation_timeout)
-
-            if not fixture and response is not None:
-                if response.status == 401:
-                    raise ValueError('AgencyKey pide iniciar sesión · Reconecta desde la web')
-                if response.status in (403, 404):
-                    raise ValueError('AgencyKey no permite abrir las publicaciones de esta modelo. Revisa sus permisos en el panel web.')
-                if response.status >= 500:
-                    raise ValueError('AgencyKey no pudo cargar el perfil. Usa /video para intentarlo de nuevo.')
+            if prepared_page is None or not await page_has_post(page, url, report['first_post_id']):
+                await navigate_recording_page(page, url, fixture=fixture, stop_event=stop_event, stage=stage)
             stage('cargando feed e imágenes')
             print(f'Etapa: {report["stage"]} · ID {report["first_post_id"]}', flush=True)
-            preload_limit = 45 if fixture else FEED_IDLE_TIMEOUT_SECONDS
+            start_limit = 45 if fixture else FEED_IDLE_TIMEOUT_SECONDS
             try:
-                async with asyncio.timeout(preload_limit if fixture else None):
-                    first = await prepare_feed(page, config['post_ids_newest_first'], timeout=preload_limit,
-                                               on_progress=on_progress, profile_url=None if fixture else url)
+                async with asyncio.timeout(start_limit if fixture else None):
+                    first = await prepare_feed(page, config['post_ids_newest_first'], timeout=start_limit,
+                                               profile_url=None if fixture else url)
             except TimeoutError as exc:
-                raise ValueError(f'Se agotó la precarga del lote iniciado por el post {report["first_post_id"]}.') from exc
-            report['feed_preloaded'] = True
+                raise ValueError(f'Se agotó la búsqueda del primer post {report["first_post_id"]}.') from exc
             print(f'Inicio del comprobante: post {config["post_ids_newest_first"][0]} · segundo plano: {headless}', flush=True)
             stage('marcar inicio del video')
+            if not fixture and (not same_profile_route(page.url, url)
+                                or not frame_matches_model(first['_frame'], url)):
+                raise FeedAccessError('wrong_profile', 'El perfil activo cambió antes de iniciar el comprobante')
             report['start_verified'] = await confirm_start(
                 page, first['_frame'], report['first_post_id'],
                 **({} if fixture else {'image_timeout': SLOW_IMAGE_TIMEOUT_MS}))
@@ -804,7 +845,9 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 async with asyncio.timeout(walk_limit if fixture else None):
                     await capture_walk(page, config['post_ids_newest_first'], dwell=dwell, timeout=walk_limit,
                                        frame=first['_frame'], seen=report['seen'], on_progress=on_progress,
-                                       **({} if fixture else {'reset_on_progress': True, 'image_timeout': SLOW_IMAGE_TIMEOUT_MS}))
+                                       **({} if fixture else {'reset_on_progress': True,
+                                                              'image_timeout': SLOW_IMAGE_TIMEOUT_MS,
+                                                              'profile_url': url}))
             except TimeoutError as exc:
                 raise ValueError(f'Se agotó la grabación tras comprobar {len(report["seen"])}/{len(report["post_ids"])} posts.') from exc
             await page.wait_for_timeout(120)
@@ -849,23 +892,19 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 await monitor_task
             except asyncio.CancelledError:
                 pass
-            try:
-                if not fixture and error is None:
-                    try:
-                        if session_state is not None:
-                            if on_session_saved:
-                                await on_session_saved(await context.storage_state(indexed_db=True))
-                        else:
-                            await save_login_session(page, context, config['profile_url'], state_path=state)
-                        report['session_refreshed'] = True
-                    except Exception as refresh_error:
-                        report['session_refresh_error'] = type(refresh_error).__name__
-                        if on_progress:
-                            on_progress({'stage': 'Aviso: no se pudo actualizar la sesión guardada',
-                                         'completed': len(report['seen']), 'total': len(report['post_ids'])})
-                await context.close()
-            finally:
-                await browser.close()
+            if not fixture and error is None:
+                try:
+                    if session_state is not None:
+                        if on_session_saved:
+                            await on_session_saved(await context.storage_state(indexed_db=True))
+                    else:
+                        await save_login_session(page, context, config['profile_url'], state_path=state)
+                    report['session_refreshed'] = True
+                except Exception as refresh_error:
+                    report['session_refresh_error'] = type(refresh_error).__name__
+                    if on_progress:
+                        on_progress({'stage': 'Aviso: no se pudo actualizar la sesión guardada',
+                                     'completed': len(report['seen']), 'total': len(report['post_ids'])})
     try:
         if error:
             raise ValueError(report['error']) from error

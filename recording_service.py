@@ -1,6 +1,7 @@
 """Publish-to-proof workflow. No credentials are persisted with recording jobs."""
 import asyncio
 import json
+from contextlib import AsyncExitStack
 from pathlib import Path
 import queue
 from types import SimpleNamespace
@@ -196,6 +197,27 @@ async def run_desktop_recording_job(client, job, stop_event):
         await asyncio.gather(running, cancelled, return_exceptions=True)
 
 
+class BrowserPreparation:
+    def __init__(self, prepare):
+        self.stack = AsyncExitStack()
+        self.task = asyncio.create_task(prepare(self.stack))
+
+    async def result(self, stop_event):
+        if stop_event:
+            while not self.task.done():
+                if stop_event.is_set():
+                    raise ValueError('Grabación detenida · Usa /video para reintentar el comprobante')
+                await asyncio.wait({self.task}, timeout=0.25)
+        return await self.task
+
+    async def close(self):
+        self.task.cancel()
+        try:
+            await asyncio.gather(self.task, return_exceptions=True)
+        finally:
+            await self.stack.aclose()
+
+
 class RecordingCoordinator:
     def __init__(self, creator, *, events=None, stop_event=None, session_client=None):
         self.creator, self.events, self.stop_event = creator, events, stop_event
@@ -218,12 +240,20 @@ class RecordingCoordinator:
             log.info('%s', stage)
             self.last_recording_step = stage
 
-    async def inspect_browser_failure(self, page, stage, reason):
-        detail = f'{recording_step(stage)}. {reason} Chrome queda abierto. Ciérralo cuando termines de revisar.'
-        self.emit('recording', {'stage': detail, 'error': True, 'completed': 0, 'total': 0})
-        log.error('%s', detail)
-        while not page.is_closed() and not (self.stop_event and self.stop_event.is_set()):
-            await asyncio.sleep(0.25)
+    def prepare_browser(self):
+        if not self.session_client:
+            return None
+
+        async def prepare(stack):
+            shared = await asyncio.to_thread(self.session_client.recording_session)
+            page, context = await recorder.open_recording_page(stack, headless=True, storage_state=shared['state'])
+            url = recorder.model_profile_url(self.creator.external_id)
+            await recorder.navigate_recording_page(page, url, stop_event=self.stop_event)
+            if recorder.same_profile_route(page.url, url):
+                await recorder.open_my_profile(page)
+            return (page, context), shared
+
+        return BrowserPreparation(prepare)
 
     def job_path(self, chat_id):
         return recorder.ROOT / 'jobs' / f'{int(self.creator.external_id)}-{int(chat_id)}.json'
@@ -232,7 +262,7 @@ class RecordingCoordinator:
     def missing_ids(batch):
         return [number for number in range(1, len(batch.order) + 1) if number not in batch.published_ids]
 
-    async def start(self, batch, bot, chat_id, application, *, resend=False):
+    async def start(self, batch, bot, chat_id, application, *, resend=False, preparation=None):
         if self.busy:
             await bot.send_message(chat_id, '🎥 Video en proceso…')
             return
@@ -256,10 +286,16 @@ class RecordingCoordinator:
         self.busy = True
         async def work():
             try:
-                await self.run(batch, bot, chat_id, previous if previous.get('batch_id') == batch.id else {})
+                await self.run(batch, bot, chat_id, previous if previous.get('batch_id') == batch.id else {},
+                               preparation=preparation)
             finally:
-                self.busy = False
+                try:
+                    if preparation:
+                        await preparation.close()
+                finally:
+                    self.busy = False
         application.create_task(work())
+        return True
 
     def restore_batch(self, chat_id):
         path = self.job_path(chat_id)
@@ -274,7 +310,7 @@ class RecordingCoordinator:
                                started_wall_at=job.get('started_wall_at'), session_total=job.get('session_total', len(ids)),
                                rejected=job.get('rejected', []))
 
-    async def run(self, batch, bot, chat_id, previous=None):
+    async def run(self, batch, bot, chat_id, previous=None, *, preparation=None):
         self.last_recording_step = None
         job = dict(previous or {})
         job.update(batch_id=batch.id, chat_id=chat_id, creator_id=int(self.creator.external_id))
@@ -299,13 +335,25 @@ class RecordingCoordinator:
                 options = {}
                 if self.session_client:
                     self.progress({'stage': 'cargando sesión de AgencyKey', 'completed': 0, 'total': len(batch.order)})
-                    shared = await asyncio.to_thread(self.session_client.recording_session)
+                    shared = None
+                    if preparation:
+                        try:
+                            options['prepared_page'], shared = await preparation.result(self.stop_event)
+                        except Exception as error:
+                            if self.stop_event and self.stop_event.is_set():
+                                raise
+                            log.info('No se pudo preparar Chrome (%s). Se abrirá otra sesión para el comprobante.',
+                                     type(error).__name__)
+                            await preparation.close()
+                    if shared is None:
+                        shared = await asyncio.to_thread(self.session_client.recording_session)
                     options['session_state'] = shared['state']
+
                     async def refresh(state):
                         await asyncio.to_thread(self.session_client.refresh_recording_session, state, shared['revision'])
                     options['on_session_saved'] = refresh
-                report_path = await recorder.record(config, headless=False,
-                    on_browser_failure=self.inspect_browser_failure, session_path=session_path(self.creator.external_id),
+                report_path = await recorder.record(config, headless=True,
+                    session_path=session_path(self.creator.external_id),
                     on_progress=self.progress, stop_event=self.stop_event, **options)
                 job['report'] = str(report_path)
             report, video = recorder.verified_video(report_path)
