@@ -12,13 +12,16 @@ from test_publisher_flow import batch_with_posts, context, update
 
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_repeated_status_copies_failed_post_only_once(self):
+    async def test_repeated_continue_copies_failed_post_only_once(self):
         ctx = context()
         batch = batch_with_posts(1)
         ctx.user_data['batch'] = batch
         bot = DropperBot(SimpleNamespace(publish_text=AsyncMock(side_effect=AgencyKeyError('error'))))
         await bot.publish_batch(batch, update(), ctx)
         await bot.status(update(), ctx)
+        ctx.bot.copy_message.assert_not_awaited()
+        await bot.resume(update(), ctx)
+        await bot.resume(update(), ctx)
         ctx.bot.copy_message.assert_awaited_once_with(chat_id=123, from_chat_id=123, message_id=1)
         self.assertEqual(bot.session.total, 0)
 
@@ -58,8 +61,8 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((batch.cursor, bot.session.total), (0, 0))
         api.publish_photo.assert_not_awaited()
         ctx.bot.copy_message.side_effect = None
-        await bot.status(update(), ctx)
         await bot.resume(update(), ctx)
+        await bot.menu(update('https://onlyfans.com/101/modelo'), ctx)
         self.assertEqual((batch.status, batch.manual, bot.session.total), ('done', [1], 1))
         api.publish_photo.assert_not_awaited()
 
@@ -87,7 +90,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await bot.publish_batch(batch, update(), ctx)
         await bot.resume(update(), ctx)
         await bot.status(update(), ctx)
-        await bot.resume(update(), ctx)
+        await bot.menu(update('https://onlyfans.com/100/modelo'), ctx)
         self.assertEqual((bot.session.automatic, bot.session.manual), (1, 1))
         ctx.user_data['batch'] = batch_with_posts(1)
         await bot.publish_batch(ctx.user_data['batch'], update(), ctx)

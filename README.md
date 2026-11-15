@@ -13,7 +13,7 @@ El proyecto se basa en Dropper y funciona con su propia app, bots y servidor.
 | Ritmo de publicación | **Publicar normal** (11 segundos) y **Publicar lento** (22 segundos) aparecen al recibir el primer mensaje válido. |
 | Formato | El bot conserva el texto original y la foto cuando viene adjunta. Las publicaciones de solo texto y las que incluyen una foto solicitan un vencimiento de un día. |
 
-Ambos ritmos publican del último mensaje reenviado al primero. `/video` reintenta el comprobante del último lote.
+Ambos ritmos publican del último mensaje reenviado al primero.
 
 ## Uso en Windows
 
@@ -22,7 +22,7 @@ Ambos ritmos publican del último mensaje reenviado al primero. `/video` reinten
 3. Abre el EXE y pulsa **Actualizar** la primera vez. Si te pide acceso, introduce la contraseña de las apps. Puedes recordarla con el Administrador de credenciales de Windows. Al volver a abrir, la app usa los perfiles guardados y comprueba si hay cambios cada 30 segundos. Si aparece **Hay cambios disponibles**, pulsa **Actualizar** para descargarlos. La app también descarga cambios al detectar que afectan a un bot activo. Si cambias su modelo, la app detiene el bot y aplica el perfil nuevo para el siguiente inicio.
 4. Deja abierta la app de Windows y pulsa **Conectar AgencyKey** en el panel web. La app abrirá una ventana de Chrome en esa PC. Inicia sesión en AgencyKey y espera la confirmación del panel. El panel comprueba los perfiles pendientes automáticamente. Si hay un fallo, verás el resultado en la fila de la modelo y podrás usar **Verificar Mi perfil** para reintentar. La misma sesión sirve para las modelos a las que la cuenta tiene acceso. La conexión, la verificación y la grabación usan Chrome en la PC, sin consumir minutos de Cloudflare Browser Run.
 5. En la app selecciona el bot y pulsa **Iniciar bot**. La app recupera la sesión compartida de la web en memoria: cerrar el EXE no la elimina. Puedes usar los botones web con el EXE abierto aunque todavía no hayas iniciado ningún bot.
-6. En Telegram envía `/start`, reenvía fotos individuales con sus textos o mensajes de solo texto. Pulsa **Publicar normal** (11 segundos entre publicaciones) o **Publicar lento** (22 segundos). Si el servicio limita temporalmente el ritmo, Telegram indica cuándo puedes continuar. El bot publica del último mensaje reenviado al primero. Mientras publica, la app prepara Chrome en segundo plano. Al terminar, actualiza el perfil si el primer post aún no aparece y empieza a grabar cuando verifica ese ID y las fotos visibles. Durante el recorrido verifica los demás IDs y sus imágenes.
+6. En Telegram pulsa **Iniciar**, reenvía fotos individuales con sus textos o mensajes de solo texto. Pulsa **Publicar normal** (11 segundos entre publicaciones) o **Publicar lento** (22 segundos). Si el servicio limita temporalmente el ritmo, Telegram indica cuándo puedes continuar. El bot publica del último mensaje reenviado al primero. Mientras publica, la app prepara Chrome en segundo plano. Al terminar, actualiza el perfil si el primer post aún no aparece y empieza a grabar cuando verifica ese ID y las fotos visibles. Durante el recorrido verifica los demás IDs y sus imágenes.
 7. El MP4 completo a 480p se envía al chat privado que inició el Drop. **Solo después de confirmar su entrega** se envía el resumen «Drop finalizado». El tiempo total comprende desde pulsar Publicar hasta la entrega del video: publicación, carga del feed, grabación, conversión y subida.
 
 La app muestra un panel mientras descarga configuraciones, progreso del comprobante y un registro desplegable en un panel desplazable, sin vista previa. La web usa paneles de confirmación para las acciones que requieren confirmación. Si AgencyKey caduca o falta acceso a un feed, reconecta desde la web; un video incompleto no se envía.
@@ -34,19 +34,19 @@ La prueba publica contenido real en la modelo configurada. Las pruebas de CI usa
 - Interfaz de escritorio, varios bots independientes, aviso de cambios cada 30 segundos y descarga manual de perfiles, inicio y parada por bot, registro exportable.
 - Administración web con API global de AgencyKey, modelo fija por bot y un bot por modelo.
 - Reenvío de fotos con texto y mensajes de solo texto, rechazo de álbumes y caducidad de un día para publicaciones con foto o solo texto.
-- Progreso de publicación, contadores de sesión, pausa ante errores, copia para carga manual, continuación sin reenviar el post manual y limpieza de mensajes de preparación.
+- Progreso de publicación, contadores de sesión, pausa ante errores, copia del post fallido y continuación tras pegar su enlace de OnlyFans y limpieza de mensajes de preparación.
 - Contraseñas de administrador y apps independientes, sesiones seguras, cifrado de claves en D1 y claves descargadas solo a memoria.
 
 ## Recuperación y comprobantes
 
 Un fallo de grabación o envío no vuelve a publicar los posts. La app muestra la etapa y el error; los informes y videos completos se conservan localmente.
 
-- **Repetir grabación** aparece en el aviso de error del comprobante y vuelve a grabar los posts del mismo Drop. También puedes usar `/video` para recuperar el último comprobante.
+- **Repetir grabación** aparece en el teclado de Telegram cuando falla la grabación y vuelve a grabar los posts del mismo Drop.
 - Al abrir un Drop, **Cancelar Drop** aparece tras recibir el primer mensaje.
 - Chrome dispone de dos minutos por intento para abrir el perfil. Durante el recorrido, cada post verificado reinicia la espera de tres minutos sin avance.
-- Si Telegram perdió la respuesta durante la subida, comprueba primero el chat. `/video reenviar` confirma que quieres volver a enviar ese comprobante.
-- Los posts confirmados manualmente necesitan su ID para poder incluirlos en el video: `/id NUMERO ID_O_ENLACE`, por ejemplo `/id 2 2873212320`. Después usa `/video`. El programa no inventa IDs ni vuelve a publicar esos posts.
-- **Detener** detiene nuevas publicaciones y solicita cancelar la grabación en curso. Los Drops de publicación pendientes siguen siendo memoria de sesión, igual que en Dropper; los trabajos de comprobante conservan IDs y estado para recuperarlos con `/video` tras reiniciar.
+- Si Telegram perdió la respuesta durante la subida, comprueba primero el chat. Pulsa **Reenviar video** en el teclado para confirmar el reenvío.
+- Si falla un post, **Continuar** muestra una copia y pide el enlace individual de OnlyFans. Al recibirlo, el bot reanuda el lote y genera el comprobante al terminar.
+- **Detener** detiene nuevas publicaciones y solicita cancelar la grabación en curso. Los Drops de publicación pendientes siguen siendo memoria de sesión, igual que en Dropper; los trabajos de comprobante conservan IDs y estado para recuperarlos desde el teclado tras reiniciar.
 
 La app muestra la etapa del fallo y, si corresponde, el ID de la publicación buscada. Los errores de Telegram distinguen certificados, proxy, DNS y tiempos de espera en el modo de envío manual. La app integrada usa también certificados y proxy de Windows y muestra la etapa y el tipo de fallo, sin registrar tokens. No se desactiva la verificación HTTPS.
 

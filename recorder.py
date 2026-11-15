@@ -293,19 +293,33 @@ async def images_ready(page, timeout: int = 20000, *, frame=None) -> None:
         raise PlaywrightTimeoutError(IMAGE_TIMEOUT_MESSAGE) from error
 
 
-async def confirm_start(page, frame, newest: str, *, image_timeout: int = 20_000) -> dict:
-    # Recheck after images settle: a recycled feed can replace the node while awaiting.
-    await images_ready(page, timeout=image_timeout, frame=frame)
-    if not await frame_is_visible(page, frame):
-        raise ValueError('El primer post está en un panel oculto. No se inició el comprobante.')
-    await frame.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
-    cards = await frame.evaluate(SNAPSHOT)
-    target = next((card for card in cards if card['id'] == newest and not card['pinned']
-                   and 95 <= card['top'] <= 145), None)
-    if not target:
-        raise ValueError(f'El post {newest} ya no está encuadrado en el panel visible. No se inició el comprobante.')
-    return {'post_id': newest, 'frame_index': page.frames.index(frame),
-            'top': round(target['top'], 2), 'images_ready': True, 'visible': True}
+async def confirm_start(page, frame, newest: str, *, image_timeout: int = 20_000, reframe=False) -> dict:
+    # The recycled feed can move the target while visible images settle.
+    for attempt in range(4 if reframe else 1):
+        await images_ready(page, timeout=image_timeout, frame=frame)
+        if not await frame_is_visible(page, frame):
+            raise ValueError('El primer post está en un panel oculto. No se inició el comprobante.')
+        await frame.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        cards = await frame.evaluate(SNAPSHOT)
+        target = next((card for card in cards if card['id'] == newest and not card['pinned']), None)
+        if target and 95 <= target['top'] <= 145:
+            return {'post_id': newest, 'frame_index': page.frames.index(frame),
+                    'top': round(target['top'], 2), 'images_ready': True, 'visible': True}
+        if not reframe or attempt == 3:
+            break
+        if target:
+            await scroll_down(page, round(target['top'] - 115), frame=frame, anchor=newest, smooth=False)
+        else:
+            locator = frame.locator(
+                f'[id="postId_{newest}"]:not(.m-pinned):visible, '
+                f'[data-post-id="{newest}"]:not(.m-pinned):visible'
+            ).first
+            from playwright.async_api import TimeoutError as PlaywrightTimeout
+            try:
+                await locator.scroll_into_view_if_needed(timeout=1500)
+            except PlaywrightTimeout:
+                pass
+    raise ValueError(f'El post {newest} ya no está encuadrado en el panel visible. No se inició el comprobante.')
 
 
 def scroll_steps(pixels: int, *, rng=None) -> list[tuple[int, int]]:
@@ -392,12 +406,12 @@ async def seek_start(page, newest: str, timeout: float = 120, *, image_timeout: 
                 if not await scroll_down(page, round(top - 115), frame=frame, anchor=newest, smooth=False):
                     break
                 await page.wait_for_timeout(100)
-            await confirm_start(page, frame, newest, image_timeout=image_timeout)
+            await confirm_start(page, frame, newest, image_timeout=image_timeout, reframe=True)
             target['_frame'] = frame
             return target
         if not await scroll_down(page, 260, frame=frame, smooth=False):
             await page.wait_for_timeout(250)
-    raise ValueError(f'El feed abrió, pero no se encontró el post {newest} del lote · Usa /video para reintentar')
+    raise ValueError(f'El feed abrió, pero no se encontró el post {newest} del lote · Pulsa Repetir grabación para reintentar')
 
 
 class FeedAccessError(ValueError):
@@ -757,7 +771,7 @@ async def navigate_recording_page(page, url, *, fixture=None, stop_event=None, s
         if response.status in (403, 404):
             raise ValueError('AgencyKey no permite abrir las publicaciones de esta modelo. Revisa sus permisos en el panel web.')
         if response.status >= 500:
-            raise ValueError('AgencyKey no pudo cargar el perfil. Usa /video para intentarlo de nuevo.')
+            raise ValueError('AgencyKey no pudo cargar el perfil. Pulsa Repetir grabación para intentarlo de nuevo.')
 
 
 async def page_has_post(page, url, post_id):
@@ -836,7 +850,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                                 or not frame_matches_model(first['_frame'], url)):
                 raise FeedAccessError('wrong_profile', 'El perfil activo cambió antes de iniciar el comprobante')
             report['start_verified'] = await confirm_start(
-                page, first['_frame'], report['first_post_id'],
+                page, first['_frame'], report['first_post_id'], reframe=True,
                 **({} if fixture else {'image_timeout': SLOW_IMAGE_TIMEOUT_MS}))
             await capture.start(page)
             stage('recorrer posts / cargar imágenes')
@@ -860,7 +874,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             error = exc
             report['error_type'] = type(exc).__name__
             if stop_event and stop_event.is_set():
-                exc = ValueError('Grabación detenida · Usa /video para reintentar el comprobante')
+                exc = ValueError('Grabación detenida · Pulsa Repetir grabación para reintentar el comprobante')
                 error = exc
                 report['error_type'] = 'RecordingStopped'
             if isinstance(exc, FeedAccessError):
