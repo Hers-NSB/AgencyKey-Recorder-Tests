@@ -134,9 +134,25 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.page.locator('#postId_200').count(), 1)
         walk.assert_not_awaited()
 
-    async def test_profile_without_posts_and_nested_feed_with_data_ids(self):
+    async def test_web_verification_matches_the_real_profile_frame_with_empty_wall(self):
         from recording_service import verify_profile_route
 
+        url = 'https://app.agencykey.com/models/52'
+        frame_url = 'https://of-52.agencykey.com/modelo'
+        await self.page.route(url, lambda route: route.fulfill(content_type='text/html', body=f"""
+            <iframe title="OnlyFans" src="{frame_url}" style="width:900px;height:620px"></iframe>
+        """))
+        await self.page.route(frame_url, lambda route: route.fulfill(content_type='text/html', body="""
+            <main id="content">
+                <div class="js-compact-sticky-header">Modelo</div>
+            </main>
+        """))
+        result = await verify_profile_route(self.page, url, 'modelo')
+        self.assertEqual(result, {'status': 'ready', 'observed_username': 'modelo'})
+        profile = self.page.frame_locator('iframe[title="OnlyFans"]')
+        self.assertEqual(await profile.locator(recorder.POST_SELECTOR).count(), 0)
+
+    async def test_profile_without_posts_and_nested_feed_with_data_ids(self):
         url = 'https://app.agencykey.com/models/52'
         await self.page.route(url, lambda route: route.fulfill(content_type='text/html', body="""
             <main style="height:700px;overflow:auto;width:390px;margin-left:40px">
@@ -155,7 +171,8 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
               });
             </script>
         """))
-        self.assertEqual(await verify_profile_route(self.page, url), 'ready')
+        await self.page.goto(url, wait_until='domcontentloaded')
+        await recorder.wait_for_feed(self.page, url, deadline=recorder.monotonic() + 5)
         self.assertGreater(await self.page.locator('main').evaluate('el => el.scrollTop'), 220)
         first = await recorder.seek_start(self.page, '200', timeout=5)
         self.assertEqual(first['id'], '200')
