@@ -481,9 +481,20 @@ async def smoke_browser():
         browser = await launch_browser(playwright, headless=True)
         try:
             page = await browser.new_page()
-            await page.set_content('<title>Diagnóstico de Mi perfil</title>')
-            if await page.title() != 'Diagnóstico de Mi perfil':
-                raise RuntimeError('Chrome no completó la comprobación local.')
+            model_url = 'https://app.agencykey.com/models/52'
+            frame_url = 'https://of-52.agencykey.com/modelo'
+            await page.route(model_url, lambda route: route.fulfill(
+                content_type='text/html',
+                body=f'<iframe src="{frame_url}" width="900" height="620"></iframe>',
+            ))
+            await page.route(frame_url, lambda route: route.fulfill(
+                content_type='text/html',
+                body='<main id="content"><div class="js-compact-sticky-header">Modelo</div></main>',
+            ))
+            if await verify_profile_route(page, model_url, 'modelo') != {
+                'status': 'ready', 'observed_username': 'modelo',
+            }:
+                raise RuntimeError('Chrome no verificó el perfil simulado.')
         finally:
             await browser.close()
 
