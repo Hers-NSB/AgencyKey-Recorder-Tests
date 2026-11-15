@@ -21,13 +21,13 @@ class PublishIntervalTests(unittest.IsolatedAsyncioTestCase):
             sleep.assert_awaited_once_with(7)
             self.assertEqual(api._last_publish_finished[1], 120)
 
-    async def test_slow_mode_waits_thirty_seconds_from_previous_completion(self):
+    async def test_slow_mode_waits_twenty_two_seconds_from_previous_completion(self):
         api = AgencyKey('test')
         api._publish_once = AsyncMock(return_value=1)
         api._last_publish_finished[1] = 100
         with patch('agencykey.monotonic', return_value=104), patch('agencykey.asyncio.sleep', new_callable=AsyncMock) as sleep:
             await api.publish_text(1, 'next', slow=True)
-        sleep.assert_awaited_once_with(26)
+        sleep.assert_awaited_once_with(18)
 
     async def test_limit_is_shared_with_other_batches_for_same_model(self):
         api = AgencyKey('test')

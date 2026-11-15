@@ -41,28 +41,22 @@ class FeedPreparationTests(IsolatedAsyncioTestCase):
                                                reset_on_progress=True)
         self.assertEqual(seen, ['200', '100'])
 
-    async def test_waits_for_delayed_feed_then_checks_all_posts_and_returns_to_start(self):
-        page=SimpleNamespace(url='file:///test-feed.html',wait_for_timeout=AsyncMock())
-        frame=SimpleNamespace(evaluate=AsyncMock())
-        order=[]
-        async def seek(*args,**kwargs):
-            order.append('seek');return {'_frame':frame}
-        async def walk(*args,**kwargs):
-            order.append('preload');kwargs['on_progress']({'completed':2,'total':2,'stage':'grabando'})
-        progress=[]
-        with patch.object(recorder,'post_frame',new=AsyncMock(side_effect=[None,None,frame])), \
-             patch.object(recorder,'scroll_frame',new=AsyncMock(return_value=frame)), \
-             patch.object(recorder,'scroll_down',new=AsyncMock()) as scroll, \
-             patch.object(recorder,'seek_start',new=AsyncMock(side_effect=seek)), \
-             patch.object(recorder,'capture_walk',new=AsyncMock(side_effect=walk)) as capture:
-            first=await recorder.prepare_feed(page,['200','100'],on_progress=progress.append)
-        self.assertEqual(page.wait_for_timeout.await_count,3)
+    async def test_waits_for_delayed_feed_and_seeks_only_the_first_post(self):
+        page = SimpleNamespace(url='file:///test-feed.html', wait_for_timeout=AsyncMock())
+        frame = SimpleNamespace(evaluate=AsyncMock())
+        with patch.object(recorder, 'post_frame', new=AsyncMock(side_effect=[None, None, frame])), \
+             patch.object(recorder, 'scroll_frame', new=AsyncMock(return_value=frame)), \
+             patch.object(recorder, 'scroll_down', new=AsyncMock()) as scroll, \
+             patch.object(recorder, 'seek_start', new=AsyncMock(return_value={'_frame': frame})) as seek, \
+             patch.object(recorder, 'capture_walk', new=AsyncMock()) as capture:
+            first = await recorder.prepare_feed(page, ['200', '100'])
+        self.assertEqual(page.wait_for_timeout.await_count, 2)
         self.assertEqual(scroll.await_count, 2)
-        self.assertEqual(order,['seek','preload','seek'])
-        self.assertEqual(capture.call_args.args[1],['200','100'])
-        self.assertEqual(first['_frame'],frame)
-        self.assertEqual(progress[0]['stage'],'cargando feed e imágenes')
-        frame.evaluate.assert_awaited_once()
+        seek.assert_awaited_once()
+        self.assertEqual(seek.await_args.args, (page, '200'))
+        self.assertIs(first['_frame'], frame)
+        capture.assert_not_awaited()
+        frame.evaluate.assert_not_awaited()
 
     async def test_expired_session_requests_reconnection_on_the_web(self):
         page=SimpleNamespace(url='https://app.agencykey.com/login')
