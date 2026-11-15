@@ -344,8 +344,9 @@ async function listAdminProfiles(env) {
     ORDER BY p.name COLLATE NOCASE`).all();
   return json({profiles: result.results.map(row => {
     const check = row.feed_result && JSON.parse(row.feed_result);
-    const feed = session.configured && check?.creator_id === row.creator_id && check.connection === session.connection && check.profile_checked === true
-      ? {status:check.status, checked_at:check.checked_at}
+    const feed = session.configured && check?.creator_id === row.creator_id && check.connection === session.connection
+      && check.identity_checked === true && check.creator_username === row.creator_username
+      ? profileCheckResult(check, check.status)
       : {status:session.configured?'pending':'no_session'};
     return {...profile(row), feed};
   }), recording_session:session});
@@ -374,8 +375,17 @@ export async function saveSharedSession(env, state, revision, connection=crypto.
   return {configured:true,revision:value.revision,updated_at:value.updated_at};
 }
 
+function profileCheckResult(job, status) {
+  return {status, checked_at:job.checked_at, expected_username:job.creator_username, observed_username:job.observed_username};
+}
+
+function normalizedUsername(value) {
+  const username = typeof value === 'string' ? value.trim().replace(/^@/, '').toLowerCase() : '';
+  return /^[a-z0-9_]{1,64}$/.test(username) ? username : null;
+}
+
 const desktopJobKey = 'recording_desktop_job';
-const desktopResults = new Set(['ready','login_required','unavailable','profile_menu_missing','wrong_profile','profile_not_visible','feed_unverified','connection_error','cancelled']);
+const desktopResults = new Set(['ready','login_required','unavailable','profile_menu_missing','wrong_profile','profile_not_visible','feed_unverified','profile_unverified','connection_error','cancelled']);
 
 async function readDesktopJob(env) {
   const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(desktopJobKey).first();
@@ -411,13 +421,13 @@ async function recordingAdmin(request, env, path) {
       throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
     }
     const profile=feed
-      ? await env.DB.prepare('SELECT creator_id FROM profiles WHERE id = ?').bind(feed[1]).first()
+      ? await env.DB.prepare('SELECT creator_id, creator_username FROM profiles WHERE id = ?').bind(feed[1]).first()
       : null;
     if (feed && !profile) throw new ApiError(404,'La configuración de la modelo ya no existe');
     const session=await sharedSession(env);
     if (feed && !session.configured) return json({status:'no_session'});
     const job={id:crypto.randomUUID(),owner,kind:connect?'connect':'feed',
-      ...(profile?{profile_id:feed[1],creator_id:profile.creator_id,connection:session.connection}:{}),revision:session.revision,status:'queued',expires:Date.now()+45000};
+      ...(profile?{profile_id:feed[1],creator_id:profile.creator_id,creator_username:profile.creator_username,connection:session.connection}:{}),revision:session.revision,status:'queued',expires:Date.now()+45000};
     if (!await replaceDesktopJob(env,entry,job)) throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
     return json({id:job.id,status:job.status},202);
   }
@@ -429,7 +439,7 @@ async function recordingAdmin(request, env, path) {
       const cancelled=await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'});
       return json({status:cancelled?'cancelled':'finishing'});
     }
-    return json({status,checked_at:entry.job.checked_at});
+    return json(profileCheckResult(entry.job, status));
   }
   throw new ApiError(405,'Método no permitido');
 }
@@ -440,8 +450,8 @@ async function desktopRecordingJob(request,env) {
     if (!entry || jobStatus(entry.job)!=='queued') return json({job:null});
     const job={...entry.job,status:'running',claim:crypto.randomUUID(),expires:Date.now()+300000};
     if (!await replaceDesktopJob(env,entry,job)) return json({job:null});
-    const {id,claim,kind,creator_id}=job;
-    return json({job:{id,claim,kind,creator_id}});
+    const {id,claim,kind,creator_id,creator_username}=job;
+    return json({job:{id,claim,kind,creator_id,creator_username}});
   }
   if (request.method!=='PUT') throw new ApiError(405,'Método no permitido');
   const input=await body(request,524288);
@@ -458,14 +468,21 @@ async function desktopRecordingJob(request,env) {
     catch {job.status='connection_error';}
     await replaceDesktopJob(env,{raw:JSON.stringify(finishing)},job);
   } else if (job.kind === 'feed' && job.profile_id) {
-    if (input.profile_checked !== true && job.status !== 'cancelled') job.status = 'desktop_update_required';
-    const check = {profile_checked:true, creator_id:job.creator_id, connection:job.connection, status:job.status, checked_at:job.checked_at};
+    if (input.identity_checked !== true && job.status !== 'cancelled') job.status = 'desktop_update_required';
+    job.observed_username = normalizedUsername(input.observed_username);
+    if (job.status === 'ready') {
+      const expected = normalizedUsername(job.creator_username);
+      if (!expected || !job.observed_username) job.status = 'profile_unverified';
+      else if (job.observed_username !== expected) job.status = 'wrong_profile';
+    }
+    const check = {identity_checked:true, creator_id:job.creator_id, creator_username:job.creator_username,
+      observed_username:job.observed_username, connection:job.connection, status:job.status, checked_at:job.checked_at};
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO settings(key,value)
         SELECT ?,? WHERE EXISTS (SELECT 1 FROM settings WHERE key = ? AND value = ?)
-        AND EXISTS (SELECT 1 FROM profiles WHERE id = ? AND creator_id = ?)
+        AND EXISTS (SELECT 1 FROM profiles WHERE id = ? AND creator_id = ? AND creator_username IS ?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
-        .bind('feed_check:'+job.profile_id,JSON.stringify(check),desktopJobKey,entry.raw,job.profile_id,job.creator_id),
+        .bind('feed_check:'+job.profile_id,JSON.stringify(check),desktopJobKey,entry.raw,job.profile_id,job.creator_id,job.creator_username ?? null),
       env.DB.prepare('UPDATE settings SET value = ? WHERE key = ? AND value = ?')
         .bind(JSON.stringify(job),desktopJobKey,entry.raw),
     ]);

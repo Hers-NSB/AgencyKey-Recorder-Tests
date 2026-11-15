@@ -415,9 +415,10 @@ async def seek_start(page, newest: str, timeout: float = 120, *, image_timeout: 
 
 
 class FeedAccessError(ValueError):
-    def __init__(self, status, message):
+    def __init__(self, status, message, *, observed=None):
         super().__init__(message)
         self.status = status
+        self.observed = observed
 
 
 async def agencykey_sign_in_visible(page):
@@ -442,12 +443,12 @@ async def my_profile_visible(page):
     return False
 
 
-async def open_my_profile(page):
+async def open_my_profile(page, *, profile_url=None):
     """Activate the model's profile from its navigation when available."""
     label = re.compile(r'^\s*(?:Mi perfil|My profile)\s*$', re.IGNORECASE)
     from playwright.async_api import TimeoutError as PlaywrightTimeout
     for frame in page.frames:
-        if not await frame_is_visible(page, frame):
+        if (profile_url and not frame_matches_model(frame, profile_url)) or not await frame_is_visible(page, frame):
             continue
         matches = frame.get_by_text(label)
         navigation = frame.locator('nav, aside, [role="navigation"]').get_by_text(label)
@@ -484,6 +485,60 @@ def same_profile_route(current_url, expected_url):
     current, expected = urlparse(current_url), urlparse(expected_url)
     return (current.scheme, current.netloc, current.path.rstrip('/')) == (
         expected.scheme, expected.netloc, expected.path.rstrip('/'))
+
+
+def profile_username(value):
+    username = (value or '').strip().lstrip('@').casefold()
+    return username if re.fullmatch(r'[a-z0-9_]{1,64}', username) else None
+
+
+def profile_frame_identity(frame):
+    url = urlparse(frame.url)
+    identity = re.fullmatch(r'of-([0-9]+)\.agencykey\.com', url.hostname or '')
+    username = profile_username(url.path.strip('/'))
+    if url.scheme == 'https' and identity and username:
+        return int(identity[1]), username
+    return None
+
+
+async def visible_model_profiles(page):
+    """Read usernames from visible model iframes showing a profile header."""
+    profiles = set()
+    for frame in page.frames:
+        identity = profile_frame_identity(frame)
+        if identity and await frame_is_visible(page, frame) and await frame.locator(PROFILE_HEADER).first.is_visible():
+            profiles.add(identity)
+    return profiles
+
+
+async def wait_for_model_identity(page, profile_url, username, *, deadline):
+    from playwright.async_api import Error as PlaywrightError
+    expected = profile_username(username)
+    model_id = int(urlparse(profile_url).path.rstrip('/').rsplit('/', 1)[-1])
+    on_route = opened = False
+    observed = set()
+    while monotonic() < deadline:
+        try:
+            if await agencykey_sign_in_visible(page):
+                raise FeedAccessError('login_required', 'AgencyKey pide iniciar sesión · Reconecta desde el panel web')
+            on_route = same_profile_route(page.url, profile_url)
+            observed = await visible_model_profiles(page) if on_route else set()
+            if expected and observed == {(model_id, expected)}:
+                return expected
+            if on_route and not opened:
+                opened = await open_my_profile(page, profile_url=profile_url)
+        except PlaywrightError as error:
+            if page.is_closed() or not transient_frame_error(error):
+                raise
+        await page.wait_for_timeout(400)
+    if len(observed) == 1 and expected:
+        _, actual_username = next(iter(observed))
+        detail = (f'Se esperaba @{expected} y se abrió @{actual_username}.'
+                  if actual_username != expected else 'Chrome abrió el espacio de trabajo de otra modelo.')
+        raise FeedAccessError('wrong_profile', detail, observed=actual_username)
+    if not on_route:
+        raise FeedAccessError('wrong_profile', 'Chrome no abrió la ruta de la modelo seleccionada')
+    raise FeedAccessError('profile_unverified', 'No se pudo verificar el perfil de la modelo seleccionada')
 
 
 async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
@@ -835,6 +890,12 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             url = fixture.resolve().as_uri() if fixture else config['profile_url']
             if prepared_page is None or not await page_has_post(page, url, report['first_post_id']):
                 await navigate_recording_page(page, url, fixture=fixture, stop_event=stop_event, stage=stage)
+            if not fixture and 'creator_username' in config:
+                stage('verificando identidad de la modelo')
+                verified_username = await wait_for_model_identity(
+                    page, url, config['creator_username'], deadline=monotonic() + 35)
+            else:
+                verified_username = None
             stage('cargando feed e imágenes')
             print(f'Etapa: {report["stage"]} · ID {report["first_post_id"]}', flush=True)
             start_limit = 45 if fixture else FEED_IDLE_TIMEOUT_SECONDS
@@ -849,6 +910,10 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             if not fixture and (not same_profile_route(page.url, url)
                                 or not frame_matches_model(first['_frame'], url)):
                 raise FeedAccessError('wrong_profile', 'El perfil activo cambió antes de iniciar el comprobante')
+            if verified_username:
+                identity = profile_frame_identity(first['_frame'])
+                if not identity or identity[1] != verified_username:
+                    raise FeedAccessError('wrong_profile', 'El panel del primer post pertenece a otro perfil')
             report['start_verified'] = await confirm_start(
                 page, first['_frame'], report['first_post_id'], reframe=True,
                 **({} if fixture else {'image_timeout': SLOW_IMAGE_TIMEOUT_MS}))

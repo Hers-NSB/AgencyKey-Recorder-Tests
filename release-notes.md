@@ -1,4 +1,3 @@
-- Muestra el número del post que falló y ofrece Continuar en el teclado de Telegram.
-- Al continuar muestra el post y acepta su enlace de OnlyFans para reanudar el lote y grabar automáticamente.
-- Permite repetir la grabación o reintentar la entrega desde el teclado.
-- Vuelve a encuadrar el primer post cuando la carga del feed lo desplaza antes de grabar.
+- Verificar Mi perfil compara la cuenta abierta en Chrome con la modelo asignada al bot, incluso con el muro vacío.
+- El grabador verifica la misma identidad y busca las publicaciones del lote al terminar de publicar.
+- El panel muestra las cuentas esperada y abierta cuando detecta una discrepancia.

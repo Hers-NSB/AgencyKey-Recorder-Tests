@@ -25,6 +25,7 @@ RECORDING_STEPS = {
     'cargando sesión de AgencyKey': 'Abriendo la sesión guardada de AgencyKey',
     'iniciando Chrome': 'Iniciando Chrome',
     'abrir perfil': 'Abriendo el perfil de la modelo',
+    'verificando identidad de la modelo': 'Verificando la cuenta abierta de AgencyKey',
     'reintentando abrir el perfil por un fallo de conexión': 'La conexión se interrumpió. Intentando abrir el perfil otra vez',
     'cargando feed e imágenes': 'Buscando las publicaciones de la modelo y cargando sus fotos',
     'marcar inicio del video': 'Preparando el inicio del video',
@@ -106,22 +107,22 @@ async def agencykey_login_complete(page):
         return False
 
 
-async def verify_profile_route(page, url):
+async def verify_profile_route(page, url, username):
     response = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
     if response is None:
-        return 'connection_error'
+        return {'status': 'connection_error'}
     if response.status == 401:
-        return 'login_required'
+        return {'status': 'login_required'}
     if response.status in (403, 404):
-        return 'unavailable'
+        return {'status': 'unavailable'}
     if not response.ok:
-        return 'connection_error'
+        return {'status': 'connection_error'}
 
     try:
-        await recorder.wait_for_feed(page, url, deadline=monotonic() + 35)
+        observed = await recorder.wait_for_model_identity(page, url, username, deadline=monotonic() + 35)
     except recorder.FeedAccessError as error:
-        return error.status
-    return 'ready'
+        return {'status': error.status, 'observed_username': error.observed}
+    return {'status': 'ready', 'observed_username': observed}
 
 
 PROFILE_ERRORS = {
@@ -130,7 +131,7 @@ PROFILE_ERRORS = {
     'wrong_profile': 'Chrome abrió otra ruta.',
     'profile_menu_missing': 'Chrome no encontró la opción Mi perfil.',
     'profile_not_visible': 'Mi perfil no terminó de cargar.',
-    'feed_unverified': 'Mi perfil abrió, pero no se detectaron publicaciones en el feed.',
+    'profile_unverified': 'No se pudo identificar la cuenta de Mi perfil.',
     'connection_error': 'Chrome no pudo cargar AgencyKey.',
 }
 
@@ -162,10 +163,11 @@ async def run_desktop_recording_job(client, job, stop_event):
                 page = await context.new_page()
                 if not connect:
                     url = recorder.model_profile_url(job['creator_id'])
-                    status = await verify_profile_route(page, url)
-                    if status != 'ready':
-                        log.warning('Verificación de Mi perfil | Modelo %s · %s', job['creator_id'], PROFILE_ERRORS[status])
-                    return {'status': status, 'profile_checked': True}
+                    result = await verify_profile_route(page, url, job.get('creator_username'))
+                    if result['status'] != 'ready':
+                        log.warning('Verificación de Mi perfil | Modelo %s · %s', job['creator_id'],
+                                    PROFILE_ERRORS[result['status']])
+                    return {**result, 'identity_checked': True}
                 response = await page.goto(AGENCYKEY_SIGN_IN, wait_until='domcontentloaded', timeout=30000)
                 if response is not None and response.status >= 400:
                     return {'status': 'connection_error'}
@@ -190,7 +192,7 @@ async def run_desktop_recording_job(client, job, stop_event):
                 log.error('Solicitud web de Chrome | %s', detail)
                 result = {'status': 'connection_error'}
                 if job['kind'] == 'feed':
-                    result['profile_checked'] = True
+                    result['identity_checked'] = True
             await asyncio.to_thread(client.update_recording_job, job, **result)
     finally:
         for task in (running, cancelled):
@@ -340,6 +342,7 @@ class RecordingCoordinator:
                     log.warning('Comprobante | No se pudo entregar el aviso inicial; la grabación continúa.')
                 ids = [recorder.post_id(batch.published_ids[n]) for n in range(len(batch.order), 0, -1)]
                 config = recorder.validate_config({'profile_url': recorder.model_profile_url(self.creator.external_id),
+                                                   'creator_username': self.creator.username,
                                                    'post_ids_newest_first': ids})
                 options = {}
                 if self.session_client:
