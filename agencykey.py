@@ -18,7 +18,7 @@ API_URL = "https://app.agencykey.com/api"
 STORAGE_HOST = "of2transcoder.s3-accelerate.amazonaws.com"
 CONVERTER_URL = "https://convert.onlyfans.com/file/upload"
 PUBLISH_INTERVAL_SECONDS = 11.0
-SLOW_PUBLISH_INTERVAL_SECONDS = 30.0
+SLOW_PUBLISH_INTERVAL_SECONDS = 2 * PUBLISH_INTERVAL_SECONDS
 
 
 @dataclass(frozen=True)

@@ -253,8 +253,8 @@ class BotPanel:
         return data
 
     def apply_loaded_profile(self, profile):
-        self.refresh_profile(profile)
-        self.pending_profile = None
+        if self.pending_profile is None and self.manager.revisions([profile]) == self.manager.revisions([self.profile]):
+            self.refresh_profile(profile)
         self.manager.refresh_sidebar()
 
     def refresh_profile(self, profile):
@@ -758,9 +758,11 @@ class DropperWindow:
         def complete(profiles):
             self.checking_updates = False
             if self.client is client and self.profile_snapshot is snapshot and not self.refreshing and not self.auth_required:
-                changed = self.revisions(profiles) != self.profile_snapshot
-                self.update_hint.set('Hay cambios disponibles' if changed else '')
+                remote = self.revisions(profiles)
+                self.update_hint.set('Hay cambios disponibles' if remote != snapshot else '')
                 self.cloud_online = True
+                if any(panel.controller.running and remote.get(key) != snapshot.get(key) for key, panel in self.panels.items()):
+                    self.refresh()
 
         def failed(error):
             self.checking_updates = False
@@ -805,12 +807,14 @@ class DropperWindow:
         panel = self.panels.get(profile['id'])
         if panel:
             if panel.controller.running:
-                if profile['revision'] != panel.profile['revision']:
+                model_changed = profile['creator']['external_id'] != panel.profile['creator']['external_id']
+                if self.revisions([profile]) != self.revisions([panel.profile]) or model_changed or panel.pending_profile:
                     panel.pending_profile = profile
-                    if profile['creator']['external_id'] != panel.profile['creator']['external_id']:
+                    if model_changed and panel.mode != 'stopping':
                         panel.stop()
                         panel.append('WARNING', 'Modelo cambiada en el panel · Reinicia el bot cuando se detenga')
             else:
+                panel.pending_profile = None
                 panel.refresh_profile(profile)
         else:
             self.panels[profile['id']] = BotPanel(self, profile, self.runner)

@@ -125,7 +125,7 @@ class Batch:
                     if on_stage:
                         on_stage("Creando post en AgencyKey")
                     post_id = await agencykey.publish_text(self.creator.external_id, post.text,
-                                                           slow=self.slow)
+                                                           expire=True, slow=self.slow)
             except PublishRateLimited as error:
                 self.status = "paused"
                 self.error = str(error)

@@ -190,6 +190,17 @@ class DropperBot:
 
     async def publish_batch(self, batch, update, context):
         batch.start_timer()
+        preparation = self.recording.prepare_browser() if self.recording else None
+        transferred = False
+        try:
+            transferred = await self.publish_with_preparation(batch, update, context, preparation)
+            if batch.status == 'done' and self.recording:
+                await self.cleanup(context, update.effective_chat.id, batch)
+        finally:
+            if preparation and not transferred:
+                await preparation.close()
+
+    async def publish_with_preparation(self, batch, update, context, preparation):
         async def download_photo(file_id: str) -> bytes:
             try:
                 file = await context.bot.get_file(file_id)
@@ -231,10 +242,10 @@ class DropperBot:
                     log.debug("No se pudo retirar el progreso", exc_info=True)
         if batch.status == 'done' and self.recording:
             batch.session_total = self.session.total
-            await self.cleanup(context, chat_id, batch)
-            await self.recording.start(batch, context.bot, chat_id, context.application)
-        else:
-            await self.report(update, context)
+            options = {'preparation': preparation} if preparation else {}
+            return await self.recording.start(batch, context.bot, chat_id, context.application, **options)
+        await self.report(update, context)
+        return False
 
     async def video(self, update, context):
         batch = context.user_data.get('batch')

@@ -1,3 +1,3 @@
-- Graba el comprobante directamente en la pestaña de Chrome, desde el primer post encuadrado hasta el último.
-- Guarda explícitamente el primer y el último fotograma y genera el MP4 sin marcadores de colores.
-- Mantiene la búsqueda de publicaciones por ID, la verificación del feed desde el panel web y la opción Repetir grabación.
+- Prepara Chrome en segundo plano durante el Drop y empieza a grabar cuando verifica el primer post.
+- Comprueba los demás IDs y sus imágenes durante la grabación y limita la búsqueda al perfil asignado.
+- Aplica el cambio de modelo al reiniciar el bot, solicita un día de vencimiento para posts de solo texto y ajusta el intervalo lento a 22 segundos.
