@@ -89,3 +89,9 @@ El codificador mínimo se construye y verifica en `.github/workflows/windows-exe
 
 La referencia de origen es Dropper en el commit `1937fdb69988aa532806f5ad7967cde84a6d0669`. Las modificaciones y pruebas de integración se mantienen únicamente aquí.
 
+
+## Diagnóstico independiente de Mi perfil
+
+El workflow **Compilar diagnóstico de perfil** genera `AgencyKeyDiagnosticoPerfil.exe` para Windows. Abre el EXE con doble clic, introduce tu clave API de AgencyKey en la ventana y pulsa **Cargar modelos**. Selecciona una modelo, pulsa **Verificar perfil** e inicia sesión en Chrome cuando se solicite. Confirma el inicio de sesión en la ventana de diagnóstico. Puedes cambiar de modelo y repetir la prueba con la misma sesión.
+
+El diagnóstico usa Google Chrome instalado. La clave y la sesión se mantienen en memoria. La lista se consulta en AgencyKey y se muestran el estado HTTP de navegación, la identidad detectada y las señales del menú y de la cabecera si la verificación falla.
