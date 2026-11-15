@@ -50,8 +50,9 @@ class AccessFlowTests(unittest.TestCase):
         manager.connect_dialog.assert_called_once()
         manager.client.list_profiles.assert_not_called()
 
-    def test_automatic_check_only_requests_revisions_and_shows_notice(self):
+    def test_idle_check_only_requests_revisions_and_shows_notice(self):
         manager = self.manager()
+        manager.panels = {'one': SimpleNamespace(controller=SimpleNamespace(running=False))}
         manager.client = Mock()
         manager.client.profile_revisions.return_value = [{'id': 'one', 'revision': 2}]
         manager.profile_snapshot = {'one': (1, None)}
@@ -62,6 +63,17 @@ class AccessFlowTests(unittest.TestCase):
         manager.client.list_profiles.assert_not_called()
         manager.apply_profiles.assert_not_called()
         manager.update_hint.set.assert_called_once_with('Hay cambios disponibles')
+
+    def test_active_profile_revision_change_refreshes_configuration(self):
+        manager = self.manager()
+        manager.panels = {'one': SimpleNamespace(controller=SimpleNamespace(running=True))}
+        manager.client = Mock()
+        manager.client.profile_revisions.return_value = [{'id': 'one', 'revision': 2}]
+        manager.profile_snapshot = {'one': (1, None)}
+        manager.refresh = Mock()
+        manager.background = lambda work, complete, failed: complete(work())
+        manager.check_updates()
+        manager.refresh.assert_called_once_with()
 
     def test_saved_password_does_not_download_profiles_on_launch(self):
         manager = self.manager()

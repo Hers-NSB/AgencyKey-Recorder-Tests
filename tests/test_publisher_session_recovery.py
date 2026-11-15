@@ -73,7 +73,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(batch.failed)
         api.stop_requested = lambda: False
         await bot.resume(update(), ctx)
-        api.publish_text.assert_awaited_once_with(1, 'post 1', slow=False)
+        api.publish_text.assert_awaited_once_with(1, 'post 1', expire=True, slow=False)
         self.assertEqual((bot.session.automatic, bot.session.manual), (1, 0))
 
 
