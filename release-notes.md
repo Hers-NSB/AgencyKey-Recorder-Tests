@@ -1,3 +1,4 @@
-- Prepara Chrome en segundo plano durante el Drop y empieza a grabar cuando verifica el primer post.
-- Comprueba los demás IDs y sus imágenes durante la grabación y limita la búsqueda al perfil asignado.
-- Aplica el cambio de modelo al reiniciar el bot, solicita un día de vencimiento para posts de solo texto y ajusta el intervalo lento a 22 segundos.
+- Muestra el número del post que falló y ofrece Continuar en el teclado de Telegram.
+- Al continuar muestra el post y acepta su enlace de OnlyFans para reanudar el lote y grabar automáticamente.
+- Permite repetir la grabación o reintentar la entrega desde el teclado.
+- Vuelve a encuadrar el primer post cuando la carga del feed lo desplaza antes de grabar.

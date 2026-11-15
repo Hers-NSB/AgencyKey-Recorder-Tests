@@ -9,7 +9,7 @@ AGENCYKEY RECORDER TESTS - APP INDEPENDIENTE
    Inicia sesion en el Chrome que se abre en tu PC. La web comprueba los
    feeds pendientes y guarda el resultado. Si falla, pulsa Verificar feed
    en la fila de la modelo para reintentar.
-4. En la app selecciona un bot e inicialo. En Telegram usa /start,
+4. En la app selecciona un bot e inicialo. En Telegram pulsa Iniciar,
    reenvia los mensajes y elige Publicar normal o Publicar lento.
 5. La app prepara Chrome en segundo plano mientras publica. Cuando carga
    el primer post, empieza a grabar y verifica los demas durante el recorrido.
@@ -23,8 +23,9 @@ usan Chrome de tu PC y no consumen minutos de Cloudflare Browser Run.
 Conserva los ajustes de publicacion de Dropper, pero usa web, base,
 acceso y bots independientes. Requiere Chrome instalado. No necesita Python.
 Datos: %LOCALAPPDATA%\AgencyKeyRecorderTests.
-Repetir grabacion vuelve a generar el comprobante desde el aviso de error.
-/video recupera el comprobante. Para un post manual usa /id NUMERO ID.
-Comprueba el chat antes de /video reenviar si la entrega quedo incierta.
+Si falla un post, pulsa Continuar en el teclado de Telegram y pega su
+   enlace de OnlyFans para reanudar el Drop y grabar el comprobante.
+Repetir grabacion vuelve a generar el comprobante desde el teclado.
+Comprueba el chat antes de pulsar Reenviar video si la entrega quedo incierta.
 El comando menu abre las herramientas manuales de grabacion.
 

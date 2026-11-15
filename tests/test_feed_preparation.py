@@ -58,6 +58,19 @@ class FeedPreparationTests(IsolatedAsyncioTestCase):
         capture.assert_not_awaited()
         frame.evaluate.assert_not_awaited()
 
+    async def test_moves_first_post_back_into_frame_after_images_shift_it(self):
+        cards = [[{'id': '200', 'pinned': False, 'top': 260}],
+                 [{'id': '200', 'pinned': False, 'top': 115}]]
+        frame = SimpleNamespace(evaluate=AsyncMock(side_effect=[None, cards[0], None, cards[1]]))
+        page = SimpleNamespace(frames=[frame])
+        with patch.object(recorder, 'images_ready', new=AsyncMock()), \
+             patch.object(recorder, 'frame_is_visible', new=AsyncMock(return_value=True)), \
+             patch.object(recorder, 'scroll_down', new=AsyncMock()) as scroll:
+            result = await recorder.confirm_start(page, frame, '200', reframe=True)
+        self.assertEqual(result['post_id'], '200')
+        self.assertEqual(result['top'], 115)
+        scroll.assert_awaited_once_with(page, 145, frame=frame, anchor='200', smooth=False)
+
     async def test_expired_session_requests_reconnection_on_the_web(self):
         page=SimpleNamespace(url='https://app.agencykey.com/login')
         with self.assertRaisesRegex(ValueError,'panel web'):

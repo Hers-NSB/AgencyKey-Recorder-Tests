@@ -63,6 +63,7 @@ class PreparationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(batch.cleanup_ids, {10, 20})
         self.assertFalse(any(c.args[1] in {10, 20} for c in ctx.bot.delete_message.call_args_list))
         await bot.resume(update(), ctx)
+        await bot.menu(update('https://onlyfans.com/98/lilith'), ctx)
         self.assertEqual(batch.status, 'done')
         self.assertEqual(batch.manual, [1])
         self.assertTrue({10, 20}.issubset({c.args[1] for c in ctx.bot.delete_message.call_args_list}))

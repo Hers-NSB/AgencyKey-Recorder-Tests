@@ -163,7 +163,7 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
         bot=SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=8)))
         app=SimpleNamespace(create_task=lambda task:self.fail('missing ID must block recording'))
         await coordinator.start(batch,bot,42,app)
-        self.assertIn('/id',bot.send_message.call_args.args[1])
+        self.assertIn('indica sus IDs: 2',bot.send_message.call_args.args[1])
         self.assertFalse(coordinator.busy)
 
     async def test_unknown_delivery_is_preserved_and_requires_explicit_resend(self):
@@ -179,7 +179,8 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
             app=SimpleNamespace(create_task=lambda task:self.fail('unknown delivery must not retry itself'))
             await coordinator.start(batch,bot,42,app)
             bot.send_video.assert_awaited_once()
-            self.assertIn('/video reenviar',bot.send_message.call_args.args[1])
+            self.assertIn('Reenviar video',bot.send_message.call_args.args[1])
+            self.assertIn('Reenviar video', bot.send_message.call_args.kwargs['reply_markup'].keyboard[0][0].text)
 
     async def test_recording_error_never_sends_incomplete_video(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(recorder,'ROOT',Path(folder)):
@@ -189,20 +190,18 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
                 await coordinator.run(batch,bot,42)
             bot.send_video.assert_not_awaited()
             self.assertEqual(json.loads(coordinator.job_path(42).read_text())['status'],'error')
-            button = bot.send_message.call_args.kwargs['reply_markup'].inline_keyboard[0][0]
+            button = bot.send_message.call_args.kwargs['reply_markup'].keyboard[0][0]
             self.assertIn('Repetir grabación', button.text)
-            query = SimpleNamespace(data=button.callback_data, answer=AsyncMock())
-            update = SimpleNamespace(callback_query=query, effective_chat=SimpleNamespace(id=42))
+            from test_publisher_flow import update
+            event = update(button.text)
+            event.effective_chat.id = 42
             context = SimpleNamespace(user_data={}, bot=bot, application=object())
             publisher = DropperBot(SimpleNamespace(), batch.creator, coordinator)
             with patch.object(coordinator, 'start', new_callable=AsyncMock) as retry:
-                await publisher.retry_recording(update, context)
+                await publisher.menu(event, context)
                 self.assertEqual(retry.call_args.args[0].published_ids, batch.published_ids)
+                self.assertFalse(retry.call_args.kwargs['resend'])
                 retry.assert_awaited_once()
-                query.data = 'proof-retry:' + '0' * 32
-                await publisher.retry_recording(update, context)
-                retry.assert_awaited_once()
-                self.assertTrue(query.answer.call_args.kwargs['show_alert'])
 
     async def test_integrated_telegram_error_uses_safe_network_diagnosis(self):
         import httpx
@@ -231,6 +230,28 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
         batch.confirm_manual()
         self.assertEqual(batch.published_ids,{1:'101'})
         self.assertEqual(RecordingCoordinator.missing_ids(batch),[2])
+
+    async def test_manual_link_finishes_drop_and_automatically_schedules_proof(self):
+        from agencykey import AgencyKeyError
+        from bot import CONTINUE
+        from test_publisher_flow import context, update
+        batch = Batch(Creator(52, 'Modelo', 'modelo'))
+        batch.order = [1, 2]
+        batch.received = {1: Post('manual', None), 2: Post('automático', None)}
+        publish = AsyncMock(side_effect=[AgencyKeyError('error'), 102])
+        recording = SimpleNamespace(busy=False, start=AsyncMock(return_value=True), prepare_browser=lambda: None)
+        publisher = DropperBot(SimpleNamespace(publish_text=publish), batch.creator, recording)
+        ctx = context()
+        ctx.application = object()
+        ctx.user_data['batch'] = batch
+        await publisher.publish_batch(batch, update(), ctx)
+        await publisher.menu(update(CONTINUE), ctx)
+        recording.start.assert_not_awaited()
+        await publisher.menu(update('https://onlyfans.com/101/modelo'), ctx)
+        self.assertEqual(batch.published_ids, {1: '101', 2: '102'})
+        self.assertEqual(batch.manual, [1])
+        self.assertEqual(publish.await_count, 2)
+        recording.start.assert_awaited_once_with(batch, ctx.bot, 123, ctx.application)
 
     async def test_completed_drop_schedules_proof_with_original_chat(self):
         batch=Batch(Creator(52,'Modelo',None));batch.order=[1];batch.received={1:Post('text',None)}

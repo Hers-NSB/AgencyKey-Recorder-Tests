@@ -31,7 +31,7 @@ def batch_with_posts(count=3):
 
 
 class PublishingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_pause_copies_post_and_continue_confirms_manual(self):
+    async def test_pause_shows_only_continue_and_link_confirms_manual(self):
         api = SimpleNamespace(publish_text=AsyncMock(side_effect=[101, AgencyKeyError("fallo"), 103]))
         bot = DropperBot(api)
         ctx = context()
@@ -41,12 +41,19 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((batch.status, batch.cursor), ("paused", 1))
         self.assertEqual(api.publish_text.await_count, 2)
         notice = ctx.bot.send_message.call_args.args[1]
-        self.assertIn("#2 de 3", notice)
-        self.assertNotIn("fallo", notice)
-        self.assertIn("Sube este post manualmente", notice)
-        ctx.bot.copy_message.assert_awaited_once_with(chat_id=123, from_chat_id=123, message_id=2)
-        self.assertIsInstance(ctx.bot.send_message.call_args.kwargs["reply_markup"], ReplyKeyboardMarkup)
+        self.assertEqual(notice, "⏸️ Falló el post #2 de 3 · Modelo")
+        ctx.bot.copy_message.assert_not_awaited()
+        keyboard = ctx.bot.send_message.call_args.kwargs["reply_markup"]
+        self.assertIsInstance(keyboard, ReplyKeyboardMarkup)
+        self.assertEqual([[button.text for button in row] for row in keyboard.keyboard], [[CONTINUE]])
         await bot.menu(update(CONTINUE), ctx)
+        ctx.bot.copy_message.assert_awaited_once_with(chat_id=123, from_chat_id=123, message_id=2)
+        self.assertEqual((batch.status, batch.cursor), ("paused", 1))
+        for link in ("inválido", "https://onlyfans.com/102/otra", "https://onlyfans.com/101/modelo"):
+            await bot.menu(update(link), ctx)
+            self.assertEqual(batch.cursor, 1)
+        await bot.menu(update("https://onlyfans.com/102/modelo"), ctx)
+        self.assertEqual(batch.published_ids, {1: "101", 2: "102", 3: "103"})
         self.assertEqual((batch.status, batch.cursor, batch.manual), ("done", 3, [2]))
         self.assertEqual([c.args[1] for c in api.publish_text.call_args_list], ["post 1", "post 2", "post 3"])
         self.assertIn("Total de post: 3 posts", ctx.bot.send_message.call_args.args[1])
@@ -61,8 +68,9 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         ctx.user_data["batch"] = batch
         await bot.publish_batch(batch, update(), ctx)
         self.assertTrue(batch.uncertain)
-        self.assertIn("Revisa si aparece en el feed", ctx.bot.send_message.call_args.args[1])
-        await bot.resume(update(), ctx)
+        await bot.menu(update(CONTINUE), ctx)
+        self.assertIn("Si ya aparece en el muro", ctx.bot.send_message.call_args.args[1])
+        await bot.menu(update("https://onlyfans.com/101/modelo"), ctx)
         self.assertEqual((batch.status, batch.manual), ("done", [1]))
         self.assertEqual(api.publish_text.await_count, 1)
         self.assertIn("Total de post: 1 posts", ctx.bot.send_message.call_args.args[1])
@@ -76,7 +84,7 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((batch.status, batch.cursor), ("paused", 0))
         self.assertEqual(api.publish_text.await_count, 1)
         self.assertNotIn("RuntimeError", ctx.bot.send_message.call_args.args[1])
-        self.assertIn("Sube este post manualmente", ctx.bot.send_message.call_args.args[1])
+        self.assertEqual(ctx.bot.send_message.call_args.args[1], "⏸️ Falló el post #1 de 3 · Modelo")
 
     async def test_photo_download_failure_stops_before_api(self):
         from telegram.error import NetworkError
@@ -91,7 +99,8 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(batch.status, "paused")
         api.publish_photo.assert_not_awaited()
         api.publish_text.assert_not_awaited()
-        await bot.resume(update(), ctx)
+        await bot.menu(update(CONTINUE), ctx)
+        await bot.menu(update("https://onlyfans.com/101/modelo"), ctx)
         api.publish_text.assert_awaited_once_with(1, "post 2", expire=True, slow=False)
 
     async def test_photo_and_text_publish_newest_message_first(self):
@@ -122,9 +131,10 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         await bot.publish(update(), ctx)
 
         self.assertEqual((batch.order, batch.cursor), ([3, 2, 1], 0))
+        self.assertEqual(ctx.bot.send_message.call_args.args[1], "⏸️ Falló el post #1 de 3 · Modelo")
+        await bot.menu(update(CONTINUE), ctx)
         ctx.bot.copy_message.assert_awaited_once_with(chat_id=123, from_chat_id=123, message_id=3)
-        self.assertIn("AgencyKey rechazó la mención @ask_lola", ctx.bot.send_message.call_args.args[1])
-        await bot.resume(update(), ctx)
+        await bot.menu(update("https://onlyfans.com/101/modelo"), ctx)
 
         self.assertEqual([call.args[1] for call in api.publish_text.call_args_list],
                          ["Hola @ask_lola.", "post 2", "post 1"])
@@ -155,7 +165,7 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         ctx.user_data["batch"] = batch
         await DropperBot(SimpleNamespace()).report(update(), ctx)
         self.assertLess(len(ctx.bot.send_message.call_args.args[1]), 500)
-        ctx.bot.copy_message.assert_awaited_once()
+        ctx.bot.copy_message.assert_not_awaited()
         ctx.bot.send_photo.assert_not_awaited()
 
     async def test_failed_notification_does_not_republish_successful_post(self):

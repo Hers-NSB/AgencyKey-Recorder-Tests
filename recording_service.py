@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from time import time, monotonic
 from urllib.parse import urlparse
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 
 import recorder
@@ -17,7 +17,9 @@ from cloud_client import CloudError
 
 
 AGENCYKEY_SIGN_IN = 'https://app.agencykey.com/auth/signin'
-RETRY_RECORDING_PREFIX = 'proof-retry:'
+RETRY_RECORDING = '🎥 Repetir grabación'
+RETRY_DELIVERY = '🎥 Reintentar video'
+RESEND_PROOF = '📤 Reenviar video'
 RECORDING_STEPS = {
     'preparando comprobante': 'Preparando el comprobante',
     'cargando sesión de AgencyKey': 'Abriendo la sesión guardada de AgencyKey',
@@ -206,7 +208,7 @@ class BrowserPreparation:
         if stop_event:
             while not self.task.done():
                 if stop_event.is_set():
-                    raise ValueError('Grabación detenida · Usa /video para reintentar el comprobante')
+                    raise ValueError('Grabación detenida · Pulsa Repetir grabación para reintentar el comprobante')
                 await asyncio.wait({self.task}, timeout=0.25)
         return await self.task
 
@@ -240,6 +242,12 @@ class RecordingCoordinator:
             log.info('%s', stage)
             self.last_recording_step = stage
 
+    def proof_keyboard(self, action):
+        rows = [[action]]
+        if self.completion_markup:
+            rows.extend(self.completion_markup.keyboard)
+        return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
+
     def prepare_browser(self):
         if not self.session_client:
             return None
@@ -269,7 +277,7 @@ class RecordingCoordinator:
         missing = self.missing_ids(batch)
         if missing:
             await bot.send_message(chat_id, 'Para grabar también los posts manuales, indica sus IDs: '
-                                   + ', '.join(map(str, missing)) + '\nUsa /id NUMERO ID_O_ENLACE y después /video')
+                                   + ', '.join(map(str, missing)))
             return
         path = self.job_path(chat_id)
         previous = json.loads(path.read_text()) if path.exists() else {}
@@ -281,7 +289,8 @@ class RecordingCoordinator:
                 return
             if previous.get('status') in {'sending', 'delivery_unknown'} and not resend:
                 await bot.send_message(chat_id, 'Entrega anterior sin confirmar · Revisa el chat y, '
-                                       'si no llegó, usa /video reenviar')
+                                       'si no llegó, pulsa Reenviar video',
+                                       reply_markup=self.proof_keyboard(RESEND_PROOF))
                 return
         self.busy = True
         async def work():
@@ -326,7 +335,7 @@ class RecordingCoordinator:
                 job['status'] = 'recording'
                 recorder.save_json(path, job)
                 try:
-                    await bot.send_message(chat_id, '🎥 Preparando video…')
+                    await bot.send_message(chat_id, '🎥 Preparando video…', reply_markup=ReplyKeyboardRemove())
                 except TelegramError:
                     log.warning('Comprobante | No se pudo entregar el aviso inicial; la grabación continúa.')
                 ids = [recorder.post_id(batch.published_ids[n]) for n in range(len(batch.order), 0, -1)]
@@ -388,12 +397,13 @@ class RecordingCoordinator:
             job.update(status='delivery_unknown' if uncertain else 'error', error_type=type(error).__name__)
             if uncertain and 'La entrega no está confirmada' not in detail:
                 detail += ' Comprueba si el video llegó antes de reenviarlo.'
-            message = detail if uncertain else f'{detail} Usa /video para reintentar.'
+            message = detail if uncertain else f'{detail} Pulsa Reintentar video.'
             self.emit('recording', {'stage': message, 'error': True, 'completed': 0, 'total': len(batch.order)})
             log.error('Comprobante | %s | Entrega incierta: %s', detail, uncertain)
             try:
-                await bot.send_message(chat_id, '⚠️ Envío sin confirmar · Revisa el chat antes de usar /video reenviar'
-                                       if uncertain else '❌ No se pudo enviar el video · Usa /video para reintentar')
+                await bot.send_message(chat_id, '⚠️ Envío sin confirmar · Revisa el chat antes de reenviar'
+                                       if uncertain else '❌ No se pudo enviar el video',
+                                       reply_markup=self.proof_keyboard(RESEND_PROOF if uncertain else RETRY_DELIVERY))
             except TelegramError:
                 pass
         except Exception as error:
@@ -414,9 +424,7 @@ class RecordingCoordinator:
             self.emit('recording', {'stage': message, 'error': True, 'completed': 0, 'total': len(batch.order)})
             log.error('%s', message)
             recorder.save_json(path, job)
-            retry = InlineKeyboardMarkup([[InlineKeyboardButton(
-                '🎥 Repetir grabación', callback_data=f'{RETRY_RECORDING_PREFIX}{batch.id}'
-            )]])
+            retry = self.proof_keyboard(RETRY_RECORDING)
             try:
                 await bot.send_message(chat_id, '❌ ' + message.removesuffix('.'), reply_markup=retry)
             except TelegramError:
