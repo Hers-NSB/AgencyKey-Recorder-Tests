@@ -210,6 +210,7 @@ test('admin queues a local Chrome connection and only the claiming app can compl
  const next=(await (await desktop(env,'POST',claim)).json()).job;
  assert.equal(next.kind,'feed');
  assert.equal(next.creator_id,52);
+ assert.equal(next.creator_username,'model_52');
  assert.equal(next.id,feed.id);
  assert.equal((await (await request(env,'POST',root+'/cancel',{id:feed.id},cookie)).json()).status,'cancelled');
  assert.deepEqual(await (await desktop(env,'PUT',claim,{id:feed.id,claim:next.claim})).json(),{active:false});
@@ -238,7 +239,14 @@ test('persists profile checks across session refreshes and invalidates them when
  assert.equal((await complete('/feed/'+firstId,{status:'ready'})).status,'desktop_update_required');
  assert.equal((await complete('/feed/'+firstId,{status:'feed_unverified',feed_checked:true})).status,'desktop_update_required');
  assert.equal(await status(),'desktop_update_required');
- assert.equal((await complete('/feed/'+firstId,{status:'ready',profile_checked:true})).status,'ready');
+ assert.equal((await complete('/feed/'+firstId,{status:'ready',profile_checked:true})).status,'desktop_update_required');
+ const mismatch=await complete('/feed/'+firstId,{status:'ready',identity_checked:true,observed_username:'otra_modelo'});
+ assert.equal(mismatch.status,'wrong_profile');
+ assert.equal(mismatch.expected_username,'model_52');
+ assert.equal(mismatch.observed_username,'otra_modelo');
+ assert.equal(await status(),'wrong_profile');
+ assert.equal((await complete('/feed/'+firstId,{status:'ready',identity_checked:true})).status,'profile_unverified');
+ assert.equal((await complete('/feed/'+firstId,{status:'ready',identity_checked:true,observed_username:'Model_52'})).status,'ready');
  const session=await (await desktop(env,'GET','/v1/recording-session')).json();
  assert.equal((await desktop(env,'PUT','/v1/recording-session',{state,revision:session.revision})).status,200);
  assert.equal(await status(),'ready');

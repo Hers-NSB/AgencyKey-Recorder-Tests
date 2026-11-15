@@ -50,19 +50,25 @@ function render(){
  feedRows.clear();$('profiles-body').replaceChildren();$('empty').hidden=profiles.length>0;
  for(const profile of profiles){const row=document.createElement('div');row.className='bot-row';const details=document.createElement('div');const name=document.createElement('div');name.className='model-name';name.textContent=profile.creator.name;details.append(name);const user=document.createElement('div');user.className='muted';user.textContent=(profile.creator.username?'@'+profile.creator.username+' · ':'')+'Token configurado';details.append(user);const feed=document.createElement('div');feed.className='muted';feed.textContent=feedLabel(profile.feed);feed.setAttribute('aria-live','polite');details.append(feed);const actions=document.createElement('div');actions.className='row-actions';const edit=document.createElement('button');edit.textContent='Editar';edit.setAttribute('aria-label','Editar '+profile.creator.name);edit.addEventListener('click',()=>openProfile(profile));const remove=document.createElement('button');remove.textContent='Eliminar';remove.className='danger';remove.setAttribute('aria-label','Eliminar '+profile.creator.name);remove.addEventListener('click',()=>deleteProfile(profile,remove));const verify=document.createElement('button');verify.textContent='Verificar Mi perfil';verify.setAttribute('aria-label','Verificar Mi perfil de '+profile.creator.name);verify.addEventListener('click',()=>verifyFeed(profile,feed,verify));actions.append(verify,edit,remove);feedRows.set(profile.id,{profile,status:feed,button:verify});row.append(details,actions);$('profiles-body').append(row);}
 }
-const feedMessages={pending:'Mi perfil pendiente de verificar',ready:'Mi perfil verificado',no_session:'Sin sesión guardada · Conecta AgencyKey',
+const feedMessages={pending:'Mi perfil pendiente de verificar',ready:'Mi perfil coincide con la modelo asignada',no_session:'Sin sesión guardada · Conecta AgencyKey',
  login_required:'AgencyKey pide iniciar sesión · Reconecta',unavailable:'Chrome no tiene acceso a Mi perfil',
  wrong_profile:'Chrome no abrió Mi perfil de la modelo seleccionada',
  profile_not_visible:'Chrome pulsó Mi perfil, pero la vista no terminó de cargar',
  profile_menu_missing:'Chrome abrió la modelo, pero no encontró Mi perfil',
- feed_unverified:'Mi perfil abrió, pero el feed no mostró publicaciones',
+ feed_unverified:'Verificación anterior · Vuelve a verificar Mi perfil',
+ profile_unverified:'No se pudo verificar el perfil',
  connection_error:'La app no pudo abrir AgencyKey en tu PC',
  desktop_update_required:'Actualiza la app de Windows y vuelve a verificar',
  desktop_offline:'La app de Windows no recibió la solicitud de verificación',expired:'La comprobación caducó',
  cancelled:'Comprobación cancelada'};
 function feedLabel(result){
  const time=result?.checked_at?new Date(result.checked_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
- return (feedMessages[result?.status]||feedMessages.pending)+(time?' · '+time:'');
+ let label=feedMessages[result?.status]||feedMessages.pending;
+ if(result?.status==='wrong_profile'&&result.expected_username&&result.observed_username
+    && result.expected_username.toLowerCase()!==result.observed_username.toLowerCase()){
+  label='Se esperaba @'+result.expected_username+' y Chrome abrió @'+result.observed_username;
+ }
+ return label+(time?' · '+time:'');
 }
 async function verifyFeed(profile, status, button){
  if(feedBusy)return;
@@ -74,7 +80,7 @@ async function verifyFeed(profile, status, button){
   let result=await api('/recording-session/feed/'+profile.id,{method:'POST',body:'{}'});
   const id=result.id;
   while(['queued','running','finishing'].includes(result.status)&&status.isConnected){
-   status.textContent=result.status==='queued'?'Esperando la app de Windows…':'Comprobando Mi perfil en Chrome de tu PC…';
+   status.textContent=result.status==='queued'?'Esperando la app de Windows…':'Comprobando la identidad del perfil en Chrome…';
    await new Promise(resolve=>setTimeout(resolve,2500));
    result=await checkDesktopJob(id);
   }

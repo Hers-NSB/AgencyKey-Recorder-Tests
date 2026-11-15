@@ -8,7 +8,7 @@ El proyecto se basa en Dropper y funciona con su propia app, bots y servidor.
 
 | Función | Qué verás |
 | --- | --- |
-| Verificación de Mi perfil | Al vincular una modelo o conectar AgencyKey, el panel usa Chrome para abrir Mi perfil y comprobar que se puede acceder a sus publicaciones. Guarda el resultado para esa modelo y sesión y permite reintentar si falla. |
+| Verificación de Mi perfil | Al vincular una modelo o conectar AgencyKey, el panel usa Chrome para abrir Mi perfil y comparar la cuenta que muestra Chrome con la modelo asignada. La comprobación funciona con el muro vacío y se renueva al cambiar de modelo. El grabador verifica la misma identidad antes de buscar el primer post del lote. |
 | Grabación en segundo plano | La app prepara Chrome y abre el perfil durante la publicación del lote. |
 | Ritmo de publicación | **Publicar normal** (11 segundos) y **Publicar lento** (22 segundos) aparecen al recibir el primer mensaje válido. |
 | Formato | El bot conserva el texto original y la foto cuando viene adjunta. Las publicaciones de solo texto y las que incluyen una foto solicitan un vencimiento de un día. |

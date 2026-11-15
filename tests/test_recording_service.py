@@ -49,7 +49,7 @@ class DesktopRecordingJobTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(await agencykey_login_complete(page))
                 page.locator.assert_not_called()
 
-    async def test_feed_check_uses_only_the_selected_model_route_and_saved_session(self):
+    async def test_web_check_verifies_identity_without_searching_for_posts(self):
         state = {'cookies': [], 'origins': []}
         url = 'https://app.agencykey.com/models/98'
         password = SimpleNamespace(is_visible=AsyncMock(return_value=False))
@@ -59,16 +59,18 @@ class DesktopRecordingJobTests(unittest.IsolatedAsyncioTestCase):
         browser = SimpleNamespace(new_context=AsyncMock(return_value=context), close=AsyncMock())
         client = SimpleNamespace(recording_session=Mock(return_value={'state': state}),
                                  update_recording_job=Mock(return_value={'active': False}))
-        job = {'kind': 'feed', 'creator_id': 98}
+        job = {'kind': 'feed', 'creator_id': 98, 'creator_username': 'modelo'}
         with patch.object(recorder, 'launch_browser', new=AsyncMock(return_value=browser)) as launch, \
+             patch.object(recorder, 'wait_for_model_identity', new=AsyncMock(return_value='modelo')) as identify, \
              patch.object(recorder, 'wait_for_feed', new=AsyncMock()) as check_feed:
             await run_desktop_recording_job(client, job, threading.Event())
         self.assertTrue(launch.call_args.kwargs['headless'])
-        check_feed.assert_awaited_once()
-        self.assertEqual(check_feed.call_args.args, (page, url))
+        identify.assert_awaited_once()
+        self.assertEqual(identify.call_args.args, (page, url, 'modelo'))
+        check_feed.assert_not_awaited()
         self.assertIs(browser.new_context.call_args.kwargs['storage_state'], state)
         page.goto.assert_awaited_once_with(url, wait_until='domcontentloaded', timeout=30000)
-        client.update_recording_job.assert_called_once_with(job, status='ready', profile_checked=True)
+        client.update_recording_job.assert_called_once_with(job, status='ready', observed_username='modelo', identity_checked=True)
 
     async def test_feed_check_rejects_login_access_errors_and_other_models(self):
         origin = 'https://app.agencykey.com'
@@ -89,7 +91,36 @@ class DesktopRecordingJobTests(unittest.IsolatedAsyncioTestCase):
                 page = SimpleNamespace(url=origin + path, goto=AsyncMock(return_value=response),
                                        wait_for_timeout=AsyncMock(),
                                        locator=Mock(return_value=SimpleNamespace(first=password)))
-                self.assertEqual(await verify_profile_route(page, origin + '/models/98'), result)
+                check = await verify_profile_route(page, origin + '/models/98', 'modelo')
+                self.assertEqual(check['status'], result)
+
+
+class ProfileIdentityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_matching_visible_profile_needs_only_the_header(self):
+        url = recorder.model_profile_url(52)
+        header = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+        frame = SimpleNamespace(url='https://of-52.agencykey.com/modelo',
+                                locator=Mock(return_value=SimpleNamespace(first=header)))
+        page = SimpleNamespace(url=url, frames=[frame])
+        with patch.object(recorder, 'agencykey_sign_in_visible', new=AsyncMock(return_value=False)), \
+             patch.object(recorder, 'frame_is_visible', new=AsyncMock(return_value=True)):
+            found = await recorder.wait_for_model_identity(page, url, '@Modelo', deadline=recorder.monotonic() + 5)
+        self.assertEqual(found, 'modelo')
+        frame.locator.assert_called_once_with(recorder.PROFILE_HEADER)
+
+    async def test_other_model_is_reported_and_unidentified_profile_never_passes(self):
+        url = recorder.model_profile_url(52)
+        page = SimpleNamespace(url=url, wait_for_timeout=AsyncMock())
+        for observed, status in [({(99, 'otra')}, 'wrong_profile'), (set(), 'profile_unverified')]:
+            with self.subTest(status=status), \
+                 patch.object(recorder, 'monotonic', side_effect=[0, 10]), \
+                 patch.object(recorder, 'agencykey_sign_in_visible', new=AsyncMock(return_value=False)), \
+                 patch.object(recorder, 'visible_model_profiles', new=AsyncMock(return_value=observed)), \
+                 patch.object(recorder, 'open_my_profile', new=AsyncMock(return_value=False)):
+                with self.assertRaises(recorder.FeedAccessError) as caught:
+                    await recorder.wait_for_model_identity(page, url, 'modelo', deadline=5)
+            self.assertEqual(caught.exception.status, status)
+            self.assertEqual(caught.exception.observed, 'otra' if observed else None)
 
 
 class ProofTests(unittest.IsolatedAsyncioTestCase):
