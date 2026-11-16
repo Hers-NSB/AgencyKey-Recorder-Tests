@@ -1,0 +1,28 @@
+name: Publicar copia del diagnóstico
+on:
+  push:
+    branches: [publicar-diagnostico-perfil]
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: AgencyKeyDiagnosticoPerfil
+          run-id: 43942251448
+          github-token: ${{ github.token }}
+          path: diagnostic
+      - name: Publicar ejecutable de prueba
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create diagnostico-perfil-prueba-1 diagnostic/AgencyKeyDiagnosticoPerfil.exe \
+            --repo "$GITHUB_REPOSITORY" --target b416294ee848e5f95dc4af55f581d02eafbe657d \
+            --prerelease --latest=false --title 'AgencyKey · Diagnóstico de perfil para Windows' \
+            --notes 'Copia del ejecutable independiente probado con Luna → Sheryn → Luna. En Windows, abre el EXE y marca Verificar en la misma pestaña del inicio de sesión. Si el perfil queda sin verificar, la app reabre la misma ruta una vez. El flujo de grabación del programa principal se sigue probando por separado.'
+          gh release download diagnostico-perfil-prueba-1 --repo "$GITHUB_REPOSITORY" --pattern AgencyKeyDiagnosticoPerfil.exe --dir verified
+          cmp diagnostic/AgencyKeyDiagnosticoPerfil.exe verified/AgencyKeyDiagnosticoPerfil.exe
