@@ -109,6 +109,15 @@ async def agencykey_login_complete(page):
 
 
 async def verify_profile_route(page, url, username):
+    result = await check_profile_route(page, url, username)
+    if (result['status'] == 'profile_unverified' and recorder.profile_username(username)
+            and not page.is_closed()):
+        log.info('Verificación de Mi perfil | Reabriendo la misma ruta en Chrome.')
+        result = await check_profile_route(page, url, username)
+    return result
+
+
+async def check_profile_route(page, url, username):
     response = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
     if response is None:
         return {'status': 'connection_error'}

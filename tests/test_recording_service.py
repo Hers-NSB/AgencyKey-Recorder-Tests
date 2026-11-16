@@ -72,6 +72,28 @@ class DesktopRecordingJobTests(unittest.IsolatedAsyncioTestCase):
         page.goto.assert_awaited_once_with(url, wait_until='domcontentloaded', timeout=30000)
         client.update_recording_job.assert_called_once_with(job, status='ready', observed_username='modelo', identity_checked=True)
 
+    async def test_web_check_reopens_only_an_unverified_profile(self):
+        url = recorder.model_profile_url(98)
+        for status in ('profile_unverified', 'wrong_profile', 'login_required'):
+            with self.subTest(status=status):
+                page = SimpleNamespace(is_closed=lambda: False, goto=AsyncMock(
+                    return_value=SimpleNamespace(status=200, ok=True),
+                ))
+                error = recorder.FeedAccessError(status, 'Perfil pendiente')
+                with patch.object(recorder, 'wait_for_model_identity', new=AsyncMock(
+                    side_effect=[error, 'modelo'],
+                )) as identify:
+                    result = await verify_profile_route(page, url, 'modelo')
+                if status == 'profile_unverified':
+                    self.assertEqual(result, {'status': 'ready', 'observed_username': 'modelo'})
+                    self.assertEqual([call.args for call in page.goto.await_args_list], [(url,), (url,)])
+                    self.assertEqual([call.args for call in identify.await_args_list],
+                                     [(page, url, 'modelo'), (page, url, 'modelo')])
+                else:
+                    self.assertEqual(result['status'], status)
+                    page.goto.assert_awaited_once()
+                    identify.assert_awaited_once()
+
     async def test_feed_check_rejects_login_access_errors_and_other_models(self):
         origin = 'https://app.agencykey.com'
         for path, status, password_visible, result in [
