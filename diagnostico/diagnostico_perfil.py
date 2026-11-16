@@ -521,7 +521,10 @@ class DiagnosticWindow:
                 raise
         elif await agencykey_sign_in_visible(self.page) and not await self.wait_for_login(self.page):
             return
-        await self.verify_page(self.page, url, username, model_id)
+        status = await self.verify_page(self.page, url, username, model_id)
+        if status == 'profile_unverified' and not self.closing.is_set() and not self.page.is_closed():
+            self.emit('Reintento automático · volviendo a abrir el mismo perfil en esta pestaña.')
+            await self.verify_page(self.page, url, username, model_id)
 
     async def verify_page(self, page, url, username, model_id):
         def report_response(response):
@@ -625,6 +628,7 @@ async def smoke_browser():
             window = DiagnosticWindow.__new__(DiagnosticWindow)
             window.page = page
             window.events = queue.Queue()
+            window.closing = threading.Event()
             await window.check_same_tab(model_url, 'modelo', '52')
             if await page.evaluate("sessionStorage.getItem('diagnostic-test')") != 'same-tab':
                 raise RuntimeError('La comprobación perdió la sesión de la pestaña.')
