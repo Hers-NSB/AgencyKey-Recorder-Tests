@@ -25,6 +25,7 @@ RECORDING_STEPS = {
     'cargando sesión de AgencyKey': 'Abriendo la sesión guardada de AgencyKey',
     'iniciando Chrome': 'Iniciando Chrome',
     'abrir perfil': 'Abriendo el perfil de la modelo',
+    'reabriendo el perfil para verificar la identidad': 'Reabriendo el mismo perfil en Chrome',
     'verificando identidad de la modelo': 'Verificando la cuenta abierta de AgencyKey',
     'reintentando abrir el perfil por un fallo de conexión': 'La conexión se interrumpió. Intentando abrir el perfil otra vez',
     'cargando feed e imágenes': 'Buscando las publicaciones de la modelo y cargando sus fotos',
@@ -260,7 +261,7 @@ class RecordingCoordinator:
             url = recorder.model_profile_url(self.creator.external_id)
             await recorder.navigate_recording_page(page, url, stop_event=self.stop_event)
             if recorder.same_profile_route(page.url, url):
-                await recorder.open_my_profile(page)
+                await recorder.open_my_profile(page, profile_url=url)
             return (page, context), shared
 
         return BrowserPreparation(prepare)

@@ -1,7 +1,7 @@
 name: Ejecutable Windows
 on:
   push:
-    branches: [main, feat/independent-publisher-recorder, fix/session-ui-autosave, fix/telegram-feed-verification]
+    branches: [main, feat/independent-publisher-recorder, fix/session-ui-autosave, fix/telegram-feed-verification, test/recorder-profile-retry]
   workflow_dispatch:
 permissions:
   contents: read
@@ -139,3 +139,17 @@ jobs:
           cmp dist/AgencyKeyRecorderTests.exe verified-release/AgencyKeyRecorderTests.exe
           cmp LEEME-EXE.txt verified-release/LEEME-EXE.txt
           cmp vendor/encoder/encoder-sources.tar.gz verified-release/encoder-sources.tar.gz
+
+      - name: Publish profile verification prerelease
+        if: github.ref == 'refs/heads/test/recorder-profile-retry'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="recorder-profile-test-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          gh release create "$tag" dist/AgencyKeyRecorderTests.exe LEEME-EXE.txt \
+            vendor/encoder/encoder-sources.tar.gz --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --prerelease --latest=false --title "AgencyKey Recorder Tests · Prueba de verificación de perfil" \
+            --notes-file release-notes.md
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern AgencyKeyRecorderTests.exe --dir verified-preview
+          cmp dist/AgencyKeyRecorderTests.exe verified-preview/AgencyKeyRecorderTests.exe

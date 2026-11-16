@@ -829,19 +829,18 @@ async def navigate_recording_page(page, url, *, fixture=None, stop_event=None, s
             raise ValueError('AgencyKey no pudo cargar el perfil. Pulsa Repetir grabación para intentarlo de nuevo.')
 
 
-async def page_has_post(page, url, post_id):
-    from playwright.async_api import Error as PlaywrightError
-    if not same_profile_route(page.url, url):
-        return False
+async def verify_recording_identity(page, url, username, *, stop_event=None, stage=None):
     try:
-        frame = await post_frame(page, post_id, profile_url=url)
-        return frame is not None and any(
-            card['id'] == post_id and not card['pinned'] for card in await frame.evaluate(SNAPSHOT)
-        )
-    except PlaywrightError as error:
-        if transient_frame_error(error):
-            return False
-        raise
+        return await wait_for_model_identity(page, url, username, deadline=monotonic() + 35)
+    except FeedAccessError as error:
+        if (error.status != 'profile_unverified' or page.is_closed()
+                or (stop_event and stop_event.is_set()) or not profile_username(username)):
+            raise
+
+    if stage:
+        stage('reabriendo el perfil para verificar la identidad')
+    await navigate_recording_page(page, url, stop_event=stop_event, stage=stage)
+    return await wait_for_model_identity(page, url, username, deadline=monotonic() + 35)
 
 
 async def record(config: dict, *, fixture: Path | None = None, headless: bool = False, dwell: float = 0,
@@ -888,12 +887,12 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             stage('abrir perfil')
             print('Etapa: abrir perfil', flush=True)
             url = fixture.resolve().as_uri() if fixture else config['profile_url']
-            if prepared_page is None or not await page_has_post(page, url, report['first_post_id']):
+            if prepared_page is None or not same_profile_route(page.url, url):
                 await navigate_recording_page(page, url, fixture=fixture, stop_event=stop_event, stage=stage)
             if not fixture and 'creator_username' in config:
                 stage('verificando identidad de la modelo')
-                verified_username = await wait_for_model_identity(
-                    page, url, config['creator_username'], deadline=monotonic() + 35)
+                verified_username = await verify_recording_identity(
+                    page, url, config['creator_username'], stop_event=stop_event, stage=stage)
             else:
                 verified_username = None
             stage('cargando feed e imágenes')
@@ -912,7 +911,8 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 raise FeedAccessError('wrong_profile', 'El perfil activo cambió antes de iniciar el comprobante')
             if verified_username:
                 identity = profile_frame_identity(first['_frame'])
-                if not identity or identity[1] != verified_username:
+                expected_id = int(urlparse(url).path.rstrip('/').rsplit('/', 1)[-1])
+                if identity != (expected_id, verified_username):
                     raise FeedAccessError('wrong_profile', 'El panel del primer post pertenece a otro perfil')
             report['start_verified'] = await confirm_start(
                 page, first['_frame'], report['first_post_id'], reframe=True,

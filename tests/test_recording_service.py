@@ -123,6 +123,27 @@ class ProfileIdentityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(caught.exception.observed, 'otra' if observed else None)
 
 
+    async def test_recording_reopens_only_an_unverified_profile_in_the_same_page(self):
+        page = SimpleNamespace(is_closed=lambda: False)
+        url = recorder.model_profile_url(52)
+        for status in ('profile_unverified', 'wrong_profile', 'login_required'):
+            with self.subTest(status=status):
+                error = recorder.FeedAccessError(status, 'Perfil pendiente')
+                with patch.object(recorder, 'wait_for_model_identity', new=AsyncMock(
+                    side_effect=[error, 'modelo'],
+                )) as identify, patch.object(recorder, 'navigate_recording_page', new=AsyncMock()) as navigate:
+                    if status == 'profile_unverified':
+                        self.assertEqual(await recorder.verify_recording_identity(page, url, 'modelo'), 'modelo')
+                        navigate.assert_awaited_once_with(page, url, stop_event=None, stage=None)
+                        self.assertEqual([call.args for call in identify.await_args_list],
+                                         [(page, url, 'modelo'), (page, url, 'modelo')])
+                    else:
+                        with self.assertRaises(recorder.FeedAccessError) as caught:
+                            await recorder.verify_recording_identity(page, url, 'modelo')
+                        self.assertIs(caught.exception, error)
+                        navigate.assert_not_awaited()
+
+
 class ProofTests(unittest.IsolatedAsyncioTestCase):
     def batch(self):
         batch = Batch(Creator(52, 'Modelo', None))
