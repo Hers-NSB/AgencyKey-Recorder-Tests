@@ -94,6 +94,18 @@ async def agencykey_sign_in_visible(page):
             or await page.locator('input[type="password"]:visible').first.is_visible())
 
 
+async def agencykey_login_complete(page):
+    from playwright.async_api import Error as BrowserError
+
+    current = urlparse(page.url)
+    if (current.scheme, current.netloc) != ('https', 'app.agencykey.com'):
+        return False
+    try:
+        return not await agencykey_sign_in_visible(page) and await page.locator('body').is_visible()
+    except BrowserError:
+        return False
+
+
 async def my_profile_visible(page):
     # Profile-specific controls also work when the sidebar has no ARIA selected state.
     edit = re.compile(r'^\s*(?:Editar perfil|Edit profile)\s*$', re.IGNORECASE)
@@ -301,7 +313,6 @@ class DiagnosticWindow:
     def __init__(self, root):
         self.root = root
         self.events = queue.Queue()
-        self.login_confirmed = threading.Event()
         self.models = []
         self.session = None
         self.key = tk.StringVar()
@@ -338,9 +349,6 @@ class DiagnosticWindow:
 
         ttk.Checkbutton(panel, text='Mostrar Chrome durante la verificación', variable=self.visible).grid(
             row=8, column=0, sticky='w')
-        self.confirm_button = ttk.Button(panel, text='Confirmar inicio de sesión',
-                                         command=self.login_confirmed.set, state='disabled')
-        self.confirm_button.grid(row=8, column=1, padx=(8, 0))
         self.reconnect_button = ttk.Button(panel, text='Cambiar sesión de Chrome', command=self.clear_session)
         self.reconnect_button.grid(row=9, column=0, sticky='w', pady=(8, 0))
 
@@ -422,23 +430,18 @@ class DiagnosticWindow:
                     if response and not response.ok:
                         self.emit(f'El inicio de sesión respondió HTTP {response.status}.')
                         return
-                    self.login_confirmed.clear()
-                    self.events.put(('confirm', None))
-                    self.emit('Inicia sesión en Chrome. Después, pulsa Confirmar inicio de sesión.')
+                    self.emit('Inicia sesión en Chrome. La verificación continuará automáticamente.')
                     deadline = monotonic() + 240
                     while not page.is_closed() and monotonic() < deadline:
-                        if self.login_confirmed.is_set():
-                            self.login_confirmed.clear()
-                            if urlparse(page.url).hostname == 'app.agencykey.com' and not await agencykey_sign_in_visible(page):
-                                self.session = await context.storage_state(indexed_db=True)
-                                break
-                            self.emit('AgencyKey todavía muestra el acceso. Termina de iniciar sesión en Chrome.')
-                        await asyncio.sleep(.25)
+                        if await agencykey_login_complete(page):
+                            self.session = await context.storage_state(indexed_db=True)
+                            self.emit('Sesión de AgencyKey detectada.')
+                            break
+                        await asyncio.sleep(.7)
                     if self.session is None:
                         self.emit('Se cerró Chrome o venció el plazo para iniciar sesión.')
                         return
                 finally:
-                    self.events.put(('hide_confirm', None))
                     await browser.close()
 
             browser = await launch_browser(playwright, headless=headless)
@@ -452,6 +455,7 @@ class DiagnosticWindow:
                         self.emit(f'HTTP de navegación: {response.status}')
 
                 page.on('response', report_response)
+                self.emit(f'Abriendo el perfil de la modelo {model_id} en Chrome…')
                 try:
                     result = await verify_profile_route(page, url, username)
                 except BrowserTimeout:
@@ -493,8 +497,6 @@ class DiagnosticWindow:
                     self.select_model()
                     self.key.set('')
                 self.emit(f'Modelos disponibles: {len(value)}.')
-            elif kind in ('confirm', 'hide_confirm'):
-                self.confirm_button.config(state='normal' if kind == 'confirm' else 'disabled')
             elif kind == 'done':
                 self.busy = False
                 for entry in (self.key_entry, self.model_entry, self.username_entry):
