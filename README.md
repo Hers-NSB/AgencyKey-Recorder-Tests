@@ -92,6 +92,6 @@ La referencia de origen es Dropper en el commit `1937fdb69988aa532806f5ad7967cde
 
 ## Diagnóstico independiente de Mi perfil
 
-El workflow **Compilar diagnóstico de perfil** genera `AgencyKeyDiagnosticoPerfil.exe` para Windows. Abre el EXE con doble clic, introduce tu clave API de AgencyKey en la ventana y pulsa **Cargar modelos**. Selecciona una modelo, pulsa **Verificar perfil** e inicia sesión en Chrome cuando se solicite. Confirma el inicio de sesión en la ventana de diagnóstico. Puedes cambiar de modelo y repetir la prueba con la misma sesión.
+En [Compilar diagnóstico de perfil](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/workflows/diagnostico-perfil.yml?query=branch%3Adiagnostico-perfil), abre una ejecución completada, descarga el ZIP **AgencyKeyDiagnosticoPerfil** en **Artifacts** y extrae el archivo. Abre `AgencyKeyDiagnosticoPerfil.exe` con doble clic. Introduce el ID o enlace de la modelo y su `@usuario`, o usa una clave API para cargar la lista. Pulsa **Verificar perfil** e inicia sesión en Chrome si se solicita. Confirma el inicio de sesión en la ventana de diagnóstico. Puedes cambiar los datos de la modelo y repetir la prueba con la misma sesión.
 
 El diagnóstico usa Google Chrome instalado. La clave y la sesión se mantienen en memoria. La lista se consulta en AgencyKey y se muestran el estado HTTP de navegación, la identidad detectada y las señales del menú y de la cabecera si la verificación falla.

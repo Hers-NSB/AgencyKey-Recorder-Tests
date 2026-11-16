@@ -286,6 +286,17 @@ def list_models(api_key, fetch=None):
     raise ValueError('La lista supera el límite de páginas de la prueba.')
 
 
+def model_input(value, username):
+    match = re.fullmatch(
+        r'(?:https://app\.agencykey\.com/models/)?([1-9][0-9]{0,15})/?',
+        value.strip(),
+    )
+    username = profile_username(username)
+    if not match or not username:
+        raise ValueError('Introduce un ID o enlace de AgencyKey y un @usuario válido.')
+    return username, match[1]
+
+
 class DiagnosticWindow:
     def __init__(self, root):
         self.root = root
@@ -295,38 +306,48 @@ class DiagnosticWindow:
         self.session = None
         self.key = tk.StringVar()
         self.visible = tk.BooleanVar()
+        self.model_id = tk.StringVar()
+        self.username = tk.StringVar()
         self.busy = False
 
         root.title('AgencyKey · Diagnóstico de Mi perfil')
-        root.geometry('700x510')
-        root.minsize(570, 420)
+        root.geometry('700x600')
+        root.minsize(570, 490)
         panel = ttk.Frame(root, padding=16)
         panel.pack(fill='both', expand=True)
 
-        ttk.Label(panel, text='Clave API de AgencyKey').grid(row=0, column=0, sticky='w')
+        ttk.Label(panel, text='Clave API de AgencyKey (opcional)').grid(row=0, column=0, sticky='w')
         self.key_entry = ttk.Entry(panel, textvariable=self.key, show='*')
         self.key_entry.grid(row=1, column=0, sticky='ew', pady=(4, 12))
         self.load_button = ttk.Button(panel, text='Cargar modelos', command=self.load)
         self.load_button.grid(row=1, column=1, padx=(8, 0), pady=(4, 12))
 
-        ttk.Label(panel, text='Modelo').grid(row=2, column=0, sticky='w')
+        ttk.Label(panel, text='Modelos cargados').grid(row=2, column=0, sticky='w')
         self.model = ttk.Combobox(panel, state='readonly')
         self.model.grid(row=3, column=0, sticky='ew', pady=(4, 12))
-        self.verify_button = ttk.Button(panel, text='Verificar perfil', command=self.verify, state='disabled')
-        self.verify_button.grid(row=3, column=1, padx=(8, 0), pady=(4, 12))
+        self.model.bind('<<ComboboxSelected>>', self.select_model)
+
+        ttk.Label(panel, text='ID o enlace de AgencyKey').grid(row=4, column=0, sticky='w')
+        self.model_entry = ttk.Entry(panel, textvariable=self.model_id)
+        self.model_entry.grid(row=5, column=0, sticky='ew', pady=(4, 12))
+        ttk.Label(panel, text='@usuario esperado').grid(row=6, column=0, sticky='w')
+        self.username_entry = ttk.Entry(panel, textvariable=self.username)
+        self.username_entry.grid(row=7, column=0, sticky='ew', pady=(4, 12))
+        self.verify_button = ttk.Button(panel, text='Verificar perfil', command=self.verify)
+        self.verify_button.grid(row=7, column=1, padx=(8, 0), pady=(4, 12))
 
         ttk.Checkbutton(panel, text='Mostrar Chrome durante la verificación', variable=self.visible).grid(
-            row=4, column=0, sticky='w')
+            row=8, column=0, sticky='w')
         self.confirm_button = ttk.Button(panel, text='Confirmar inicio de sesión',
                                          command=self.login_confirmed.set, state='disabled')
-        self.confirm_button.grid(row=4, column=1, padx=(8, 0))
+        self.confirm_button.grid(row=8, column=1, padx=(8, 0))
         self.reconnect_button = ttk.Button(panel, text='Cambiar sesión de Chrome', command=self.clear_session)
-        self.reconnect_button.grid(row=5, column=0, sticky='w', pady=(8, 0))
+        self.reconnect_button.grid(row=9, column=0, sticky='w', pady=(8, 0))
 
         self.output = tk.Text(panel, state='disabled', wrap='word', height=12, pady=8, padx=8)
-        self.output.grid(row=6, column=0, columnspan=2, sticky='nsew', pady=(12, 0))
+        self.output.grid(row=10, column=0, columnspan=2, sticky='nsew', pady=(12, 0))
         panel.columnconfigure(0, weight=1)
-        panel.rowconfigure(6, weight=1)
+        panel.rowconfigure(10, weight=1)
         root.after(100, self.update_ui)
 
     def emit(self, message):
@@ -340,7 +361,8 @@ class DiagnosticWindow:
         if self.busy:
             return
         self.busy = True
-        self.key_entry.config(state='disabled')
+        for entry in (self.key_entry, self.model_entry, self.username_entry):
+            entry.config(state='disabled')
         self.model.config(state='disabled')
         for button in (self.load_button, self.verify_button, self.reconnect_button):
             button.config(state='disabled')
@@ -369,13 +391,21 @@ class DiagnosticWindow:
         self.emit('Cargando modelos de AgencyKey…')
         self.start(lambda: self.events.put(('models', list_models(api_key))))
 
-    def verify(self):
+    def select_model(self, event=None):
         index = self.model.current()
-        if index < 0:
+        if index >= 0:
+            username, model_id = self.models[index]
+            self.model_id.set(model_id)
+            self.username.set('@' + username)
+
+    def verify(self):
+        try:
+            username, model_id = model_input(self.model_id.get(), self.username.get())
+        except ValueError as error:
+            self.emit(str(error))
             return
-        username, model_id = self.models[index]
         headless = not self.visible.get()
-        self.emit(f'Verificando @{username}…')
+        self.emit(f'Verificando modelo {model_id} / @{username}…')
         self.start(lambda: asyncio.run(self.check_profile(username, model_id, headless)))
 
     async def check_profile(self, username, model_id, headless):
@@ -460,17 +490,19 @@ class DiagnosticWindow:
                 self.model.set('')
                 if value:
                     self.model.current(0)
+                    self.select_model()
                     self.key.set('')
                 self.emit(f'Modelos disponibles: {len(value)}.')
             elif kind in ('confirm', 'hide_confirm'):
                 self.confirm_button.config(state='normal' if kind == 'confirm' else 'disabled')
             elif kind == 'done':
                 self.busy = False
-                self.key_entry.config(state='normal')
+                for entry in (self.key_entry, self.model_entry, self.username_entry):
+                    entry.config(state='normal')
                 self.model.config(state='readonly')
                 self.load_button.config(state='normal')
                 self.reconnect_button.config(state='normal')
-                self.verify_button.config(state='normal' if self.models else 'disabled')
+                self.verify_button.config(state='normal')
         self.root.after(100, self.update_ui)
 
 
