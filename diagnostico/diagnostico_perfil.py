@@ -272,11 +272,13 @@ class DirectAgencyKeyRequest(HTTPRedirectHandler):
         return None
 
 
-def list_models(api_key, fetch=None):
+def list_models(api_key, fetch=None, *, closing=None):
     if fetch is None:
         fetch = build_opener(DirectAgencyKeyRequest()).open
     models = {}
     for page in range(1, 101):
+        if closing is not None and closing.is_set():
+            return []
         request = Request(
             f'https://app.agencykey.com/api/v1/onlyfans/creators?page={page}&limit=100',
             headers={'x-public-api-key': api_key, 'Accept': 'application/json'},
@@ -316,10 +318,16 @@ class DiagnosticWindow:
     def __init__(self, root):
         self.root = root
         self.events = queue.Queue()
+        self.commands = queue.Queue()
+        self.closing = threading.Event()
+        self.browser = None
+        self.page = None
+        self.playwright = None
         self.models = []
         self.session = None
         self.key = tk.StringVar()
         self.visible = tk.BooleanVar()
+        self.same_tab = tk.BooleanVar()
         self.model_id = tk.StringVar()
         self.username = tk.StringVar()
         self.busy = False
@@ -353,20 +361,41 @@ class DiagnosticWindow:
         ttk.Checkbutton(panel, text='Mostrar Chrome durante la verificación', variable=self.visible).grid(
             row=8, column=0, sticky='w')
         self.reconnect_button = ttk.Button(panel, text='Cambiar sesión de Chrome', command=self.clear_session)
-        self.reconnect_button.grid(row=9, column=0, sticky='w', pady=(8, 0))
+        self.reconnect_button.grid(row=9, column=1, sticky='w', pady=(8, 0))
+        ttk.Checkbutton(panel, text='Verificar en la misma pestaña del inicio de sesión',
+                        variable=self.same_tab).grid(row=9, column=0, sticky='w', pady=(8, 0))
 
         self.output = tk.Text(panel, state='disabled', wrap='word', height=12, pady=8, padx=8)
         self.output.grid(row=10, column=0, columnspan=2, sticky='nsew', pady=(12, 0))
         panel.columnconfigure(0, weight=1)
         panel.rowconfigure(10, weight=1)
+        root.protocol('WM_DELETE_WINDOW', self.close)
+        threading.Thread(target=lambda: asyncio.run(self.run_commands()), daemon=False).start()
         root.after(100, self.update_ui)
 
     def emit(self, message):
         self.events.put(('message', message))
 
     def clear_session(self):
+        self.start(self.reset_session)
+
+    async def reset_session(self):
         self.session = None
+        await self.close_tab()
         self.emit('La próxima comprobación abrirá Chrome para iniciar sesión.')
+
+    async def close_tab(self):
+        if self.browser is not None:
+            try:
+                await self.browser.close()
+            finally:
+                self.browser = None
+                self.page = None
+
+    def close(self):
+        self.closing.set()
+        self.commands.put(None)
+        self.root.destroy()
 
     def start(self, callback):
         if self.busy:
@@ -377,22 +406,33 @@ class DiagnosticWindow:
         self.model.config(state='disabled')
         for button in (self.load_button, self.verify_button, self.reconnect_button):
             button.config(state='disabled')
+        self.commands.put(callback)
 
-        def work():
+    async def run_commands(self):
+        try:
+            while (callback := await asyncio.to_thread(self.commands.get)) is not None:
+                try:
+                    await callback()
+                except HTTPError as error:
+                    self.emit(f'La API de AgencyKey respondió HTTP {error.code}.')
+                except (URLError, TimeoutError):
+                    self.emit('La API de AgencyKey no respondió. Comprueba la conexión.')
+                except ValueError as error:
+                    self.emit(str(error))
+                except Exception as error:
+                    self.emit(f'La operación se interrumpió en {type(error).__name__}.')
+                finally:
+                    self.events.put(('done', None))
+        finally:
             try:
-                callback()
-            except HTTPError as error:
-                self.emit(f'La API de AgencyKey respondió HTTP {error.code}.')
-            except (URLError, TimeoutError):
-                self.emit('La API de AgencyKey no respondió. Comprueba la conexión.')
-            except ValueError as error:
-                self.emit(str(error))
-            except Exception as error:
-                self.emit(f'La operación se interrumpió en {type(error).__name__}.')
+                await self.close_tab()
             finally:
-                self.events.put(('done', None))
+                if self.playwright is not None:
+                    await self.playwright.stop()
 
-        threading.Thread(target=work, daemon=True).start()
+    async def fetch_models(self, api_key):
+        models = await asyncio.to_thread(list_models, api_key, closing=self.closing)
+        self.events.put(('models', models))
 
     def load(self):
         api_key = self.key.get().strip()
@@ -400,7 +440,7 @@ class DiagnosticWindow:
             self.emit('Introduce tu clave API de AgencyKey.')
             return
         self.emit('Cargando modelos de AgencyKey…')
-        self.start(lambda: self.events.put(('models', list_models(api_key))))
+        self.start(lambda: self.fetch_models(api_key))
 
     def select_model(self, event=None):
         index = self.model.current()
@@ -416,72 +456,105 @@ class DiagnosticWindow:
             self.emit(str(error))
             return
         headless = not self.visible.get()
+        same_tab = self.same_tab.get()
         self.emit(f'Verificando modelo {model_id} / @{username}…')
-        self.start(lambda: asyncio.run(self.check_profile(username, model_id, headless)))
+        self.start(lambda: self.check_profile(username, model_id, headless, same_tab))
 
-    async def check_profile(self, username, model_id, headless):
-        from playwright.async_api import TimeoutError as BrowserTimeout, async_playwright
+    async def sign_in(self, page):
+        response = await page.goto(SIGN_IN, wait_until='domcontentloaded', timeout=30000)
+        if response and not response.ok:
+            self.emit(f'El inicio de sesión respondió HTTP {response.status}.')
+            return False
+        self.emit('Inicia sesión en Chrome. La verificación continuará automáticamente.')
+        return await self.wait_for_login(page)
 
+    async def wait_for_login(self, page):
+        deadline = monotonic() + 240
+        while not self.closing.is_set() and not page.is_closed() and monotonic() < deadline:
+            if await agencykey_login_complete(page):
+                self.emit('Sesión de AgencyKey detectada.')
+                return True
+            await asyncio.sleep(.7)
+        self.emit('Se cerró Chrome o venció el plazo para iniciar sesión.')
+        return False
+
+    async def check_profile(self, username, model_id, headless, same_tab):
+        from playwright.async_api import async_playwright
+
+        if self.playwright is None:
+            self.playwright = await async_playwright().start()
         url = f'https://app.agencykey.com/models/{model_id}'
-        async with async_playwright() as playwright:
-            if self.session is None:
-                browser = await launch_browser(playwright, headless=False)
-                try:
-                    context = await browser.new_context(viewport=VIEWPORT)
-                    page = await context.new_page()
-                    response = await page.goto(SIGN_IN, wait_until='domcontentloaded', timeout=30000)
-                    if response and not response.ok:
-                        self.emit(f'El inicio de sesión respondió HTTP {response.status}.')
-                        return
-                    self.emit('Inicia sesión en Chrome. La verificación continuará automáticamente.')
-                    deadline = monotonic() + 240
-                    while not page.is_closed() and monotonic() < deadline:
-                        if await agencykey_login_complete(page):
-                            self.session = await context.storage_state(indexed_db=True)
-                            self.emit('Sesión de AgencyKey detectada.')
-                            break
-                        await asyncio.sleep(.7)
-                    if self.session is None:
-                        self.emit('Se cerró Chrome o venció el plazo para iniciar sesión.')
-                        return
-                finally:
-                    await browser.close()
-
-            browser = await launch_browser(playwright, headless=headless)
+        if same_tab:
+            await self.check_same_tab(url, username, model_id)
+            return
+        self.emit('Modo de prueba · sesión restaurada en otro Chrome.')
+        if self.session is None:
+            browser = await launch_browser(self.playwright, headless=False)
             try:
-                context = await browser.new_context(viewport=VIEWPORT, storage_state=self.session)
-                page = await context.new_page()
-
-                def report_response(response):
-                    request = response.request
-                    if request.is_navigation_request() and request.frame == page.main_frame:
-                        self.emit(f'HTTP de navegación: {response.status}')
-
-                page.on('response', report_response)
-                self.emit(f'Abriendo el perfil de la modelo {model_id} en Chrome…')
-                try:
-                    result = await verify_profile_route(page, url, username, emit=self.emit)
-                except BrowserTimeout:
-                    self.emit('Chrome agotó el tiempo de espera al abrir la ruta de AgencyKey.')
+                context = await browser.new_context(viewport=VIEWPORT)
+                if not await self.sign_in(await context.new_page()):
                     return
-                status = result['status']
-                descriptions = {
-                    'ready': 'El perfil coincide con la modelo seleccionada.',
-                    'login_required': 'AgencyKey pidió iniciar sesión. Vuelve a verificar para reconectar.',
-                    'unavailable': 'AgencyKey denegó el acceso o el perfil no existe.',
-                    'wrong_profile': 'Chrome abrió un perfil o una ruta distintos a los esperados.',
-                    'profile_unverified': 'Chrome no confirmó la identidad de Mi perfil.',
-                    'connection_error': 'Chrome no pudo cargar el perfil de AgencyKey.',
-                }
-                self.emit(f'{descriptions.get(status, status)} ({status})')
-                if result.get('observed_username'):
-                    self.emit(f"Usuario detectado: @{result['observed_username']}")
-                if status == 'login_required':
-                    self.session = None
-                if status not in {'connection_error', 'login_required'}:
-                    await report_frames(page, url, self.emit)
+                self.session = await context.storage_state(indexed_db=True)
             finally:
                 await browser.close()
+        browser = await launch_browser(self.playwright, headless=headless)
+        try:
+            context = await browser.new_context(viewport=VIEWPORT, storage_state=self.session)
+            status = await self.verify_page(await context.new_page(), url, username, model_id)
+            if status == 'login_required':
+                self.session = None
+        finally:
+            await browser.close()
+
+    async def check_same_tab(self, url, username, model_id):
+        self.emit('Modo de prueba · misma pestaña del inicio de sesión.')
+        if self.page is None or self.page.is_closed():
+            await self.close_tab()
+            self.browser = await launch_browser(self.playwright, headless=False)
+            try:
+                self.page = await self.browser.new_page(viewport=VIEWPORT)
+                if not await self.sign_in(self.page):
+                    await self.close_tab()
+                    return
+            except Exception:
+                await self.close_tab()
+                raise
+        elif await agencykey_sign_in_visible(self.page) and not await self.wait_for_login(self.page):
+            return
+        await self.verify_page(self.page, url, username, model_id)
+
+    async def verify_page(self, page, url, username, model_id):
+        def report_response(response):
+            request = response.request
+            if request.is_navigation_request() and request.frame == page.main_frame:
+                self.emit(f'HTTP de navegación: {response.status}')
+
+        from playwright.async_api import TimeoutError as BrowserTimeout
+
+        page.on('response', report_response)
+        self.emit(f'Abriendo el perfil de la modelo {model_id} en Chrome…')
+        try:
+            result = await verify_profile_route(page, url, username, emit=self.emit)
+        except BrowserTimeout:
+            self.emit('Chrome agotó el tiempo de espera al abrir la ruta de AgencyKey.')
+            return
+        finally:
+            page.remove_listener('response', report_response)
+        status = result['status']
+        descriptions = {
+            'ready': 'El perfil coincide con la modelo seleccionada.',
+            'login_required': 'AgencyKey pidió iniciar sesión. Vuelve a verificar para reconectar.',
+            'unavailable': 'AgencyKey denegó el acceso o el perfil no existe.',
+            'wrong_profile': 'Chrome abrió un perfil o una ruta distintos a los esperados.',
+            'profile_unverified': 'Chrome no confirmó la identidad de Mi perfil.',
+            'connection_error': 'Chrome no pudo cargar el perfil de AgencyKey.',
+        }
+        self.emit(f'{descriptions.get(status, status)} ({status})')
+        if result.get('observed_username'):
+            self.emit(f"Usuario detectado: @{result['observed_username']}")
+        if status not in {'connection_error', 'login_required'}:
+            await report_frames(page, url, self.emit)
+        return status
 
     def update_ui(self):
         while not self.events.empty():
@@ -548,16 +621,27 @@ async def smoke_browser():
                 raise RuntimeError('Chrome no verificó el perfil simulado después de reintentar.')
             if not any('intento 2/3' in line for line in trace):
                 raise RuntimeError('El diagnóstico no registró el reintento.')
+            await page.evaluate("sessionStorage.setItem('diagnostic-test', 'same-tab')")
+            window = DiagnosticWindow.__new__(DiagnosticWindow)
+            window.page = page
+            window.events = queue.Queue()
+            await window.check_same_tab(model_url, 'modelo', '52')
+            if await page.evaluate("sessionStorage.getItem('diagnostic-test')") != 'same-tab':
+                raise RuntimeError('La comprobación perdió la sesión de la pestaña.')
+            messages = [window.events.get_nowait()[1] for _ in range(window.events.qsize())]
+            if not any('(ready)' in line for line in messages):
+                raise RuntimeError('La comprobación en la misma pestaña no verificó el perfil.')
+
         finally:
             await browser.close()
 
 
 if __name__ == '__main__':
     root = tk.Tk()
-    DiagnosticWindow(root)
+    window = DiagnosticWindow(root)
     if '--smoke-test' in sys.argv:
         root.update()
-        root.destroy()
+        window.close()
         asyncio.run(smoke_browser())
     else:
         root.mainloop()
