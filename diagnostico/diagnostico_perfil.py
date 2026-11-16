@@ -106,25 +106,13 @@ async def agencykey_login_complete(page):
         return False
 
 
-async def my_profile_visible(page):
-    # Profile-specific controls also work when the sidebar has no ARIA selected state.
-    edit = re.compile(r'^\s*(?:Editar perfil|Edit profile)\s*$', re.IGNORECASE)
-    search = re.compile(r'Buscar (?:la publicación|publicaciones) del usuario|Search (?:user.?s? )?posts', re.IGNORECASE)
-    for frame in page.frames:
-        if await frame_is_visible(page, frame):
-            if (await frame.locator(PROFILE_HEADER).first.is_visible()
-                    or await frame.get_by_text(edit).first.is_visible()
-                    or await frame.get_by_placeholder(search).first.is_visible()):
-                return True
-    return False
-
-
-async def open_my_profile(page, *, profile_url=None):
+async def open_my_profile(page, *, profile_url):
     """Activate the model's profile from its navigation when available."""
     label = re.compile(r'^\s*(?:Mi perfil|My profile)\s*$', re.IGNORECASE)
     from playwright.async_api import TimeoutError as PlaywrightTimeout
+    outcome = 'menú no disponible'
     for frame in page.frames:
-        if (profile_url and not frame_matches_model(frame, profile_url)) or not await frame_is_visible(page, frame):
+        if not frame_matches_model(frame, profile_url) or not await frame_is_visible(page, frame):
             continue
         matches = frame.get_by_text(label)
         navigation = frame.locator('nav, aside, [role="navigation"]').get_by_text(label)
@@ -142,14 +130,15 @@ async def open_my_profile(page, *, profile_url=None):
                 }""", timeout=1500)
                 if state == 'text':
                     continue
-                if state == 'available':
-                    await control.click(timeout=1500)
+                if state == 'selected':
+                    return 'menú ya seleccionado'
+                await control.click(timeout=1500)
             except PlaywrightTimeout:
-                if await my_profile_visible(page):
-                    return True
-                continue
-            return True
-    return False
+                outcome = 'Chrome agotó el tiempo al activar el menú'
+                break
+            host = urlparse(frame.url).hostname or 'sin dominio'
+            return f'clic realizado en {host}'
+    return outcome
 
 
 def transient_frame_error(error):
@@ -187,11 +176,14 @@ async def visible_model_profiles(page):
     return profiles
 
 
-async def wait_for_model_identity(page, profile_url, username, *, deadline):
+async def wait_for_model_identity(page, profile_url, username, *, deadline, emit=None):
     from playwright.async_api import Error as PlaywrightError
     expected = profile_username(username)
     model_id = int(urlparse(profile_url).path.rstrip('/').rsplit('/', 1)[-1])
-    on_route = opened = False
+    on_route = False
+    clicks = 0
+    next_probe = 0
+    last_outcome = None
     observed = set()
     while monotonic() < deadline:
         try:
@@ -201,8 +193,17 @@ async def wait_for_model_identity(page, profile_url, username, *, deadline):
             observed = await visible_model_profiles(page) if on_route else set()
             if expected and observed == {(model_id, expected)}:
                 return expected
-            if on_route and not opened:
-                opened = await open_my_profile(page, profile_url=profile_url)
+            if on_route and clicks < 3 and monotonic() >= next_probe:
+                outcome = await open_my_profile(page, profile_url=profile_url)
+                clicked = outcome.startswith('clic realizado')
+                if clicked:
+                    clicks += 1
+                if emit is not None and (clicked or outcome != last_outcome):
+                    label = f' (intento {clicks}/3)' if clicked else ''
+                    emit(f'Mi perfil{label} · {outcome}')
+                    await report_frames(page, profile_url, emit)
+                last_outcome = outcome
+                next_probe = monotonic() + (4 if clicked else 2)
         except PlaywrightError as error:
             if page.is_closed() or not transient_frame_error(error):
                 raise
@@ -222,7 +223,7 @@ recorder = SimpleNamespace(
 )
 
 
-async def verify_profile_route(page, url, username):
+async def verify_profile_route(page, url, username, *, emit=None):
     response = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
     if response is None:
         return {'status': 'connection_error'}
@@ -234,7 +235,9 @@ async def verify_profile_route(page, url, username):
         return {'status': 'connection_error'}
 
     try:
-        observed = await recorder.wait_for_model_identity(page, url, username, deadline=monotonic() + 35)
+        observed = await recorder.wait_for_model_identity(
+            page, url, username, deadline=monotonic() + 35, emit=emit,
+        )
     except recorder.FeedAccessError as error:
         return {'status': error.status, 'observed_username': error.observed}
     return {'status': 'ready', 'observed_username': observed}
@@ -244,10 +247,10 @@ async def report_frames(page, expected_url, emit):
     from playwright.async_api import Error
 
     emit(f'Ruta de la modelo coincide: {same_profile_route(page.url, expected_url)}')
-    for frame in page.frames:
+    frames = page.frames
+    emit(f'Iframes presentes: {len(frames) - 1}')
+    for frame in frames:
         host = urlparse(frame.url).hostname or ''
-        if frame is not page.main_frame and not re.fullmatch(r'of-[0-9]+\.agencykey\.com', host):
-            continue
         try:
             identity = profile_frame_identity(frame)
             visible = await frame_is_visible(page, frame)
@@ -457,7 +460,7 @@ class DiagnosticWindow:
                 page.on('response', report_response)
                 self.emit(f'Abriendo el perfil de la modelo {model_id} en Chrome…')
                 try:
-                    result = await verify_profile_route(page, url, username)
+                    result = await verify_profile_route(page, url, username, emit=self.emit)
                 except BrowserTimeout:
                     self.emit('Chrome agotó el tiempo de espera al abrir la ruta de AgencyKey.')
                     return
@@ -475,7 +478,7 @@ class DiagnosticWindow:
                     self.emit(f"Usuario detectado: @{result['observed_username']}")
                 if status == 'login_required':
                     self.session = None
-                if status != 'ready':
+                if status not in {'connection_error', 'login_required'}:
                     await report_frames(page, url, self.emit)
             finally:
                 await browser.close()
@@ -517,18 +520,34 @@ async def smoke_browser():
             page = await browser.new_page()
             model_url = 'https://app.agencykey.com/models/52'
             frame_url = 'https://of-52.agencykey.com/modelo'
+            menu_url = 'https://of-52.agencykey.com/menu/panel'
             await page.route(model_url, lambda route: route.fulfill(
                 content_type='text/html',
-                body=f'<iframe src="{frame_url}" width="900" height="620"></iframe>',
+                body=f'<iframe src="{menu_url}" width="900" height="620"></iframe>',
+            ))
+            await page.route(menu_url, lambda route: route.fulfill(
+                content_type='text/html',
+                body=f"""
+                    <nav><button>Mi perfil</button></nav>
+                    <script>
+                    let clicks = 0;
+                    document.querySelector('button').onclick = () => {{
+                        if (++clicks === 2) location.href = '{frame_url}';
+                    }};
+                    </script>
+                """,
             ))
             await page.route(frame_url, lambda route: route.fulfill(
                 content_type='text/html',
                 body='<main id="content"><div class="js-compact-sticky-header">Modelo</div></main>',
             ))
-            if await verify_profile_route(page, model_url, 'modelo') != {
+            trace = []
+            if await verify_profile_route(page, model_url, 'modelo', emit=trace.append) != {
                 'status': 'ready', 'observed_username': 'modelo',
             }:
-                raise RuntimeError('Chrome no verificó el perfil simulado.')
+                raise RuntimeError('Chrome no verificó el perfil simulado después de reintentar.')
+            if not any('intento 2/3' in line for line in trace):
+                raise RuntimeError('El diagnóstico no registró el reintento.')
         finally:
             await browser.close()
 
