@@ -10,7 +10,7 @@ Rama `fix/profile-connection-recovery`, [PR #30](https://github.com/Hers-NSB/Age
 - Las cargas incompletas y los cortes temporales se reintentan hasta completar o cancelar desde la web. Se exige ID y usuario correctos; no se buscan posts durante la comprobación manual.
 - La web retoma la comprobación pendiente al recargarse, reintenta las consultas interrumpidas y reutiliza el identificador de solicitud para evitar duplicados.
 - La app conserva el resultado en memoria hasta poder enviarlo. El servidor renueva la reserva del trabajo; otra instancia puede retomarlo tras cinco minutos sin comunicación. Una instancia anterior no puede completar la reserva nueva.
-- Cambiar la configuración de la modelo invalida el trabajo anterior. Antes de grabar, la navegación y la identificación del perfil se recuperan tras errores temporales; la búsqueda de posts y los controles del video siguen separados.
+- Cambiar la configuración o la conexión de la modelo invalida el trabajo anterior, incluso si se repite una solicitud cuya respuesta se perdió. Una nueva sesión de administrador puede retomar las verificaciones recuperables. Antes de grabar, la navegación y la identificación del perfil se recuperan tras errores temporales; la búsqueda de posts y los controles del video siguen separados.
 - El workflow de Windows ahora también compila y comprueba el EXE en las PR, sin crear una release de producción.
 
 ## Validación

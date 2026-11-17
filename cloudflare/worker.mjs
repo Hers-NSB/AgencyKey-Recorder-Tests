@@ -455,7 +455,7 @@ async function recordingAdmin(request, env, path) {
   const owner=await sessionId(sessionToken(request));
   let entry=await readDesktopJob(env);
   if (path===root+'/active' && request.method==='GET') {
-    if (!entry || entry.job.owner!==owner) return json({status:'none'});
+    if (!entry || (entry.job.owner!==owner && !entry.job.recover)) return json({status:'none'});
     return json({kind:entry.job.kind,profile_id:entry.job.profile_id,...profileCheckResult(entry.job,jobStatus(entry.job))});
   }
   const feed=path.match(/^\/v1\/admin\/recording-session\/feed\/([a-f0-9-]{36})$/);
@@ -463,13 +463,21 @@ async function recordingAdmin(request, env, path) {
   if (request.method==='POST' && (connect || feed)) {
     const input=await body(request);
     const requestId=typeof input.request_id==='string' && /^[a-f0-9-]{36}$/.test(input.request_id) ? input.request_id : null;
-    if (requestId && entry?.job.request_id===requestId && entry.job.owner===owner
-        && entry.job.kind===(connect?'connect':'feed') && (!feed || entry.job.profile_id===feed[1])) {
+    const profile=feed
+      ? await env.DB.prepare('SELECT creator_id, creator_username, revision FROM profiles WHERE id = ?').bind(feed[1]).first()
+      : null;
+    if (feed && !profile) throw new ApiError(404,'La configuración de la modelo ya no existe');
+    const session=await sharedSession(env);
+    if (requestId && entry?.job.request_id===requestId && (entry.job.owner===owner || entry.job.recover)
+        && entry.job.kind===(connect?'connect':'feed') && (!feed || (entry.job.profile_id===feed[1]
+          && entry.job.profile_revision===profile.revision && entry.job.creator_id===profile.creator_id
+          && entry.job.connection===session.connection))) {
       return json({id:entry.job.id,...profileCheckResult(entry.job,jobStatus(entry.job))});
     }
     if (entry?.job.kind==='feed' && ['queued','running'].includes(jobStatus(entry.job))) {
       const current=await env.DB.prepare('SELECT creator_id, creator_username, revision FROM profiles WHERE id = ?').bind(entry.job.profile_id).first();
-      if (!current || current.revision!==entry.job.profile_revision || current.creator_id!==entry.job.creator_id) {
+      if (!current || current.revision!==entry.job.profile_revision || current.creator_id!==entry.job.creator_id
+          || entry.job.connection!==session.connection) {
         await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'});
         entry=await readDesktopJob(env);
       }
@@ -477,11 +485,6 @@ async function recordingAdmin(request, env, path) {
     if (entry && ['queued','running','finishing'].includes(jobStatus(entry.job))) {
       throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
     }
-    const profile=feed
-      ? await env.DB.prepare('SELECT creator_id, creator_username, revision FROM profiles WHERE id = ?').bind(feed[1]).first()
-      : null;
-    if (feed && !profile) throw new ApiError(404,'La configuración de la modelo ya no existe');
-    const session=await sharedSession(env);
     if (feed && !session.configured) return json({status:'no_session'});
     const job={id:crypto.randomUUID(),owner,request_id:requestId,recover:Boolean(requestId),kind:connect?'connect':'feed',
       ...(profile?{profile_id:feed[1],creator_id:profile.creator_id,creator_username:profile.creator_username,
@@ -492,7 +495,7 @@ async function recordingAdmin(request, env, path) {
   }
   if (request.method==='POST' && [root+'/check',root+'/cancel'].includes(path)) {
     const {id}=await body(request);
-    if (!entry || entry.job.id!==id || entry.job.owner!==owner) return json({status:'expired'});
+    if (!entry || entry.job.id!==id || (entry.job.owner!==owner && !entry.job.recover)) return json({status:'expired'});
     const status=jobStatus(entry.job);
     if (path.endsWith('/cancel') && ['queued','running'].includes(status)) {
       const cancelled=await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'});

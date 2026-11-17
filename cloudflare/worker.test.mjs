@@ -360,6 +360,9 @@ test('recoverable check survives queue outage, lost start response, lease expiry
  assert.equal((await (await desktop(env,'PUT',claim,{...job,phase:'retrying',attempt:3})).json()).active,true);
  const check=await (await request(env,'POST',root+'/check',{id:job.id},cookie)).json();
  assert.equal(check.phase,'retrying');assert.equal(check.attempt,3);
+ // A new authenticated admin session can resume a recoverable job after login expires.
+ assert.equal((await (await admin(env,'POST',root+'/check',{id:job.id})).json()).status,'running');
+ assert.equal((await (await admin(env,'GET',root+'/active')).json()).id,job.id);
  const profiles=await (await request(env,'GET','/v1/admin/profiles',undefined,cookie)).json();
  assert.equal(profiles.profiles[0].feed.id,job.id);
  row=JSON.parse(db.prepare('SELECT value FROM settings WHERE key=?').get('recording_desktop_job').value);
@@ -375,10 +378,12 @@ test('editing the model cancels the old recoverable check and allows the new mod
  await admin(env,'PUT',route,input);
  await saveSharedSession(env,{cookies:[{name:'session',domain:'.agencykey.com',value:'test'}],origins:[]},null);
  const root='/v1/admin/recording-session', claim='/v1/recording-desktop-job';
- const queued=await (await admin(env,'POST',root+'/feed/'+firstId,{request_id:firstId})).json();
+ const login=await request(env,'POST','/v1/admin/login',{password:env.ADMIN_TOKEN});
+ const cookie={Cookie:login.headers.get('set-cookie').split(';')[0]};
+ const queued=await (await request(env,'POST',root+'/feed/'+firstId,{request_id:firstId},cookie)).json();
  const {job}=await (await desktop(env,'POST',claim)).json();
  await admin(env,'PUT',route,{creator_id:99,revision:1});
- const next=await admin(env,'POST',root+'/feed/'+firstId,{request_id:secondId});assert.equal(next.status,202);
+ const next=await request(env,'POST',root+'/feed/'+firstId,{request_id:firstId},cookie);assert.equal(next.status,202);
  assert.notEqual((await next.json()).id,queued.id);
  assert.equal((await (await desktop(env,'PUT',claim,{...job,phase:'retrying'})).json()).active,false);
  const fresh=await (await desktop(env,'POST',claim)).json();assert.equal(fresh.job.creator_id,99);
