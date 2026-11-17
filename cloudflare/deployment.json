@@ -7,6 +7,5 @@
   "binding": "DB",
   "compatibility_flags": [
     "nodejs_compat"
-  ],
-  "browser_binding": "BROWSER"
+  ]
 }

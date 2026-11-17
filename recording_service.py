@@ -50,54 +50,6 @@ def session_path(creator_id):
     return recorder.ROOT / 'private' / 'sessions' / f'{int(creator_id)}.json'
 
 
-async def connect_session(creator_id, confirm, cancel, emit):
-    from playwright.async_api import async_playwright
-    url = recorder.model_profile_url(creator_id)
-    state = session_path(creator_id)
-    async with async_playwright() as pw:
-        browser = await recorder.launch_browser(pw, headless=False)
-        options = {'viewport': {'width': 1280, 'height': 720}}
-        if state.is_file():
-            options['storage_state'] = str(state)
-            emit('INFO', 'Reutilizando la sesión guardada. No vuelvas a iniciar sesión si el perfil ya está abierto.')
-        try:
-            context = await browser.new_context(**options)
-            page = await context.new_page()
-            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
-            emit('INFO', 'La sesión se guardará automáticamente cuando el feed de esta modelo esté visible. '
-                 'También puedes usar Guardar sesión en la ventana principal.')
-            while not cancel.is_set() and not page.is_closed():
-                automatic = await session_ready(page, url)
-                if confirm.is_set() or automatic:
-                    confirm.clear()
-                    try:
-                        await recorder.save_login_session(page, context, url, state_path=session_path(creator_id))
-                    except ValueError as error:
-                        emit('ERROR', str(error))
-                    else:
-                        emit('INFO', 'Sesión de AgencyKey guardada. Se reutilizará en las siguientes grabaciones mientras siga vigente.')
-                        return True
-                await asyncio.sleep(1)
-        finally:
-            await browser.close()
-    return False
-
-
-async def session_ready(page, expected_url):
-    """Read the already loaded page; do not refresh, navigate or retry login."""
-    current, expected = urlparse(page.url), urlparse(expected_url)
-    if (current.scheme, current.netloc, current.path.rstrip('/')) != (
-            expected.scheme, expected.netloc, expected.path.rstrip('/')):
-        return False
-    from playwright.async_api import Error as PlaywrightError
-    try:
-        frame = await recorder.post_frame(page)
-        return bool(frame and await frame.evaluate(recorder.SNAPSHOT))
-    except PlaywrightError:
-        # Login redirects and iframe mounting can temporarily replace execution contexts.
-        return False
-
-
 async def agencykey_login_complete(page):
     from playwright.async_api import Error as PlaywrightError
 
