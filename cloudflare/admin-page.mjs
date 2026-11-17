@@ -79,7 +79,8 @@ async function showWebReport(profile,download=false){
   $('web-report-detail').textContent='Resultado: '+feedLabel(report)+'\nModelo: '+report.creator_id+
    '\nCuenta esperada: @'+(report.expected_username||'sin identificar')+'\nCuenta detectada: '+(report.observed_username?'@'+report.observed_username:'sin identificar')+
    '\nEtapa: '+report.stage+'\nDetalle: '+(report.error||feedLabel(report))+
-   (!report.evidence_available&&report.status!=='ready'?'\nNo hay evidencia de Chrome para esta solicitud. Comprueba que la app actualizada está abierta.':'')+
+   (report.status==='web_request_error'?'\nEste reporte contiene el error de conexión observado por el navegador web.':
+    !report.evidence_available&&!['ready','no_session'].includes(report.status)?'\nNo hay evidencia de Chrome para esta solicitud. Comprueba que la app actualizada está abierta.':'')+
    '\n\n'+JSON.stringify({...report,screenshot:report.screenshot?'Incluida en el reporte':null},null,2);
   const image=$('web-report-image');image.hidden=!report.screenshot;
   if(report.screenshot?.mime==='image/jpeg')image.src='data:image/jpeg;base64,'+report.screenshot.data;else image.removeAttribute('src');
