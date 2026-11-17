@@ -17,7 +17,9 @@ Rama: `fix/profile-retry-and-diagnostic-export`, basada en main `cb84952`. PR [#
 
 175 pruebas sin navegador pasaron durante la implementación. Tras los últimos ajustes, 35 pruebas del área afectada pasaron; compilación Python y `git diff --check` correctos. Se añadieron cuatro regresiones con navegador para recarga, feed corto, inicio oculto y captura del fallo.
 
-Las pruebas locales con navegador están bloqueadas por el entorno: Chromium aborta en `socket() failed: Operation not permitted (1)`. No se ha probado contra la sesión real del usuario, no se han creado posts ni reenviado videos. La CI existente descubre también las nuevas pruebas y debe validar Chrome en Ubuntu y Windows.
+Las pruebas locales con navegador están bloqueadas por el entorno: Chromium aborta en `socket() failed: Operation not permitted (1)`. La CI de Ubuntu del PR (ejecución 44118230038, código 48d0b67) ya validó las 199 pruebas Python, incluidas las cuatro regresiones con Chrome, la demo y las pruebas del Worker y del panel. Windows sigue en ejecución. El último ajuste de exportación preserva el JSON al ocultar valores Bearer; sus 35 pruebas locales pasan y la CI debe comprobar el commit final.
+
+No se ha probado contra la sesión real del usuario, no se han creado posts ni reenviado videos.
 
 ## Siguiente acción
 

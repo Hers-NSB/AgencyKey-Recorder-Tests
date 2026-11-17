@@ -17,7 +17,7 @@ class ExportTests(unittest.TestCase):
             folder = Path(directory) / 'diagnostics' / '20261117'
             folder.mkdir(parents=True)
             (folder / 'diagnostic.json').write_text(json.dumps({'error': 'private-api-key',
-                'url': 'https://app.agencykey.com/models/52?token=hidden'}))
+                'url': 'https://app.agencykey.com/models/52?token=hidden', 'detail': 'Bearer abc'}))
             (folder / 'chrome.png').write_bytes(b'png')
             (folder / 'session.json').write_text('secret cookies')
             (Path(directory) / 'private').mkdir()
@@ -30,6 +30,7 @@ class ExportTests(unittest.TestCase):
                 self.assertEqual(archive.read('recorder-registro.txt'), b'[oculto]')
                 report = json.loads(archive.read('diagnosticos/20261117/diagnostic.json'))
                 self.assertEqual(report['error'], '[oculto]')
+                self.assertEqual(report['detail'], 'Bearer [oculto]')
                 self.assertEqual(report['url'], 'https://app.agencykey.com/models/52')
 
     def test_urls_remove_credentials_queries_and_unrecognized_paths(self):

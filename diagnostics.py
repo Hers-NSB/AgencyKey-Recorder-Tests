@@ -1,6 +1,7 @@
 """Local, shareable failure reports. Never export browser storage or raw HTML."""
 import asyncio
 from datetime import datetime, timezone
+import json
 import logging
 import re
 import traceback
@@ -108,7 +109,16 @@ def export_diagnostics(destination, activity):
                 if source.is_file() and not source.is_symlink():
                     target = f'diagnosticos/{folder.name}/{name}'
                     if name.endswith('.json'):
-                        archive.writestr(target, redact(source.read_text(encoding='utf-8')))
+                        def clean(value):
+                            if isinstance(value, str):
+                                return redact(value)
+                            if isinstance(value, dict):
+                                return {key: clean(item) for key, item in value.items()}
+                            if isinstance(value, list):
+                                return [clean(item) for item in value]
+                            return value
+                        report = clean(json.loads(source.read_text(encoding='utf-8')))
+                        archive.writestr(target, json.dumps(report, ensure_ascii=False, indent=2))
                     else:
                         archive.write(source, target)
     return len(folders)
