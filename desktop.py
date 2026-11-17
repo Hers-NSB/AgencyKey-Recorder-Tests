@@ -406,10 +406,13 @@ class BotPanel:
 
     def save_log(self):
         path = filedialog.asksaveasfilename(parent=self.manager.root, title='Guardar registro',
-                                          defaultextension='.txt', initialfile='recorder-registro.txt')
+                                          defaultextension='.zip', initialfile='recorder-diagnostico.zip',
+                                          filetypes=[('Diagnóstico completo', '*.zip')])
         if path:
             try:
-                Path(path).write_text(self.activity.get('1.0', 'end-1c'), encoding='utf-8')
+                from diagnostics import export_diagnostics
+                count = export_diagnostics(path, self.activity.get('1.0', 'end-1c'))
+                self.append('INFO', f'Registro exportado con {count} diagnósticos')
             except OSError as error:
                 messagebox.showerror('No se pudo guardar', str(error), parent=self.manager.root)
 

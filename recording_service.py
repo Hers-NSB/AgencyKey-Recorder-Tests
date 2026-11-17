@@ -108,20 +108,37 @@ async def agencykey_login_complete(page):
 
 
 async def verify_profile_route(page, url, username):
+    from diagnostics import capture_failure
+    try:
+        result = await _verify_profile_route(page, url, username)
+    except Exception as error:
+        await capture_failure(page, kind='verificacion', profile_url=url, username=username,
+                              error=error, stage='abrir/verificar Mi perfil')
+        raise
+    if result['status'] != 'ready':
+        http_status = result.pop('_http_status', None)
+        error = result.pop('_diagnostic_error', None) or recorder.FeedAccessError(
+            result['status'], PROFILE_ERRORS[result['status']], observed=result.get('observed_username'))
+        await capture_failure(page, kind='verificacion', profile_url=url, username=username,
+                              error=error, status=result['status'], stage='verificar Mi perfil', http_status=http_status)
+    return result
+
+
+async def _verify_profile_route(page, url, username):
     response = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
     if response is None:
         return {'status': 'connection_error'}
     if response.status == 401:
-        return {'status': 'login_required'}
+        return {'status': 'login_required', '_http_status': response.status}
     if response.status in (403, 404):
-        return {'status': 'unavailable'}
+        return {'status': 'unavailable', '_http_status': response.status}
     if not response.ok:
-        return {'status': 'connection_error'}
+        return {'status': 'connection_error', '_http_status': response.status}
 
     try:
         observed = await recorder.wait_for_model_identity(page, url, username, deadline=monotonic() + 35)
     except recorder.FeedAccessError as error:
-        return {'status': error.status, 'observed_username': error.observed}
+        return {'status': error.status, 'observed_username': error.observed, '_diagnostic_error': error}
     return {'status': 'ready', 'observed_username': observed}
 
 

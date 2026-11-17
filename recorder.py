@@ -308,7 +308,26 @@ async def confirm_start(page, frame, newest: str, *, image_timeout: int = 20_000
         if not reframe or attempt == 3:
             break
         if target:
-            await scroll_down(page, round(target['top'] - 115), frame=frame, anchor=newest, smooth=False)
+            moved = await scroll_down(page, round(target['top'] - 115), frame=frame, anchor=newest, smooth=False)
+            if not moved:
+                cards = await frame.evaluate(SNAPSHOT)
+                target = next((card for card in cards if card['id'] == newest and not card['pinned']), None)
+                if not target or not await frame_is_visible(page, frame):
+                    continue
+                # Short feeds cannot always put a card at 115px. Require its start
+                # and enough content inside the actually visible iframe viewport.
+                bottom = await frame.evaluate('innerHeight')
+                top = 95
+                if frame is not page.main_frame:
+                    box = await (await frame.frame_element()).bounding_box()
+                    if not box:
+                        break
+                    top = max(top, 95 - box['y'])
+                    bottom = min(bottom, await page.evaluate('innerHeight') - box['y'])
+                if top <= target['top'] <= bottom - min(120, target.get('height', 120)):
+                    return {'post_id': newest, 'frame_index': page.frames.index(frame),
+                            'top': round(target['top'], 2), 'images_ready': True, 'visible': True,
+                            'alignment': 'scroll_limit'}
         else:
             locator = frame.locator(
                 f'[id="postId_{newest}"]:not(.m-pinned):visible, '
@@ -515,9 +534,10 @@ async def wait_for_model_identity(page, profile_url, username, *, deadline):
     from playwright.async_api import Error as PlaywrightError
     expected = profile_username(username)
     model_id = int(urlparse(profile_url).path.rstrip('/').rsplit('/', 1)[-1])
-    on_route = opened = False
+    on_route = False
+    attempts, next_open = 0, 0
     observed = set()
-    while monotonic() < deadline:
+    while (now := monotonic()) < deadline:
         try:
             if await agencykey_sign_in_visible(page):
                 raise FeedAccessError('login_required', 'AgencyKey pide iniciar sesión · Reconecta desde el panel web')
@@ -525,8 +545,10 @@ async def wait_for_model_identity(page, profile_url, username, *, deadline):
             observed = await visible_model_profiles(page) if on_route else set()
             if expected and observed == {(model_id, expected)}:
                 return expected
-            if on_route and not opened:
-                opened = await open_my_profile(page, profile_url=profile_url)
+            if on_route and attempts < 3 and now >= next_open:
+                if await open_my_profile(page, profile_url=profile_url):
+                    attempts += 1
+                next_open = now + 3
         except PlaywrightError as error:
             if page.is_closed() or not transient_frame_error(error):
                 raise
@@ -957,6 +979,10 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             except TimeoutError:
                 report['diagnostics'] = []
             save_json(report_path, report)
+            from diagnostics import capture_failure
+            await capture_failure(page, kind='grabacion', profile_url=config['profile_url'],
+                                  username=config.get('creator_username'), error=exc,
+                                  status=report.get('error_code'), post_ids=report['post_ids'], stage=report['stage'])
             print(f'{report["error"]}\nPosts comprobados: {len(report["seen"])}/{len(report["post_ids"])}'
                   f' · siguiente ID: {report["next_post_id"]}\nInforme: {report_path}', flush=True)
             if not headless and not fixture and not page.is_closed() and not (stop_event and stop_event.is_set()):

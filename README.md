@@ -50,6 +50,8 @@ Un fallo de grabación o envío no vuelve a publicar los posts. La app muestra l
 
 La app muestra la etapa del fallo y, si corresponde, el ID de la publicación buscada. Los errores de Telegram distinguen certificados, proxy, DNS y tiempos de espera en el modo de envío manual. La app integrada usa también certificados y proxy de Windows y muestra la etapa y el tipo de fallo, sin registrar tokens. No se desactiva la verificación HTTPS.
 
+Si falla **Verificar Mi perfil** desde la web o la grabación, la app guarda automáticamente el diagnóstico antes de cerrar Chrome. En la app, abre **Ver registro → Guardar registro** y comparte `recorder-diagnostico.zip`: incluye el registro y los últimos 20 diagnósticos locales, con error, etapa, perfil esperado y detectado, paneles visibles, posiciones de posts, carga de imágenes y una captura de la página cuando está disponible. Las capturas ocultan campos de entrada y se omiten en el inicio de sesión; pueden mostrar el contenido del perfil. No se exportan archivos de sesión, cookies, configuración ni HTML. Si Chrome se cerró o no respondió, el informe indica por qué faltan datos o captura.
+
 ## Datos independientes
 
 El EXE guarda trabajos e informes en `%LOCALAPPDATA%\AgencyKeyRecorderTests`; no usa la entrada de acceso de Dropper. El servidor usa un Worker, una base D1, cookies y secretos propios. No se han copiado tokens de bots de producción ni las contraseñas privadas de Dropper: se configuran en la web nueva.
