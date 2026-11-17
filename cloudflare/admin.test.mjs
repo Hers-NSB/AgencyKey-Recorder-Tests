@@ -40,6 +40,9 @@ test('manual web verification shows its own error, downloads a valid ZIP and rec
   const errors=[];page.on('pageerror',e=>errors.push(e.message));let mode='fail';
   await page.route(origin+'/**',async route=>{
    const req=route.request();
+   if(mode==='web_offline'&&req.method()==='POST'&&req.url().includes('/recording-session/feed/')){
+    await route.abort('failed');return;
+   }
    if(req.url().endsWith('/recording-session/check')){
     if(mode==='offline'){
      const row=sqlite.prepare('SELECT value FROM settings WHERE key=?').get('recording_desktop_job');
@@ -79,6 +82,7 @@ test('manual web verification shows its own error, downloads a valid ZIP and rec
   await page.getByRole('button',{name:'Verificar Mi perfil de Lilith',exact:true}).click();
   await page.locator('#profiles-body .muted').filter({hasText:'Mi perfil coincide'}).waitFor();
   await page.getByRole('button',{name:'Ver detalle de verificación de Lilith',exact:true}).click();
+  await page.locator('#web-report-detail').filter({hasText:'Mi perfil coincide'}).waitFor();
   assert.equal(await page.locator('#web-report-image').isVisible(),false);
   assert.ok(!(await page.locator('#web-report-detail').textContent()).includes('no terminó de cargar después del cambio'));
   await page.locator('#web-report-close').click();mode='offline';
@@ -87,6 +91,13 @@ test('manual web verification shows its own error, downloads a valid ZIP and rec
   await page.getByRole('button',{name:'Ver detalle de verificación de Lilith',exact:true}).click();
   await page.locator('#web-report-detail').filter({hasText:'desktop_offline'}).waitFor();
   assert.equal(await page.locator('#web-report-image').isVisible(),false);
+  await page.locator('#web-report-close').click();mode='web_offline';
+  await page.getByRole('button',{name:'Verificar Mi perfil de Lilith',exact:true}).click();
+  await page.locator('#profiles-body .muted').filter({hasText:'No se pudo conectar'}).waitFor();
+  await page.getByRole('button',{name:'Ver detalle de verificación de Lilith',exact:true}).click();
+  await page.locator('#web-report-detail').filter({hasText:'No se pudo conectar'}).waitFor();
+  const localDownload=page.waitForEvent('download');await page.locator('#web-report-download').click();
+  assert.equal((await localDownload).suggestedFilename(),'verificacion-web-52.zip');
   assert.deepEqual(errors,[]);
  }finally{await browser.close();sqlite.close();}
 });

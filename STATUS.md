@@ -6,7 +6,7 @@ AgencyKey Recorder Tests publica lotes de Telegram y graba comprobantes con Chro
 
 El usuario pidió que la verificación manual muestre el detalle y permita descargar su reporte desde la web. Exigió que el manejo de errores web y app sea independiente, y autorizó actualizar y publicar ambas versiones.
 
-Rama: `feat/independent-web-verification-reports`, basada en main `2283fb0`. PR pendiente de creación.
+Rama: `feat/independent-web-verification-reports`, basada en main `2283fb0`. PR [#28](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/pull/28), abierto.
 
 - Web: Ver detalle y Descargar reporte en la fila de cada modelo, incluyendo error, etapa, identidad, geometría y captura si está disponible. Resultado persistente y descarga ZIP desde el panel autenticado.
 - App: los errores y diagnósticos de publicación/grabación conservan su flujo local. La verificación web usa un directorio temporal, devuelve solo su evidencia y no se añade al ZIP de la app ni cambia el estado del bot.
@@ -16,7 +16,7 @@ Rama: `feat/independent-web-verification-reports`, basada en main `2283fb0`. PR 
 
 ## Comprobación
 
-178 pruebas Python sin navegador pasaron; compilación Python y build de Cloudflare correctos. Las pruebas de servidor cubren privacidad, descarga ZIP, rechazo de resultados obsoletos, desconexión y separación respecto a las rutas de las apps. ZIP validado con zipfile de Python: CRC, JSON Unicode y JPEG.
+178 pruebas Python sin navegador pasaron; compilación Python y build de Cloudflare correctos. 35 pruebas de servidor/sesión pasaron y cubren privacidad, descarga ZIP, rechazo de resultados obsoletos, desconexión y separación respecto a las rutas de las apps. ZIP validado con zipfile de Python: CRC, JSON Unicode y JPEG.
 
 Se añadieron pruebas con navegador para descarga web, persistencia tras recarga, recuperación, estado desconectado, vista móvil y captura JPEG sin diagnósticos locales. Chromium está bloqueado en este entorno por socket() failed: Operation not permitted (1); validar estas pruebas en la CI de Ubuntu y Windows antes de publicar.
 
