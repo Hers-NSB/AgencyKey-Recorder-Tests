@@ -15,7 +15,9 @@ Rama `fix/profile-connection-recovery`, [PR #30](https://github.com/Hers-NSB/Age
 
 ## Validación
 
-[CI 44189795770](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/44189795770) correcta en Ubuntu y Windows: 205 pruebas Python, 35 del servidor/sesión, 2 de interfaz web y la grabación de demostración. Ocho pruebas locales de recuperación correctas tras añadir la comprobación de JSON truncado. El último commit y el ejecutable se comprueban de nuevo en la CI de la PR.
+[CI final 44191023652](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/44191023652) correcta en Ubuntu y Windows: 206 pruebas Python, 35 del servidor/sesión, 2 de interfaz web y la grabación de demostración. El build del Worker también es correcto.
+
+[Compilación de Windows 44190385391](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/44190385391) correcta: EXE compilado y probado sin comandos Python. [Descarga de prueba](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/44190385391/artifacts/14376701417). El código Python de ese EXE coincide con el de la revisión final; las modificaciones posteriores afectan al Worker, sus pruebas y este estado. La CI vuelve a compilar el último commit en el workflow 44191023562.
 
 La prueba visual local no pudo iniciar Chromium por restricciones del entorno; las pruebas visuales se ejecutaron correctamente en GitHub. No se usaron cuentas reales para publicar posts ni enviar videos.
 
@@ -25,4 +27,4 @@ Web de producción: servicio v6 en https://agencykey-recorder-tests.datosenviado
 
 ## Siguiente acción
 
-Revisar el resultado de la CI y la compilación de Windows de la PR #30. Tras integrar y publicar la versión aprobada, cerrar la app anterior y abrir el EXE nuevo. Con la app abierta y el bot detenido, cambiar el mismo bot de Lilith (600912674) a Luna (479099623), verificar Mi perfil desde la web y comprobar la recuperación con conexión lenta. Después probar un comprobante real. Los reportes web y app permanecen independientes.
+Revisar e integrar la PR #30 y desplegar el servicio v7 junto con la app actualizada. Tras publicar la versión aprobada, cerrar la app anterior y abrir el EXE nuevo. Con la app abierta y el bot detenido, cambiar el mismo bot de Lilith (600912674) a Luna (479099623), verificar Mi perfil desde la web y comprobar la recuperación con conexión lenta. Después probar un comprobante real. Los reportes web y app permanecen independientes.
