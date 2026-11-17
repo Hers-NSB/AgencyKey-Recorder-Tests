@@ -6,7 +6,7 @@ AgencyKey Recorder Tests publica los lotes de Telegram y graba un comprobante de
 
 Después de cambiar el mismo bot de Lilith (600912674) a Luna (479099623, @luna_lonely), el registro del usuario confirma tres publicaciones correctas. Falló primero la verificación del perfil; al repetirla pasó, pero falló el encuadre inicial del post 2899389023. El registro original no demuestra la causa dentro de Chrome.
 
-Rama: `fix/profile-retry-and-diagnostic-export`, basada en main `cb84952`. PR pendiente de creación; no fusionar automáticamente.
+Rama: `fix/profile-retry-and-diagnostic-export`, basada en main `cb84952`. PR [#27](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/pull/27), abierto y sin fusionar.
 
 - Reintentar Mi perfil hasta tres activaciones, separadas por tres segundos, mientras se comprueba la identidad. Conservar el rechazo de cuentas o modelos distintas.
 - Admitir un inicio visible fuera de 95–145 px cuando no hay desplazamiento posible y el comienzo del post tiene espacio visible suficiente. Conservar la comprobación de ID, imágenes y visibilidad.
