@@ -12,6 +12,10 @@ AgencyKey Recorder Tests publica mensajes reenviados por Telegram y genera un co
 
 [Pruebas de main](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/44192358626) correctas en Windows y Ubuntu, incluida la grabación de demostración. [Compilación oficial de Windows](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/44192358541) correcta.
 
+## En revisión
+
+Rama `fix/recorder-safety-recovery`. Control de Telegram por usuario, acceso por PC con credenciales y sesiones separadas, recuperación de avance del lote y validación de capturas con fotos. Las verificaciones abandonadas caducan tras 30 minutos. La retención de archivos es opcional. La nueva web (v8) y el EXE deben validarse juntos antes de publicarse.
+
 ## Siguiente acción
 
 Con el EXE actualizado abierto, cambiar el mismo bot de Lilith (600912674) a Luna (479099623) y pulsar **Verificar Mi perfil** desde el panel. Después probar un comprobante con la sesión real. La comprobación manual no busca posts y el resultado se consulta en la web.

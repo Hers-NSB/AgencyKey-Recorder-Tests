@@ -16,7 +16,7 @@ const PAGE = String.raw`<!doctype html>
 <form id="access-form" class="settings-form"><h3>Acceso de las apps</h3><label class="field">Nueva contraseña<input id="access-input" type="password" autocomplete="new-password" minlength="8" maxlength="256" required></label><div class="actions"><button class="primary" id="rotate" type="submit">Cambiar contraseña</button></div><p>Se pedirá la nueva contraseña en la próxima descarga de configuraciones.</p><div class="error" id="access-error" role="alert"></div><div class="status" id="access-status" aria-live="polite"></div></form>
 <form id="admin-password-form" class="settings-form"><h3>Acceso de administrador</h3><label class="field">Contraseña actual<input id="admin-current" type="password" autocomplete="current-password" maxlength="256" required></label><label class="field">Nueva contraseña<input id="admin-next" type="password" autocomplete="new-password" minlength="12" maxlength="256" required></label><div class="actions"><button class="primary" id="save-admin-password" type="submit">Cambiar mi contraseña</button></div><div class="error" id="admin-password-error" role="alert"></div><div class="status" id="admin-password-status" aria-live="polite"></div></form></section>
 <div class="status" id="status" aria-live="polite"></div></main></div>
-<dialog class="dialog" id="profile-dialog"><form id="profile-form"><h2 id="dialog-title">Añadir bot</h2><label class="field">Token de Telegram<input id="telegram-token" type="password" autocomplete="new-password" maxlength="256"></label><span class="keep" id="keep-hint" hidden>Vacío para conservar el token actual</span><label class="field">Modelo<select id="creator-id" required><option value="">Selecciona una modelo</option></select></label><label class="field">Nombre de OnlyFans<input id="creator-name" readonly></label><div class="error" id="form-error" role="alert"></div><div class="actions"><button type="button" id="cancel">Cancelar</button><button type="submit" class="primary" id="save">Guardar</button></div></form></dialog>
+<dialog class="dialog" id="profile-dialog"><form id="profile-form"><h2 id="dialog-title">Añadir bot</h2><label class="field">Token de Telegram<input id="telegram-token" type="password" autocomplete="new-password" maxlength="256"></label><span class="keep" id="keep-hint" hidden>Vacío para conservar el token actual</span><label class="field">Modelo<select id="creator-id" required><option value="">Selecciona una modelo</option></select></label><label class="field">Usuarios de Telegram autorizados<input id="telegram-users" placeholder="@usuario1, @usuario2" maxlength="1750"></label><label class="field">Clave de AgencyKey de esta PC<input id="own-api" type="password" autocomplete="new-password" maxlength="512" placeholder="Vacío para conservar la clave guardada"></label><label class="field">Nombre de OnlyFans<input id="creator-name" readonly></label><div class="actions" id="device-actions" hidden><button type="button" id="issue-device">Generar acceso de PC</button><button type="button" id="connect-device" hidden>Conectar AgencyKey de esta PC</button><button type="button" id="revoke-device" class="danger" hidden>Revocar acceso</button></div><label class="field" id="device-code-field" hidden>Código de acceso para la app<input id="device-code" readonly></label><div class="error" id="form-error" role="alert"></div><div class="actions"><button type="button" id="cancel">Cancelar</button><button type="submit" class="primary" id="save">Guardar</button></div></form></dialog>
 <dialog class="dialog" id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message" class="muted"></p><div class="actions"><button id="confirm-cancel">Cancelar</button><button class="primary" id="confirm-accept">Confirmar</button></div></dialog>
 <dialog class="dialog" id="recording-dialog"><h2>Conectar sesión compartida</h2><p id="recording-help" class="muted">Preparando AgencyKey…</p><div class="actions"><button id="recording-cancel">Cancelar</button></div><div class="error" id="recording-error" role="alert"></div></dialog>
 <dialog class="dialog report-dialog" id="web-report-dialog"><h2>Verificación manual del perfil</h2><p class="muted">Este resultado corresponde a la comprobación desde la web. Los errores de publicación y grabación se consultan en la app.</p><pre class="report-detail" id="web-report-detail"></pre><img class="report-image" id="web-report-image" alt="Chrome en el momento del fallo de verificación" hidden><div class="actions"><button id="web-report-download">Descargar reporte</button><button id="web-report-close">Cerrar</button></div><div id="web-report-error" class="error" role="alert"></div></dialog>
@@ -173,14 +173,36 @@ async function verifyPendingFeeds(){
  if(row)await verifyFeed(row.profile,row.status,row.button);
 }
 async function reload(){try{$('reload').disabled=true;$('profiles-error').textContent='';profiles=(await api('/profiles')).profiles;render();}catch(error){$('profiles-error').textContent=error.message;}finally{$('reload').disabled=feedBusy;void verifyPendingFeeds();}}
-function lockForm(locked){['creator-id','telegram-token','cancel','save'].forEach(id=>$(id).disabled=locked);}
+function lockForm(locked){['creator-id','telegram-token','telegram-users','own-api','issue-device','connect-device','revoke-device','cancel','save'].forEach(id=>$(id).disabled=locked);}
 async function openProfile(profile){
- editing=profile||null;$('profile-form').reset();$('creator-id').replaceChildren(new Option('Selecciona una modelo',''));$('creator-name').value='';$('dialog-title').textContent=profile?'Editar bot':'Añadir bot';$('keep-hint').hidden=!profile;$('telegram-token').required=!profile;$('form-error').textContent='Cargando modelos…';$('profile-dialog').showModal();lockForm(true);
+ editing=profile||null;$('profile-form').reset();$('device-actions').hidden=!profile;$('connect-device').hidden=!profile?.device_enabled;$('revoke-device').hidden=!profile?.device_enabled;$('device-code-field').hidden=true;$('telegram-users').value=(profile?.telegram_users||[]).map(name=>'@'+name).join(', ');$('creator-id').replaceChildren(new Option('Selecciona una modelo',''));$('creator-name').value='';$('dialog-title').textContent=profile?'Editar bot':'Añadir bot';$('keep-hint').hidden=!profile;$('telegram-token').required=!profile;$('form-error').textContent='Cargando modelos…';$('profile-dialog').showModal();lockForm(true);
  try{creators=(await api('/creators')).creators;for(const creator of creators){const option=new Option(creator.name, String(creator.external_id));option.disabled=profiles.some(p=>p.id!==editing?.id&&p.creator.external_id===creator.external_id);$('creator-id').add(option);}if(profile){$('creator-id').value=String(profile.creator.external_id);$('creator-name').value=profile.creator.name;}$('form-error').textContent='';}catch(error){$('form-error').textContent=error.message;}finally{lockForm(false);}
 }
 async function resolve(){const request=++resolveRequest;const id=$('creator-id').value;$('creator-name').value='';if(!id)return;checking=true;$('save').disabled=true;$('form-error').textContent='Consultando OnlyFans…';try{const data=await api('/resolve',{method:'POST',body:JSON.stringify({creator_id:id})});if(request===resolveRequest){$('creator-name').value=data.creator.name;$('form-error').textContent='';}}catch(error){if(request===resolveRequest)$('form-error').textContent=error.message;}finally{if(request===resolveRequest){checking=false;$('save').disabled=false;}}}
 $('creator-id').addEventListener('change',resolve);
-$('profile-form').addEventListener('submit',async event=>{event.preventDefault();if(saving||checking)return;saving=true;lockForm(true);$('form-error').textContent='Guardando…';const id=editing?editing.id:crypto.randomUUID();try{await api('/profiles/'+id,{method:'PUT',body:JSON.stringify({creator_id:$('creator-id').value,telegram_token:$('telegram-token').value.trim(),revision:editing?editing.revision:0})});$('telegram-token').value='';$('profile-dialog').close();await reload();$('status').textContent='Configuración guardada';}catch(error){$('form-error').textContent=error.message;}finally{saving=false;lockForm(false);}});
+$('profile-form').addEventListener('submit',async event=>{event.preventDefault();if(saving||checking)return;saving=true;lockForm(true);$('form-error').textContent='Guardando…';const id=editing?editing.id:crypto.randomUUID();try{await api('/profiles/'+id,{method:'PUT',body:JSON.stringify({creator_id:$('creator-id').value,telegram_token:$('telegram-token').value.trim(),telegram_users:$('telegram-users').value.split(/[\s,]+/).filter(Boolean),own_api:$('own-api').value.trim(),revision:editing?editing.revision:0})});$('telegram-token').value='';$('profile-dialog').close();await reload();$('status').textContent='Configuración guardada';}catch(error){$('form-error').textContent=error.message;}finally{saving=false;lockForm(false);}});
+$('issue-device').addEventListener('click',async()=>{
+ if(!editing || !await askConfirm('¿Generar acceso de PC?',
+   'Si había un código anterior, caducará. La PC deberá conectar AgencyKey con el nuevo código.', 'Generar código'))return;
+ lockForm(true);
+ try {
+  const data=await api('/profiles/'+editing.id+'/device',{method:'POST',body:'{}'});
+  $('device-code').value=data.code;$('device-code-field').hidden=false;$('connect-device').hidden=false;$('revoke-device').hidden=false;
+  await reload();
+ } catch(error) {$('form-error').textContent=error.message;}
+ finally {lockForm(false);}
+});
+$('revoke-device').addEventListener('click',async()=>{
+ if(!editing || !await askConfirm('¿Revocar acceso de esta PC?',
+   'El código quedará invalidado y se retirará la sesión de Chrome de esta PC.', 'Revocar acceso'))return;
+ lockForm(true);
+ try {
+  await api('/profiles/'+editing.id+'/device',{method:'DELETE'});
+  $('profile-dialog').close();await reload();$('status').textContent='Acceso revocado';
+ } catch(error) {$('form-error').textContent=error.message;}
+ finally {lockForm(false);}
+});
+$('connect-device').addEventListener('click',()=>{if(editing){$('profile-dialog').close();void connectRecording(editing.id);}});
 function close(){if(!saving&&!checking){resolveRequest++;$('profile-form').reset();$('profile-dialog').close();}}
 $('cancel').addEventListener('click',close);$('profile-dialog').addEventListener('cancel',event=>{if(saving||checking)event.preventDefault();else{$('profile-form').reset();resolveRequest++;}});
 async function deleteProfile(profile,button){if(!await askConfirm('¿Eliminar este bot?','Se eliminará la configuración de '+profile.creator.name+'. Sus publicaciones se conservarán.','Eliminar bot'))return;button.disabled=true;try{await api('/profiles/'+profile.id,{method:'DELETE',headers:{'If-Match':String(profile.revision)}});await reload();}catch(error){$('profiles-error').textContent=error.message;button.disabled=false;}}
@@ -224,18 +246,19 @@ async function checkRecording(generation){
   if(generation===recordingGeneration){$('recording-error').textContent=error.message;if(error.retryable)recordingTimer=setTimeout(()=>checkRecording(generation),2500);}
  }
 }
-$('connect-recording').addEventListener('click',async()=>{
+async function connectRecording(profileId){
  if(recordingBusy)return;recordingBusy=true;stopRecordingPoll();recordingJob=null;
  const generation=recordingGeneration;
  $('recording-error').textContent='';$('recording-help').textContent='Esperando la app de Windows…';
  $('recording-dialog').showModal();$('recording-cancel').disabled=true;
  try{
   const requestId=crypto.randomUUID();
-  const data=await verificationRequest('/recording-session/connect',{method:'POST',body:JSON.stringify({request_id:requestId})},message=>{$('recording-help').textContent=message;},()=>generation===recordingGeneration&&$('recording-dialog').open);
+  const data=await verificationRequest('/recording-session/connect',{method:'POST',body:JSON.stringify({request_id:requestId,profile_id:profileId})},message=>{$('recording-help').textContent=message;},()=>generation===recordingGeneration&&$('recording-dialog').open);
   recordingJob=data.id;recordingTimer=setTimeout(()=>checkRecording(generation),2500);
  }catch(error){$('recording-error').textContent=error.message;}
  finally{recordingBusy=false;$('recording-cancel').disabled=false;}
-});
+}
+$('connect-recording').addEventListener('click',()=>connectRecording());
 async function cancelRecording(){
  if(recordingBusy)return;recordingBusy=true;$('recording-cancel').disabled=true;
  try{

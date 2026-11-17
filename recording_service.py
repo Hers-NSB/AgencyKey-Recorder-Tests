@@ -168,7 +168,7 @@ async def run_verification_engine(client, stop_event, *, current=lambda: True, n
                 if job:
                     await run_desktop_recording_job(client, job, stop_event, browser_session=browser)
                 else:
-                    await recovery_pause(stop_event, 3)
+                    await recovery_pause(stop_event, 10)
             except AccessDenied:
                 raise
             except CloudError as error:
@@ -378,6 +378,7 @@ class RecordingCoordinator:
             return None
         return SimpleNamespace(id=job['batch_id'], status='done', creator=self.creator,
                                order=list(range(len(ids))), published_ids={i+1: value for i, value in enumerate(ids)},
+                               photo_post_ids=job.get('photo_post_ids', []),
                                started_wall_at=job.get('started_wall_at'), session_total=job.get('session_total', len(ids)),
                                rejected=job.get('rejected', []))
 
@@ -386,12 +387,20 @@ class RecordingCoordinator:
         job = dict(previous or {})
         job.update(batch_id=batch.id, chat_id=chat_id, creator_id=int(self.creator.external_id))
         job['post_ids_oldest_first'] = [batch.published_ids[n] for n in range(1, len(batch.order)+1)]
+        if hasattr(batch, 'received'):
+            job['photo_post_ids'] = [batch.published_ids[n] for n, message_id in enumerate(batch.order, 1)
+                                     if message_id in batch.received and batch.received[message_id].photo_id]
+        else:
+            job.setdefault('photo_post_ids', getattr(batch, 'photo_post_ids', []))
         job.setdefault('started_wall_at', getattr(batch, 'started_wall_at', None) or time())
         job.setdefault('session_total', getattr(batch, 'session_total', 0) or len(batch.order))
         job.setdefault('rejected', list(getattr(batch, 'rejected', [])))
         path = self.job_path(chat_id)
         try:
             report_path = Path(job['report']) if job.get('report') else None
+            if report_path is not None and not recorder.has_capture_validation(report_path):
+                report_path = None
+                job.pop('report', None)
             if report_path is None:
                 self.progress({'stage': 'preparando comprobante', 'completed': 0, 'total': len(batch.order)})
                 job['status'] = 'recording'
@@ -403,7 +412,7 @@ class RecordingCoordinator:
                 ids = [recorder.post_id(batch.published_ids[n]) for n in range(len(batch.order), 0, -1)]
                 config = recorder.validate_config({'profile_url': recorder.model_profile_url(self.creator.external_id),
                                                    'creator_username': self.creator.username,
-                                                   'post_ids_newest_first': ids})
+                                                   'post_ids_newest_first': ids, 'photo_post_ids': job['photo_post_ids']})
                 options = {}
                 if self.session_client:
                     self.progress({'stage': 'cargando sesión de AgencyKey', 'completed': 0, 'total': len(batch.order)})

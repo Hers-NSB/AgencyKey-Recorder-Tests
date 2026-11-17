@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import sys
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
@@ -56,7 +57,19 @@ def validate_config(data: dict) -> dict:
 
 def save_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
+    payload = json.dumps(data, indent=2, ensure_ascii=False)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix=path.name + '.', suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def load_config() -> dict:
@@ -166,6 +179,11 @@ SNAPSHOT = post_expression(r'''() => [...document.querySelectorAll('POST_SELECTO
  const r=e.getBoundingClientRect();
  return {id:POST_ID(e),top:r.top,bottom:r.bottom,height:r.height,
  pinned:e.classList.contains('m-pinned'),
+ readyImage:[...e.querySelectorAll('img')].some(img => {
+   const box=img.getBoundingClientRect();
+   return img.complete && img.naturalWidth>0 && box.width>=32 && box.height>=32 &&
+     box.bottom>100 && box.top<innerHeight && img.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+ }),
  visible:r.bottom>100 && r.top<innerHeight && r.right>0 && r.left<innerWidth
   && r.width>0 && r.height>0 && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})};
 }).filter(p=>p.id && p.visible).sort((a,b)=>a.top-b.top)''')
@@ -610,11 +628,14 @@ async def prepare_feed(page, ids, *, timeout=600, profile_url=None):
 
 async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 600, *,
                        frame=None, seen=None, on_progress=None, reset_on_progress=False,
-                       image_timeout: int = 20_000, profile_url=None) -> list[str]:
+                       image_timeout: int = 20_000, profile_url=None, capture=None, photo_ids=()) -> list[str]:
     frame = frame or await post_frame(page) or page.main_frame
     seen = [] if seen is None else seen
     deadline = monotonic() + timeout
+    photographed = set()
     while monotonic() < deadline:
+        if capture:
+            capture.accepting = False
         if profile_url and (not same_profile_route(page.url, profile_url)
                             or not frame_matches_model(frame, profile_url)):
             raise FeedAccessError('wrong_profile', 'El perfil activo cambió durante el comprobante')
@@ -625,6 +646,13 @@ async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 
         await images_ready(page, timeout=image_timeout, frame=frame)
         _, _, height = await frame_geometry(page, frame)
         cards = await frame.evaluate(SNAPSHOT)
+        if not cards:
+            await page.wait_for_timeout(250)
+            continue
+        photographed.update(card['id'] for card in cards if card.get('readyImage') and not card['pinned'])
+        if capture and any(card['id'] in ids and not card['pinned'] for card in cards):
+            await capture.checkpoint()
+            capture.accepting = True
         for card in cards:
             if card['pinned'] or card['id'] not in ids or card['id'] in seen or not (100 <= card['top'] < height - 40):
                 continue
@@ -640,8 +668,12 @@ async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 
                 deadline = monotonic() + timeout
         last = next((p for p in cards if p['id'] == ids[-1] and not p['pinned']), None)
         if last and 100 < last['bottom'] <= height - 20 and seen == ids:
+            if missing_photos := set(photo_ids) - photographed:
+                raise ValueError('No se comprobaron las fotos de los posts: ' + ', '.join(sorted(missing_photos)))
             await page.wait_for_timeout(dwell * 1000)
             return seen
+        if capture:
+            capture.accepting = False
         if not await scroll_down(page, frame=frame):
             await page.wait_for_timeout(250)
     remaining = next((pid for pid in ids if pid not in seen), None)
@@ -668,6 +700,7 @@ class TabCapture:
     def __init__(self, folder: Path):
         self.folder = folder
         self.frames: list[tuple[float, str]] = []
+        self.checkpoints: set[str] = set()
         self.pending: set[asyncio.Task] = set()
         self.session = None
         self.accepting = False
@@ -700,6 +733,7 @@ class TabCapture:
         async with asyncio.timeout(15):
             result = await self.session.send('Page.captureScreenshot', {'format': 'jpeg', 'quality': 80})
         self.save_frame(result['data'])
+        self.checkpoints.add(self.frames[-1][1])
 
     async def start(self, page) -> None:
         self.folder.mkdir()
@@ -740,11 +774,12 @@ class TabCapture:
 
     def encode(self, target: Path) -> float:
         manifest = self.folder / 'frames.ffconcat'
-        duration = self.frames[-1][0] - self.frames[0][0] + 0.30
+        holds = [min(.45, max(.10 if current[1] in self.checkpoints else .001, following[0] - current[0]))
+                 for current, following in zip(self.frames, self.frames[1:])] + [.30]
+        duration = sum(holds)
         with manifest.open('w', encoding='ascii') as stream:
             stream.write('ffconcat version 1.0\n')
-            for index, (stamp, name) in enumerate(self.frames):
-                hold = max(.001, self.frames[index + 1][0] - stamp) if index + 1 < len(self.frames) else .30
+            for (_, name), hold in zip(self.frames, holds):
                 stream.write(f"file '{name}'\nduration {hold:.6f}\n")
             stream.write(f"file '{self.frames[-1][1]}'\n")
         command = [ffmpeg_path(), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-i', str(manifest),
@@ -964,6 +999,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 async with asyncio.timeout(walk_limit if fixture else None):
                     await capture_walk(page, config['post_ids_newest_first'], dwell=dwell, timeout=walk_limit,
                                        frame=first['_frame'], seen=report['seen'], on_progress=on_progress,
+                                       capture=capture, photo_ids=config.get('photo_post_ids', ()),
                                        **({} if fixture else {'reset_on_progress': True,
                                                               'image_timeout': SLOW_IMAGE_TIMEOUT_MS,
                                                               'profile_url': url}))
@@ -1036,7 +1072,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         stage('convertir video a MP4')
         video = output / 'comprobante.mp4'
         duration = await asyncio.to_thread(capture.encode, video)
-        report.update(status='complete', stage='completo', duration_seconds=round(duration, 2),
+        report.update(status='complete', capture_validation=2, stage='completo', duration_seconds=round(duration, 2),
                       bytes=video.stat().st_size, sha256=hashlib.sha256(video.read_bytes()).hexdigest(),
                       video='comprobante.mp4')
         if on_progress:
@@ -1052,6 +1088,13 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         # Never retain setup/login navigation or incomplete captures.
         if capture.folder.exists():
             shutil.rmtree(capture.folder)
+
+
+def has_capture_validation(report_path: Path) -> bool:
+    try:
+        return json.loads(report_path.read_text(encoding='utf-8')).get('capture_validation') == 2
+    except (OSError, ValueError):
+        return False
 
 
 def verified_video(report_path: Path) -> tuple[dict, Path]:

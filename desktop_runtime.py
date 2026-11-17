@@ -78,13 +78,16 @@ class BotController:
         from main import main
         from agencykey import Creator
         from config import register_secrets
+        telegram_users = ()
         if self.credential_loader:
             profile = self.credential_loader()
             self.credentials = (profile['telegram_token'], profile['api_key'])
             self.creator = Creator(**profile['creator'])
+            telegram_users = profile.get('telegram_users', ())
             register_secrets(*self.credentials)
             self.events.put(('setup_stage', self.creator.name))
         if not stop_event.is_set():
             main(stop_event=stop_event, on_ready=on_ready, credentials=self.credentials, creator=self.creator,
-                 recording_events=self.events, recording_session_client=self.session_client)
+                 recording_events=self.events, recording_session_client=self.session_client,
+                 telegram_users=telegram_users)
 

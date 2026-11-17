@@ -19,7 +19,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         bot = DropperBot(SimpleNamespace(publish_text=AsyncMock(side_effect=AgencyKeyError('error'))))
         await bot.publish_batch(batch, update(), ctx)
         await bot.status(update(), ctx)
-        ctx.bot.copy_message.assert_not_awaited()
+        ctx.bot.copy_message.assert_awaited_once()
         await bot.resume(update(), ctx)
         await bot.resume(update(), ctx)
         ctx.bot.copy_message.assert_awaited_once_with(chat_id=123, from_chat_id=123, message_id=1)

@@ -773,6 +773,9 @@ class DropperWindow:
                 self.cloud_online = False
                 if isinstance(error, AccessDenied):
                     self.auth_required = True
+                    for panel in self.panels.values():
+                        if panel.controller.running:
+                            panel.stop()
                     self.update_hint.set('Actualiza para volver a conectar')
                 else:
                     self.status.set(str(error))
@@ -813,9 +816,9 @@ class DropperWindow:
                 model_changed = profile['creator']['external_id'] != panel.profile['creator']['external_id']
                 if self.revisions([profile]) != self.revisions([panel.profile]) or model_changed or panel.pending_profile:
                     panel.pending_profile = profile
-                    if model_changed and panel.mode != 'stopping':
+                    if (model_changed or profile.get('telegram_users', []) != panel.profile.get('telegram_users', [])) and panel.mode != 'stopping':
                         panel.stop()
-                        panel.append('WARNING', 'Modelo cambiada en el panel · Reinicia el bot cuando se detenga')
+                        panel.append('WARNING', 'Configuración cambiada en el panel · Reinicia el bot cuando se detenga')
             else:
                 panel.pending_profile = None
                 panel.refresh_profile(profile)
@@ -1145,6 +1148,9 @@ def main():
     if args.smoke_test:
         smoke_test(args.screenshot)
     else:
+        from recorder import ROOT
+        from retention import prune_generated
+        prune_generated(ROOT)
         root = tk.Tk()
         DropperWindow(root)
         root.mainloop()

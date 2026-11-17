@@ -1,6 +1,5 @@
-- La verificación reutiliza la pestaña de Chrome al cambiar de modelo y confirma la identidad de Mi perfil sin buscar posts.
-- Las cargas incompletas y los cortes temporales se reintentan hasta completar la verificación o cancelarla desde la web.
-- La web retoma las verificaciones pendientes al recargarse y conserva la misma solicitud cuando se pierde una respuesta.
-- La app reenvía el resultado pendiente cuando vuelve la conexión; no inicia otra verificación para repetir ese envío.
-- Antes de grabar se recupera la navegación y la carga del perfil; se conserva la comprobación de identidad y no se envían videos incompletos.
-- Cierra la app anterior y utiliza el EXE actualizado. Actualizar configuraciones no reemplaza el ejecutable.
+- Acceso al bot por nombres de usuario de Telegram configurados en el panel.
+- Códigos de PC revocables con una clave y sesión de AgencyKey separadas por bot.
+- Recuperación del lote tras un reinicio y aviso inmediato con el número del post fallido y el enlace que necesita el bot.
+- El comprobante omite las esperas de carga y se bloquea si faltan posts o fotos que debían aparecer.
+- Retención local opcional para videos y diagnósticos. Actualiza el EXE para usar los accesos por PC.

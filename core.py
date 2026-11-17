@@ -47,6 +47,7 @@ class Batch:
     session_total: int = 0
     slow: bool = False
     retry_at: float | None = None
+    awaiting_confirmation: bool = False
 
     def start_timer(self) -> None:
         if self.started_at is None:
@@ -83,6 +84,7 @@ class Batch:
         log.info("Drop %s | Post #%d confirmado manualmente por el usuario.", self.id, self.cursor + 1)
         self.cursor += 1
         self.failed = False
+        self.awaiting_confirmation = False
         self.recovery_delivered = False
 
     async def publish(
@@ -90,11 +92,13 @@ class Batch:
         notify: Callable[[str], Awaitable[None]] | None = None,
         session: SessionStats | None = None,
         on_stage: Callable[[str], None] | None = None,
+        checkpoint: Callable[[], None] = lambda: None,
     ) -> None:
         self.start_timer()
         self.retry_at = None
         self.attempt += 1
         self.status = "publishing"
+        checkpoint()
         self.error = ""
         self.uncertain = False
         self.failed = False
@@ -108,6 +112,7 @@ class Batch:
                 self.status = "paused"
                 self.error = "Parada solicitada desde la ventana. Los posts pendientes no se enviarán."
                 log.warning("Drop %s | %s", self.id, self.error)
+                checkpoint()
                 return
             post = self.received[self.order[self.cursor]]
             if notify:
@@ -120,16 +125,22 @@ class Batch:
                     photo = await download_photo(post.photo_id)
                     if on_stage:
                         on_stage("Subiendo foto a AgencyKey")
+                    self.awaiting_confirmation = True
+                    checkpoint()
                     post_id = await agencykey.publish_photo(self.creator.external_id, post.text, photo, slow=self.slow)
                 else:
                     if on_stage:
                         on_stage("Creando post en AgencyKey")
+                    self.awaiting_confirmation = True
+                    checkpoint()
                     post_id = await agencykey.publish_text(self.creator.external_id, post.text,
                                                            expire=True, slow=self.slow)
             except PublishRateLimited as error:
                 self.status = "paused"
                 self.error = str(error)
                 self.retry_at = error.retry_at
+                self.awaiting_confirmation = False
+                checkpoint()
                 log.warning("Drop %s | %s", self.id, self.error)
                 return
             except AgencyKeyError as error:
@@ -137,6 +148,8 @@ class Batch:
                 self.failed = True
                 self.error = str(error)
                 self.uncertain = isinstance(error, UnconfirmedPost)
+                self.awaiting_confirmation = self.uncertain
+                checkpoint()
                 log.error("Drop %s | Post #%d | %s", self.id, self.cursor + 1, self.error)
                 if self.uncertain:
                     log.warning("Drop %s | Resultado sin confirmar: revisa el feed antes de continuar.", self.id)
@@ -146,10 +159,13 @@ class Batch:
                 self.failed = True
                 self.error = f"Error inesperado ({type(error).__name__}). Revisa la consola."
                 self.uncertain = True
+                checkpoint()
                 log.exception("Drop %s | Post #%d | Error inesperado.", self.id, self.cursor + 1)
                 return
             self.published_ids[self.cursor + 1] = str(post_id)
             self.cursor += 1
+            self.awaiting_confirmation = False
+            checkpoint()
             if session is not None:
                 session.automatic += 1
             log.info("Drop %s | Post #%d confirmado | ID %s.", self.id, self.cursor, post_id)
@@ -159,6 +175,7 @@ class Batch:
                 await notify(f"✅ Post #{self.cursor} confirmado")
         self.status = "done"
         self.finished_at = monotonic()
+        checkpoint()
         log.info("Drop %s completado | %d automáticas | %d manuales | Tiempo total: %s.",
                  self.id, self.confirmed, len(self.manual), self.elapsed_text)
 

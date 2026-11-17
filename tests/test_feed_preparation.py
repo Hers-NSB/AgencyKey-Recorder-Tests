@@ -99,3 +99,21 @@ class FeedPreparationTests(IsolatedAsyncioTestCase):
         open_profile.assert_awaited_once_with(page)
         scroll.assert_awaited_once_with(page, 340, frame=frame, smooth=False)
         self.assertEqual([call.args for call in page.wait_for_timeout.await_args_list], [(700,), (500,)])
+
+    async def test_capture_excludes_empty_feed_and_rejects_missing_photo(self):
+        cards = [
+            [],
+            [{'id': '200', 'pinned': False, 'top': 115, 'bottom': 230, 'readyImage': True}],
+            [{'id': '100', 'pinned': False, 'top': 115, 'bottom': 230, 'readyImage': False}],
+        ]
+        capture = SimpleNamespace(accepting=True, checkpoint=AsyncMock())
+        page = SimpleNamespace(wait_for_timeout=AsyncMock())
+        frame = SimpleNamespace(is_detached=lambda: False, evaluate=AsyncMock(side_effect=cards))
+        with patch.object(recorder, 'frame_is_visible', new=AsyncMock(return_value=True)), \
+             patch.object(recorder, 'frame_geometry', new=AsyncMock(return_value=(0, 0, 720))), \
+             patch.object(recorder, 'images_ready', new=AsyncMock()), \
+             patch.object(recorder, 'scroll_down', new=AsyncMock()):
+            with self.assertRaisesRegex(ValueError, 'fotos de los posts: 100'):
+                await recorder.capture_walk(page, ['200', '100'], frame=frame,
+                                            capture=capture, photo_ids=['200', '100'])
+        self.assertEqual(capture.checkpoint.await_count, 2)
