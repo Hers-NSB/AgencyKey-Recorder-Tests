@@ -1,9 +1,12 @@
+import {reportZip} from './web-report.mjs';
+
 const PAGE = String.raw`<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>AgencyKey Recorder Tests · Administración</title>
 <style nonce="__NONCE__">
 :root{font:14px/1.5 'Segoe UI',system-ui,sans-serif;color:#eef2fa;background:#10131a;color-scheme:dark;--muted:#a3aec2;--line:#30394a;--panel:#1f2633;--surface:#181d27;--brand:#738bff;--green:#52d9a6;--red:#f68d9d}*{box-sizing:border-box}body{margin:0}button,input,select{font:inherit}button{cursor:pointer;border:1px solid var(--line);background:var(--panel);color:inherit;border-radius:7px;padding:10px 14px;min-height:42px;display:inline-flex;align-items:center;justify-content:center;gap:7px}button:hover{filter:brightness(1.1)}button:disabled{opacity:.5;cursor:default}.primary{background:var(--brand);border-color:var(--brand);color:#10131a}.danger{color:var(--red)}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #90a2ff;outline-offset:3px}input,select{padding:11px;border:1px solid var(--line);border-radius:7px;width:100%;background:var(--panel);color:inherit;min-width:0}input[readonly]{color:var(--green)}[hidden]{display:none!important}h1,h2,h3,p{margin:0}h1{font-size:23px;font-weight:500}h2{font-size:21px;font-weight:500}h3{font-size:17px;font-weight:500}.muted{color:var(--muted);font-size:13px}.brand{font-size:24px;font-weight:500}.top{max-width:1180px;margin:auto;display:flex;align-items:center;justify-content:space-between;padding:24px;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--line)}.actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:18px}.shell{max-width:1180px;margin:auto;display:grid;grid-template-columns:190px minmax(0,1fr);min-height:540px}.nav{padding:26px 18px;display:flex;flex-direction:column;gap:8px}.nav button{border-color:transparent;background:transparent;justify-content:flex-start;text-align:left}.nav button[aria-selected=true]{background:var(--panel);border-color:var(--line)}main{padding:28px 24px;background:var(--surface);min-width:0}.heading{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:20px}.heading .actions{margin:0}.model-name{font-size:16px;font-weight:500}.bot-row{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;padding:18px 0;border-bottom:1px solid var(--line)}.row-actions{display:flex;gap:7px}.row-actions button{font-size:13px;padding:8px 12px}.empty{padding:40px 0;color:var(--muted)}.field{display:grid;gap:7px;margin:17px 0;color:var(--muted);font-size:13px}.error{color:var(--red);font-size:13px;white-space:pre-wrap}.error:not(:empty){margin:12px 0}.status{color:var(--green);font-size:13px;min-height:22px;margin-top:12px}.dialog::backdrop{background:#000b}.dialog{border:1px solid var(--line);border-radius:12px;background:var(--surface);color:inherit;width:470px;max-width:calc(100% - 28px);padding:26px;max-height:calc(100% - 32px);overflow:auto}.dialog .actions{justify-content:flex-end}.settings-form{max-width:520px;margin-top:26px}.settings-form+.settings-form{border-top:1px solid var(--line);padding-top:26px}.settings-form p{margin-top:14px;color:var(--muted);font-size:13px}.settings-form .actions{margin:18px 0}.access-note{font-size:12px;color:var(--muted)}.keep{font-size:12px;color:var(--muted)}.login-wrap{padding:24px 16px}.login-form{max-width:410px;margin:45px auto;padding:28px;background:var(--surface);border:1px solid var(--line);border-radius:12px}.login-form p{margin-top:10px}.top-right{display:flex;gap:12px;align-items:center}
 @media(max-width:680px){.shell{grid-template-columns:1fr}.nav{flex-direction:row;flex-wrap:wrap;padding:14px}main{padding:20px 16px}.top{padding:18px}.dialog{padding:20px}.bot-row{gap:12px}.top .access-note{width:100%}}
 @media(pointer:coarse){input,select{font-size:16px}button{min-height:44px}}
+.report-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.report-actions button{font-size:13px;padding:6px 10px}.report-dialog{width:850px}.report-detail{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.5 monospace;margin:16px 0}.report-image{max-width:100%;height:auto;border:1px solid var(--line)}.row-actions{flex-wrap:wrap}
 </style></head><body>
 <header class="top"><div><span class="brand">AgencyKey Recorder Tests</span><span class="muted"> / Administración</span></div><div class="top-right"><button id="logout" hidden>Cerrar sesión</button></div></header>
 <div id="login-view" class="login-wrap" hidden><form id="login-form" class="login-form"><h1 id="login-title">Entrar a AgencyKey Recorder Tests</h1><p id="login-help" class="muted">Introduce tu contraseña de administrador</p><label class="field">Contraseña<input id="admin-password" type="password" autocomplete="current-password" maxlength="256" required></label><label class="field" id="confirm-field" hidden>Repite la contraseña<input id="admin-confirm" type="password" autocomplete="new-password" maxlength="256"></label><button class="primary" id="login-button" type="submit">Entrar</button><div class="error" id="login-error" role="alert"></div></form></div>
@@ -16,10 +19,13 @@ const PAGE = String.raw`<!doctype html>
 <dialog class="dialog" id="profile-dialog"><form id="profile-form"><h2 id="dialog-title">Añadir bot</h2><label class="field">Token de Telegram<input id="telegram-token" type="password" autocomplete="new-password" maxlength="256"></label><span class="keep" id="keep-hint" hidden>Vacío para conservar el token actual</span><label class="field">Modelo<select id="creator-id" required><option value="">Selecciona una modelo</option></select></label><label class="field">Nombre de OnlyFans<input id="creator-name" readonly></label><div class="error" id="form-error" role="alert"></div><div class="actions"><button type="button" id="cancel">Cancelar</button><button type="submit" class="primary" id="save">Guardar</button></div></form></dialog>
 <dialog class="dialog" id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message" class="muted"></p><div class="actions"><button id="confirm-cancel">Cancelar</button><button class="primary" id="confirm-accept">Confirmar</button></div></dialog>
 <dialog class="dialog" id="recording-dialog"><h2>Conectar sesión compartida</h2><p id="recording-help" class="muted">Preparando AgencyKey…</p><div class="actions"><button id="recording-cancel">Cancelar</button></div><div class="error" id="recording-error" role="alert"></div></dialog>
+<dialog class="dialog report-dialog" id="web-report-dialog"><h2>Verificación manual del perfil</h2><p class="muted">Este resultado corresponde a la comprobación desde la web. Los errores de publicación y grabación se consultan en la app.</p><pre class="report-detail" id="web-report-detail"></pre><img class="report-image" id="web-report-image" alt="Chrome en el momento del fallo de verificación" hidden><div class="actions"><button id="web-report-download">Descargar reporte</button><button id="web-report-close">Cerrar</button></div><div id="web-report-error" class="error" role="alert"></div></dialog>
 <script nonce="__NONCE__">
 (()=>{
 'use strict';
 const $=id=>document.getElementById(id);
+const reportZip=__REPORT_ZIP__;
+let currentWebReport=null;
 let profiles=[],creators=[],editing=null,saving=false,checking=false,resolveRequest=0;
 let confirmResolve=null,recordingTimer=null,recordingBusy=false,recordingGeneration=0,recordingJob=null,feedBusy=false;
 const feedRows=new Map();
@@ -35,6 +41,7 @@ async function api(path,options={}) {
  return data;
 }
 function showLogin(){
+ currentWebReport=null;$('web-report-image').removeAttribute('src');$('web-report-image').hidden=true;$('web-report-detail').textContent='';$('web-report-dialog').close();
  stopRecordingPoll();$('recording-dialog').close();if(confirmResolve)finishConfirm(false);
  profiles=[];creators=[];feedRows.clear();renderPending=false;resolveRequest++;$('profiles-body').replaceChildren();$('profile-form').reset();$('agency-form').reset();$('access-form').reset();$('admin-password-form').reset();$('admin-password').value='';$('admin-confirm').value='';
  if($('profile-dialog').open)$('profile-dialog').close();$('app-view').hidden=true;$('logout').hidden=true;$('login-view').hidden=false;
@@ -48,8 +55,39 @@ function section(which){const list=which==='profiles';$('profiles-section').hidd
 function render(){
  if(feedBusy){renderPending=true;return;}
  feedRows.clear();$('profiles-body').replaceChildren();$('empty').hidden=profiles.length>0;
- for(const profile of profiles){const row=document.createElement('div');row.className='bot-row';const details=document.createElement('div');const name=document.createElement('div');name.className='model-name';name.textContent=profile.creator.name;details.append(name);const user=document.createElement('div');user.className='muted';user.textContent=(profile.creator.username?'@'+profile.creator.username+' · ':'')+'Token configurado';details.append(user);const feed=document.createElement('div');feed.className='muted';feed.textContent=feedLabel(profile.feed);feed.setAttribute('aria-live','polite');details.append(feed);const actions=document.createElement('div');actions.className='row-actions';const edit=document.createElement('button');edit.textContent='Editar';edit.setAttribute('aria-label','Editar '+profile.creator.name);edit.addEventListener('click',()=>openProfile(profile));const remove=document.createElement('button');remove.textContent='Eliminar';remove.className='danger';remove.setAttribute('aria-label','Eliminar '+profile.creator.name);remove.addEventListener('click',()=>deleteProfile(profile,remove));const verify=document.createElement('button');verify.textContent='Verificar Mi perfil';verify.setAttribute('aria-label','Verificar Mi perfil de '+profile.creator.name);verify.addEventListener('click',()=>verifyFeed(profile,feed,verify));actions.append(verify,edit,remove);feedRows.set(profile.id,{profile,status:feed,button:verify});row.append(details,actions);$('profiles-body').append(row);}
+ for(const profile of profiles){const row=document.createElement('div');row.className='bot-row';const details=document.createElement('div');const name=document.createElement('div');name.className='model-name';name.textContent=profile.creator.name;details.append(name);const user=document.createElement('div');user.className='muted';user.textContent=(profile.creator.username?'@'+profile.creator.username+' · ':'')+'Token configurado';details.append(user);const feed=document.createElement('div');feed.className='muted';feed.textContent=feedLabel(profile.feed);feed.setAttribute('aria-live','polite');details.append(feed);const reportActions=document.createElement('div');reportActions.className='report-actions';reportActions.hidden=!hasWebResult(profile.feed);const detail=document.createElement('button');detail.textContent='Ver detalle';detail.setAttribute('aria-label','Ver detalle de verificación de '+profile.creator.name);detail.addEventListener('click',()=>showWebReport(profile));const download=document.createElement('button');download.textContent='Descargar reporte';download.setAttribute('aria-label','Descargar reporte web de '+profile.creator.name);download.addEventListener('click',()=>showWebReport(profile,true));reportActions.append(detail,download);details.append(reportActions);const actions=document.createElement('div');actions.className='row-actions';const edit=document.createElement('button');edit.textContent='Editar';edit.setAttribute('aria-label','Editar '+profile.creator.name);edit.addEventListener('click',()=>openProfile(profile));const remove=document.createElement('button');remove.textContent='Eliminar';remove.className='danger';remove.setAttribute('aria-label','Eliminar '+profile.creator.name);remove.addEventListener('click',()=>deleteProfile(profile,remove));const verify=document.createElement('button');verify.textContent='Verificar Mi perfil';verify.setAttribute('aria-label','Verificar Mi perfil de '+profile.creator.name);verify.addEventListener('click',()=>verifyFeed(profile,feed,verify));actions.append(verify,edit,remove);feedRows.set(profile.id,{profile,status:feed,button:verify,reportActions});row.append(details,actions);$('profiles-body').append(row);}
 }
+function hasWebResult(result){return result && !['pending','queued','running','finishing'].includes(result.status);}
+async function webReport(profile){
+ const feed=profile.feed||{};
+ if(feed.report_id)return api('/recording-session/feed/'+profile.id+'/diagnostic?job='+encodeURIComponent(feed.report_id));
+ return {schema:1,source:'web_verification',profile_id:profile.id,creator_id:profile.creator.external_id,
+  expected_username:profile.creator.username,observed_username:feed.observed_username||null,status:feed.status,
+  checked_at:feed.checked_at||new Date().toISOString(),stage:'solicitud de verificación desde la web',
+  error:feed.error||feedLabel(feed),evidence_available:false,screenshot_omitted:'no_browser_evidence'};
+}
+function saveWebReport(report){
+ const link=document.createElement('a'),objectUrl=URL.createObjectURL(reportZip(report));
+ link.href=objectUrl;link.download='verificacion-web-'+report.creator_id+'.zip';document.body.append(link);link.click();link.remove();
+ setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
+}
+async function showWebReport(profile,download=false){
+ $('profiles-error').textContent='';
+ try{
+  const report=await webReport(profile);currentWebReport=report;
+  if(download){saveWebReport(report);return;}
+  $('web-report-detail').textContent='Resultado: '+feedLabel(report)+'\nModelo: '+report.creator_id+
+   '\nCuenta esperada: @'+(report.expected_username||'sin identificar')+'\nCuenta detectada: '+(report.observed_username?'@'+report.observed_username:'sin identificar')+
+   '\nEtapa: '+report.stage+'\nDetalle: '+(report.error||feedLabel(report))+
+   (!report.evidence_available&&report.status!=='ready'?'\nNo hay evidencia de Chrome para esta solicitud. Comprueba que la app actualizada está abierta.':'')+
+   '\n\n'+JSON.stringify({...report,screenshot:report.screenshot?'Incluida en el reporte':null},null,2);
+  const image=$('web-report-image');image.hidden=!report.screenshot;
+  if(report.screenshot?.mime==='image/jpeg')image.src='data:image/jpeg;base64,'+report.screenshot.data;else image.removeAttribute('src');
+  $('web-report-error').textContent='';$('web-report-dialog').showModal();
+ }catch(error){$('profiles-error').textContent=error.message;}
+}
+$('web-report-close').addEventListener('click',()=>{$('web-report-dialog').close();currentWebReport=null;$('web-report-image').removeAttribute('src');});
+$('web-report-download').addEventListener('click',()=>{if(currentWebReport)saveWebReport(currentWebReport);});
 const feedMessages={pending:'Mi perfil pendiente de verificar',ready:'Mi perfil coincide con la modelo asignada',no_session:'Sin sesión guardada · Conecta AgencyKey',
  login_required:'AgencyKey pide iniciar sesión · Reconecta',unavailable:'Chrome no tiene acceso a Mi perfil',
  wrong_profile:'Chrome no abrió Mi perfil de la modelo seleccionada',
@@ -76,6 +114,7 @@ async function verifyFeed(profile, status, button){
  const buttons=[...feedRows.values()].map(row=>row.button);
  for(const item of buttons)item.disabled=true;
  status.textContent='Abriendo Mi perfil con la sesión guardada…';
+ feedRows.get(profile.id)?.reportActions.setAttribute('hidden','');
  try{
   let result=await api('/recording-session/feed/'+profile.id,{method:'POST',body:'{}'});
   const id=result.id;
@@ -85,11 +124,11 @@ async function verifyFeed(profile, status, button){
    result=await checkDesktopJob(id);
   }
   const current=profiles.find(item=>item.id===profile.id&&item.creator.external_id===profile.creator.external_id);
-  if(current)current.feed=result;
+  if(current){current.feed=result;renderPending=true;}
   status.textContent=feedLabel(result);
  }catch(error){
   const current=profiles.find(item=>item.id===profile.id&&item.creator.external_id===profile.creator.external_id);
-  if(current)current.feed={status:'connection_error'};
+  if(current){current.feed={status:'connection_error',error:error.message};renderPending=true;}
   status.textContent=error.message;
  }
  finally{
@@ -170,5 +209,5 @@ $('recording-cancel').addEventListener('click',cancelRecording);$('recording-dia
 if(setupToken)showLogin();else api('/session').then(showApp).catch(showLogin);
 })();
 </script></body></html>`;
-export function adminPage(nonce){return PAGE.replaceAll('__NONCE__',nonce);}
+export function adminPage(nonce){return PAGE.replaceAll('__NONCE__',nonce).replace('__REPORT_ZIP__',reportZip.toString());}
 

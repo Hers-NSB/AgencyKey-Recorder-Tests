@@ -2,8 +2,9 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
 import {mkdir} from 'node:fs/promises';
-import worker from './worker.mjs';
-import {origin,makeEnvironment,installUpstream,input,firstToken,secondToken,desktop} from './test-support.mjs';
+import {spawnSync} from 'node:child_process';
+import worker,{saveSharedSession} from './worker.mjs';
+import {origin,makeEnvironment,installUpstream,input,firstId,firstToken,secondToken,desktop,admin} from './test-support.mjs';
 
 test('password administrator configures a shared API, selects models and rotates app password',async()=>{
  const {env,sqlite}=makeEnvironment();const upstream=installUpstream();env.ADMIN_SETUP=JSON.stringify({token:'browser-private-setup',expires:Date.now()+3600000});
@@ -24,6 +25,69 @@ test('password administrator configures a shared API, selects models and rotates
  await page.getByRole('button',{name:'Eliminar Lola',exact:true}).click();await page.locator('#confirm-accept').click();await page.waitForFunction(()=>document.querySelectorAll('#profiles-body .bot-row').length===1);
  await page.setViewportSize({width:390,height:850});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.setViewportSize({width:1120,height:900});await mkdir('ui-checks',{recursive:true});await page.screenshot({path:'ui-checks/dropper-panel.png',fullPage:true});
  await page.locator('#nav-access').click();await page.locator('#access-input').fill('nueva-contraseña-elegida');await page.locator('#rotate').click();await page.locator('#confirm-accept').click();await page.locator('#access-status').filter({hasText:'Contraseña cambiada'}).waitFor();assert.equal(await page.locator('#access-input').inputValue(),'');assert.equal((await desktop(env,'GET','/v1/profiles')).status,401);assert.equal((await desktop(env,'GET','/v1/profiles',undefined,'nueva-contraseña-elegida')).status,200);assert.deepEqual(errors,[]);
+ }finally{await browser.close();sqlite.close();}
+});
+
+test('manual web verification shows its own error, downloads a valid ZIP and recovers without app error state',async()=>{
+ const {env,sqlite}=makeEnvironment();installUpstream();
+ await admin(env,'PUT','/v1/admin/agencykey',{api_key:input.api_key});
+ await admin(env,'PUT','/v1/admin/profiles/'+firstId,input);
+ await saveSharedSession(env,{cookies:[{name:'session',domain:'.agencykey.com',value:'private-cookie'}],origins:[]},null);
+ const browser=await chromium.launch({headless:true,executablePath:process.env.RECORDER_TEST_CHROME,channel:process.env.RECORDER_TEST_CHROME?undefined:(process.platform==='win32'?'msedge':'chrome')});
+ try{
+  const page=await browser.newPage({viewport:{width:1120,height:900},acceptDownloads:true});
+  const screenshot=(await page.screenshot({type:'jpeg',quality:30})).toString('base64');
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));let mode='fail';
+  await page.route(origin+'/**',async route=>{
+   const req=route.request();
+   if(req.url().endsWith('/recording-session/check')){
+    if(mode==='offline'){
+     const row=sqlite.prepare('SELECT value FROM settings WHERE key=?').get('recording_desktop_job');
+     const job=JSON.parse(row.value);job.expires=Date.now()-1;
+     sqlite.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify(job),'recording_desktop_job');
+    }else{
+     const {job}=await (await desktop(env,'POST','/v1/recording-desktop-job')).json();
+     if(job)await desktop(env,'PUT','/v1/recording-desktop-job',{id:job.id,claim:job.claim,identity_checked:true,
+      ...(mode==='ready'?{status:'ready',observed_username:'model_52'}:{status:'profile_unverified',diagnostic:{
+       stage:'verificar Mi perfil',error:'Mi perfil no terminó de cargar después del cambio',
+       cookies:['private-cookie'],screenshot:{mime:'image/jpeg',data:screenshot},
+       frames:[{frame_index:1,visible:true,url:'https://of-52.agencykey.com/model_52',profile_header:false}]}})});
+    }
+   }
+   const init={method:req.method(),headers:await req.allHeaders()};if(req.postDataBuffer())init.body=req.postDataBuffer();
+   const response=await worker.fetch(new Request(req.url(),init),env);
+   await route.fulfill({status:response.status,headers:Object.fromEntries(response.headers),body:Buffer.from(await response.arrayBuffer())});
+  });
+  await page.goto(origin+'/admin');await page.locator('#admin-password').fill(env.ADMIN_TOKEN);await page.locator('#login-button').click();
+  await page.getByRole('button',{name:'Ver detalle de verificación de Lilith',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Ver detalle de verificación de Lilith',exact:true}).click();
+  await page.locator('#web-report-detail').filter({hasText:'Mi perfil no terminó de cargar después del cambio'}).waitFor();
+  assert.equal(await page.locator('#web-report-image').isVisible(),true);
+  const downloading=page.waitForEvent('download');await page.locator('#web-report-download').click();const download=await downloading;
+  assert.equal(download.suggestedFilename(),'verificacion-web-52.zip');
+  const checked=spawnSync(process.platform==='win32'?'python':'python3',['-c',
+   'import json,sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print(json.dumps({"files":z.namelist(),"report":json.loads(z.read("diagnostic.json"))}))',await download.path()],{encoding:'utf8'});
+  assert.equal(checked.status,0,checked.stderr);const exported=JSON.parse(checked.stdout);
+  assert.deepEqual(exported.files,['diagnostic.json','chrome.jpg']);assert.equal(exported.report.source,'web_verification');
+  assert.ok(!checked.stdout.includes('private-cookie'));
+  await page.locator('#web-report-close').click();await page.reload();
+  await page.getByRole('button',{name:'Ver detalle de verificación de Lilith',exact:true}).click();
+  await page.locator('#web-report-detail').filter({hasText:'Mi perfil no terminó de cargar después del cambio'}).waitFor();
+  await page.setViewportSize({width:390,height:850});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  await mkdir('ui-checks',{recursive:true});await page.screenshot({path:'ui-checks/web-verification-report.png',fullPage:true});
+  await page.locator('#web-report-close').click();mode='ready';
+  await page.getByRole('button',{name:'Verificar Mi perfil de Lilith',exact:true}).click();
+  await page.locator('#profiles-body .muted').filter({hasText:'Mi perfil coincide'}).waitFor();
+  await page.getByRole('button',{name:'Ver detalle de verificación de Lilith',exact:true}).click();
+  assert.equal(await page.locator('#web-report-image').isVisible(),false);
+  assert.ok(!(await page.locator('#web-report-detail').textContent()).includes('no terminó de cargar después del cambio'));
+  await page.locator('#web-report-close').click();mode='offline';
+  await page.getByRole('button',{name:'Verificar Mi perfil de Lilith',exact:true}).click();
+  await page.locator('#profiles-body .muted').filter({hasText:'no recibió la solicitud'}).waitFor();
+  await page.getByRole('button',{name:'Ver detalle de verificación de Lilith',exact:true}).click();
+  await page.locator('#web-report-detail').filter({hasText:'desktop_offline'}).waitFor();
+  assert.equal(await page.locator('#web-report-image').isVisible(),false);
+  assert.deepEqual(errors,[]);
  }finally{await browser.close();sqlite.close();}
 });
 
