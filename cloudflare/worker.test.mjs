@@ -1,6 +1,8 @@
 import {test,beforeEach} from 'node:test';
 import assert from 'node:assert/strict';
 import {makeEnvironment,installUpstream,request,admin,desktop,firstId,secondId,firstToken,secondToken,input} from './test-support.mjs';
+import {saveSharedSession} from './worker.mjs';
+import {cleanWebDiagnostic,reportZip} from './web-report.mjs';
 let env,db,upstream;
 const route='/v1/admin/profiles/'+firstId;
 const credentials='/v1/profiles/'+firstId+'/credentials';
@@ -252,4 +254,93 @@ test('persists profile checks across session refreshes and invalidates them when
  assert.equal(await status(),'ready');
  await complete('/connect',{status:'ready',state});
  assert.equal(await status(),'pending');
+});
+
+async function verification(result) {
+ await admin(env,'PUT',route,input);
+ await saveSharedSession(env,{cookies:[{name:'session',domain:'.agencykey.com',value:'private-session'}],origins:[]},null);
+ const queued=await (await admin(env,'POST','/v1/admin/recording-session/feed/'+firstId,{})).json();
+ const {job}=await (await desktop(env,'POST','/v1/recording-desktop-job')).json();
+ assert.equal(job.id,queued.id);
+ if(result)assert.equal((await desktop(env,'PUT','/v1/recording-desktop-job',
+  {id:job.id,claim:job.claim,identity_checked:true,...result})).status,200);
+ return job;
+}
+
+test('web verification persists a private report without exposing it to desktop or mixing app errors',async()=>{
+ const job=await verification({status:'profile_unverified',diagnostic:{stage:'Mi perfil',error:'fallo web',
+  cookies:[{value:'private-session'}],state:{token:'must-not-export'},
+  opened_url:'https://of-52.agencykey.com/model_52?token=private',
+  frames:[{frame_index:1,visible:true,identity:[52,'model_52'],cards:[{id:'123',top:215,height:200}],images:[{post_id:'123',loaded:false}]}]}});
+ const endpoint='/v1/admin/recording-session/feed/'+firstId;
+ assert.equal((await request(env,'GET',endpoint+'/diagnostic')).status,401);
+ assert.equal((await desktop(env,'GET',endpoint+'/diagnostic')).status,401);
+ const report=await (await admin(env,'GET',endpoint+'/diagnostic?job='+job.id)).json();
+ assert.equal(report.source,'web_verification');assert.equal(report.error,'fallo web');assert.equal(report.creator_id,52);
+ assert.equal(report.opened_url,'https://of-52.agencykey.com/model_52');assert.equal(report.frames[0].cards[0].id,'123');
+ assert.ok(!JSON.stringify(report).includes('private-session'));assert.ok(!JSON.stringify(report).includes('must-not-export'));
+ const stored=db.prepare('SELECT value FROM settings WHERE key=?').get('feed_check:'+firstId).value;
+ assert.ok(!stored.includes('fallo web'));assert.ok(stored.includes('sealed_diagnostic'));
+ const app=await (await desktop(env,'GET','/v1/profiles')).text();assert.ok(!app.includes('diagnostic'));assert.ok(!app.includes('fallo web'));
+ const feed=(await (await admin(env,'GET','/v1/admin/profiles')).json()).profiles[0].feed;
+ assert.equal(feed.report_id,job.id);assert.equal(feed.status,'profile_unverified');
+ const zip=await admin(env,'GET',endpoint+'/report?job='+job.id);
+ assert.equal(zip.status,200);assert.equal(zip.headers.get('content-type'),'application/zip');
+ assert.match(zip.headers.get('content-disposition'),/verificacion-web-52.zip/);
+ const data=new Uint8Array(await zip.arrayBuffer());assert.equal(new DataView(data.buffer).getUint32(0,true),0x04034b50);
+ assert.ok(new TextDecoder().decode(data).includes('fallo web'));
+ // Reading unrelated desktop state cannot overwrite the web result.
+ await desktop(env,'GET','/v1/profile-revisions');
+ assert.equal((await (await admin(env,'GET',endpoint+'/diagnostic')).json()).job_id,job.id);
+});
+
+test('offline and old-client verifications have web reports without needing app diagnostics',async()=>{
+ const job=await verification(null);
+ const row=db.prepare('SELECT value FROM settings WHERE key=?').get('recording_desktop_job');
+ const expired={...JSON.parse(row.value),expires:Date.now()-1};
+ db.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify(expired),'recording_desktop_job');
+ const endpoint='/v1/admin/recording-session/feed/'+firstId+'/diagnostic';
+ const report=await (await admin(env,'GET',endpoint)).json();
+ assert.equal(report.status,'expired');assert.equal(report.evidence_available,false);assert.equal(report.job_id,job.id);
+ const feed=(await (await admin(env,'GET','/v1/admin/profiles')).json()).profiles[0].feed;
+ assert.equal(feed.status,'expired');assert.equal(feed.report_available,true);
+ expired.status='queued';db.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify(expired),'recording_desktop_job');
+ assert.equal((await (await admin(env,'GET',endpoint)).json()).status,'desktop_offline');
+});
+
+test('reports are invalidated by profile edits, reconnection and a newer verification',async()=>{
+ const job=await verification({status:'profile_unverified',diagnostic:{error:'fallo anterior'}});
+ const endpoint='/v1/admin/recording-session/feed/'+firstId;
+ await admin(env,'POST',endpoint,{});
+ assert.equal((await admin(env,'GET',endpoint+'/diagnostic?job='+job.id)).status,409);
+ const {job:next}=await (await desktop(env,'POST','/v1/recording-desktop-job')).json();
+ await desktop(env,'PUT','/v1/recording-desktop-job',{id:next.id,claim:next.claim,status:'ready',identity_checked:true,observed_username:'model_52'});
+ const ready=await (await admin(env,'GET',endpoint+'/diagnostic')).json();
+ assert.equal(ready.status,'ready');assert.equal(ready.error,undefined);assert.equal(ready.screenshot,undefined);
+ assert.deepEqual(await (await desktop(env,'PUT','/v1/recording-desktop-job',
+  {id:job.id,claim:job.claim,status:'connection_error',identity_checked:true,diagnostic:{error:'reporte obsoleto'}})).json(),{active:false});
+ assert.equal((await (await admin(env,'GET',endpoint+'/diagnostic')).json()).status,'ready');
+ await admin(env,'PUT',route,{...input,revision:1});
+ assert.equal((await admin(env,'GET',endpoint+'/diagnostic')).status,409);
+ const profileFeed=(await (await admin(env,'GET','/v1/admin/profiles')).json()).profiles[0].feed;
+ assert.equal(profileFeed.status,'pending');
+});
+
+test('reconnecting AgencyKey invalidates the previous web report',async()=>{
+ await verification({status:'profile_unverified',diagnostic:{error:'sesión anterior'}});
+ const session=await (await desktop(env,'GET','/v1/recording-session')).json();
+ await saveSharedSession(env,session.state,session.revision);
+ assert.equal((await admin(env,'GET','/v1/admin/recording-session/feed/'+firstId+'/diagnostic')).status,409);
+ assert.equal((await (await admin(env,'GET','/v1/admin/profiles')).json()).profiles[0].feed.status,'pending');
+});
+
+test('report sanitizer bounds evidence and discards unsupported image formats and private fields',async()=>{
+ const clean=cleanWebDiagnostic({error:'Bearer private',cookies:['secret'],traceback:'x'.repeat(20000),
+  frames:Array.from({length:30},()=>({url:'https://app.agencykey.com/models/52?token=private'})),
+  screenshot:{mime:'image/svg+xml',data:'<svg onload=alert(1)>'}});
+ assert.equal(clean.error,'Bearer [oculto]');assert.equal(clean.traceback.length,12000);assert.equal(clean.frames.length,16);
+ assert.equal(clean.cookies,undefined);assert.equal(clean.screenshot,undefined);
+ const bytes=new Uint8Array(await reportZip({error:'Prueba ñ',screenshot:{mime:'image/jpeg',data:'/9j/2Q=='}}).arrayBuffer());
+ assert.equal(new DataView(bytes.buffer).getUint32(bytes.length-22,true),0x06054b50);
+ assert.equal(new DataView(bytes.buffer).getUint16(bytes.length-14,true),2);
 });

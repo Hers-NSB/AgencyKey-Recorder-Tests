@@ -71,10 +71,33 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
         page = SimpleNamespace(goto=AsyncMock(return_value=SimpleNamespace(status=200, ok=True)))
         error = recorder.FeedAccessError('wrong_profile', 'se abrió otra modelo', observed='otra')
         with patch.object(recorder, 'wait_for_model_identity', new=AsyncMock(side_effect=error)), \
-                patch.object(diagnostics, 'capture_failure', new=AsyncMock()) as capture:
+                patch.object(diagnostics, 'capture_web_failure', new=AsyncMock(return_value={'error': 'se abrió otra modelo'})) as capture:
             result = await recording_service.verify_profile_route(page, recorder.model_profile_url(52), 'modelo')
-        self.assertEqual(result, {'status': 'wrong_profile', 'observed_username': 'otra'})
+        self.assertEqual(result, {'status': 'wrong_profile', 'observed_username': 'otra',
+                                 'diagnostic': {'error': 'se abrió otra modelo'}})
         self.assertIs(capture.await_args.kwargs['error'], error)
+
+    async def test_web_diagnostic_does_not_enter_app_export_or_logs(self):
+        page = SimpleNamespace(url=recorder.model_profile_url(52), is_closed=lambda: True)
+        with tempfile.TemporaryDirectory() as directory, patch.object(recorder, 'ROOT', Path(directory)), \
+                patch.object(diagnostics.log, 'error') as app_error:
+            report = await diagnostics.capture_web_failure(page, profile_url=page.url,
+                username='modelo', error=ValueError('fallo web'), stage='verificar Mi perfil')
+            self.assertEqual(report['error'], 'fallo web')
+            self.assertFalse((Path(directory) / 'diagnostics').exists())
+            target = Path(directory) / 'app.zip'
+            self.assertEqual(diagnostics.export_diagnostics(target, 'registro de app'), 0)
+            with ZipFile(target) as archive:
+                self.assertFalse(any('diagnostic.json' in name for name in archive.namelist()))
+            app_error.assert_not_called()
+
+    async def test_navigation_exception_returns_a_web_result_with_evidence(self):
+        import recording_service
+        page = SimpleNamespace(goto=AsyncMock(side_effect=ValueError('navegación falló')))
+        with patch.object(diagnostics, 'capture_web_failure', new=AsyncMock(return_value={'error': 'navegación falló'})):
+            result = await recording_service.verify_profile_route(page, recorder.model_profile_url(52), 'modelo')
+        self.assertEqual(result['status'], 'connection_error')
+        self.assertEqual(result['diagnostic']['error'], 'navegación falló')
 
     async def test_desktop_button_exports_zip(self):
         from desktop import BotPanel
@@ -129,6 +152,16 @@ class BrowserRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.browser.close()
         await self.pw.stop()
+
+    async def test_web_capture_returns_jpeg_without_persisting_app_diagnostics(self):
+        import base64
+        await self.page.set_content('<main>Perfil de prueba<input value="campo privado"></main>')
+        with tempfile.TemporaryDirectory() as directory, patch.object(recorder, 'ROOT', Path(directory)):
+            report = await diagnostics.capture_web_failure(self.page, profile_url=recorder.model_profile_url(52),
+                username='modelo', error=ValueError('fallo exclusivo de la web'), stage='verificar Mi perfil')
+            self.assertEqual(report['screenshot']['mime'], 'image/jpeg')
+            self.assertTrue(base64.b64decode(report['screenshot']['data']).startswith(b'\xff\xd8\xff'))
+            self.assertFalse((Path(directory) / 'diagnostics').exists())
 
     async def test_short_feed_accepts_visible_start_when_scrolling_is_impossible(self):
         await self.page.set_content('<style>body{margin:0}main{height:500px;padding-top:200px;box-sizing:border-box}'

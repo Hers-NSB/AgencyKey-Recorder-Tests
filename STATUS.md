@@ -1,23 +1,25 @@
 # Estado actual · 2026-11-17
 
-AgencyKey Recorder Tests publica lotes de Telegram y graba el comprobante con Chrome local. El panel web en Cloudflare administra bots y solicita las verificaciones a la app de Windows.
+AgencyKey Recorder Tests publica lotes de Telegram y graba comprobantes con Chrome local. Cloudflare administra bots y solicita las verificaciones manuales a la app de Windows, sin iniciar el bot.
 
-## Versión disponible
+## Cambio autorizado
 
-PR [#27](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/pull/27) fusionado con autorización del usuario. Código en main: `2357cc56371824a5fd291fe3a73efc3071c9d6aa`.
+El usuario pidió que la verificación manual muestre el detalle y permita descargar su reporte desde la web. Exigió que el manejo de errores web y app sea independiente, y autorizó actualizar y publicar ambas versiones.
 
-Publicado y verificado: [recorder-38-1](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/releases/tag/recorder-38-1). Descargar [AgencyKeyRecorderTests.exe](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/releases/download/recorder-38-1/AgencyKeyRecorderTests.exe).
+Rama: `feat/independent-web-verification-reports`, basada en main `2283fb0`. PR [#28](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/pull/28), abierto.
 
-Incluye reintentos de Mi perfil al recargarse el panel, encuadre para feeds cortos sin desplazamiento y exportación del registro con los últimos 20 diagnósticos mediante Ver registro → Guardar registro. Los fallos de verificación web y de grabación guardan etapa, error/traceback, identidad, geometría, imágenes y captura cuando está disponible. Se ocultan campos de entrada y se omiten capturas de inicio de sesión. No se exportan archivos de sesión, cookies, configuración ni HTML.
+- Web: Ver detalle y Descargar reporte en la fila de cada modelo, incluyendo error, etapa, identidad, geometría y captura si está disponible. Resultado persistente y descarga ZIP desde el panel autenticado.
+- App: los errores y diagnósticos de publicación/grabación conservan su flujo local. La verificación web usa un directorio temporal, devuelve solo su evidencia y no se añade al ZIP de la app ni cambia el estado del bot.
+- La web genera un reporte de estado incluso si la app está desconectada, Chrome no abre o el cliente anterior no devuelve evidencia. Si falla la propia conexión del navegador con el servidor, el panel permite descargar el error observado localmente.
+- Los reportes se limitan, se filtran y se guardan cifrados. No se exponen por las rutas de las apps. Cambiar modelo/configuración, reconectar o iniciar otra verificación invalida los reportes anteriores.
+- La app actualizada debe estar abierta como motor de Chrome local; no hay que iniciar el bot, publicar ni grabar para verificar desde la web.
 
 ## Comprobación
 
-199 pruebas Python por sistema pasaron en Ubuntu y Windows, junto con la demo y las pruebas del Worker y del panel. La [compilación publicada](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/44121309750) pasó también sus pruebas, la compilación del EXE, su prueba sin comandos Python y la comparación de los archivos descargados con los generados.
+178 pruebas Python sin navegador pasaron; compilación Python y build de Cloudflare correctos. 35 pruebas de servidor/sesión pasaron y cubren privacidad, descarga ZIP, rechazo de resultados obsoletos, desconexión y separación respecto a las rutas de las apps. ZIP validado con zipfile de Python: CRC, JSON Unicode y JPEG.
 
-SHA-256 del EXE: `1faf46191e26b6c43d1f9b0769f60744e633856692695b922e6e999620ffee2f`.
+Se añadieron pruebas con navegador para descarga web, persistencia tras recarga, recuperación, estado desconectado, vista móvil y captura JPEG sin diagnósticos locales. Chromium está bloqueado en este entorno por socket() failed: Operation not permitted (1); validar estas pruebas en la CI de Ubuntu y Windows antes de publicar.
 
-## Prueba pendiente del usuario
+## Siguiente acción
 
-Cerrar el EXE anterior y abrir el nuevo. Actualizar en la app solo descarga configuraciones; no reemplaza el ejecutable. Cambiar el mismo bot de Lilith (600912674) a Luna (479099623, @luna_lonely), ejecutar Verificar Mi perfil desde la web y probar un comprobante. Si falla, abrir Ver registro → Guardar registro y adjuntar `recorder-diagnostico.zip` al chat.
-
-El registro original confirmó las tres publicaciones de Luna; fallaron la primera verificación y después el encuadre del post 2899389023. La causa concreta en la sesión real sigue pendiente de esta prueba. No se realizaron publicaciones ni se reenviaron videos en cuentas reales durante el desarrollo. Cloudflare no requiere otro despliegue: las correcciones se ejecutan en la nueva app local.
+Crear PR, comprobar CI, fusionar y publicar web y EXE según autorización del usuario. Desplegar el Worker `agencykey-recorder-tests` conservando bindings, secretos y configuración. No cambiar el esquema de D1. La versión pública anterior es recorder-38-1; no ofrece los reportes de verificación en la web.

@@ -1,5 +1,6 @@
 import {adminPage} from './admin-page.mjs';
 import {cleanStorageState} from './recording-session.mjs';
+import {cleanWebDiagnostic, reportZip} from './web-report.mjs';
 
 const encoder = new TextEncoder();
 const columns = 'id, name, bot_id, creator_id, creator_name, creator_username, revision, updated_at';
@@ -339,14 +340,19 @@ async function verifyBot(token) {
 
 async function listAdminProfiles(env) {
   const session = await sharedSession(env);
+  const latest = (await readDesktopJob(env))?.job;
   const result = await env.DB.prepare(`SELECT p.*, s.value AS feed_result
     FROM profiles p LEFT JOIN settings s ON s.key = 'feed_check:' || p.id
     ORDER BY p.name COLLATE NOCASE`).all();
   return json({profiles: result.results.map(row => {
-    const check = row.feed_result && JSON.parse(row.feed_result);
+    const stored = row.feed_result && JSON.parse(row.feed_result);
+    const check = latest?.kind==='feed' && latest.profile_id===row.id && latest.creator_id===row.creator_id
+      && latest.creator_username===row.creator_username && latest.profile_revision===row.revision
+      && latest.connection===session.connection ? latest : stored;
     const feed = session.configured && check?.creator_id === row.creator_id && check.connection === session.connection
-      && check.identity_checked === true && check.creator_username === row.creator_username
-      ? profileCheckResult(check, check.status)
+      && (check===latest || check.identity_checked === true) && check.creator_username === row.creator_username
+      && check.profile_revision === row.revision
+      ? profileCheckResult(check, jobStatus(check))
       : {status:session.configured?'pending':'no_session'};
     return {...profile(row), feed};
   }), recording_session:session});
@@ -376,7 +382,37 @@ export async function saveSharedSession(env, state, revision, connection=crypto.
 }
 
 function profileCheckResult(job, status) {
-  return {status, checked_at:job.checked_at, expected_username:job.creator_username, observed_username:job.observed_username};
+  return {status, checked_at:job.checked_at, expected_username:job.creator_username, observed_username:job.observed_username,
+    ...(job.kind==='feed' && job.id && !['queued','running','finishing'].includes(status)
+      ? {report_id:job.id,report_available:true} : {})};
+}
+
+async function webVerificationReport(request, env, profileId, download) {
+  const profile = await env.DB.prepare('SELECT creator_id, creator_username, revision FROM profiles WHERE id = ?').bind(profileId).first();
+  if (!profile) throw new ApiError(404,'La configuración de la modelo ya no existe');
+  const session = await sharedSession(env);
+  const current = await readDesktopJob(env);
+  const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind('feed_check:'+profileId).first();
+  const saved = row ? JSON.parse(row.value) : null;
+  const matches = job => job?.kind==='feed' && job.profile_id===profileId && job.creator_id===profile.creator_id
+    && job.creator_username===profile.creator_username && job.profile_revision===profile.revision && job.connection===session.connection;
+  const job = matches(current?.job) ? current.job : matches(saved) ? saved : null;
+  const requested = new URL(request.url).searchParams.get('job');
+  if (!job || !session.configured || (requested && job.id!==requested)) throw new ApiError(409,'La verificación cambió. Actualiza la lista y vuelve a consultar el detalle');
+  const status = jobStatus(job);
+  if (['queued','running','finishing'].includes(status)) throw new ApiError(409,'La verificación sigue en curso');
+  let diagnostic = null;
+  if (saved?.id===job.id && saved.sealed_diagnostic) diagnostic = await decrypt(saved.sealed_diagnostic,'web_report:'+profileId,env);
+  const report = {...(diagnostic||{}),source:'web_verification',schema:1,job_id:job.id,profile_id:profileId,
+    creator_id:profile.creator_id,expected_username:profile.creator_username,observed_username:job.observed_username||null,
+    status,checked_at:job.checked_at||null,requested_at:job.requested_at||null,
+    stage:diagnostic?.stage || 'verificación manual desde la web',
+    evidence_available:Boolean(diagnostic),
+    ...(!diagnostic ? {screenshot_omitted:'no_browser_evidence'} : {})};
+  if (!download) return json(report);
+  return new Response(reportZip(report),{headers:{'Content-Type':'application/zip',
+    'Content-Disposition':`attachment; filename="verificacion-web-${profile.creator_id}.zip"`,
+    'Cache-Control':'no-store, private','Pragma':'no-cache','X-Content-Type-Options':'nosniff'}});
 }
 
 function normalizedUsername(value) {
@@ -412,6 +448,8 @@ function jobStatus(job) {
 async function recordingAdmin(request, env, path) {
   const root='/v1/admin/recording-session';
   if (path===root && request.method==='GET') return json(await sharedSession(env));
+  const report = path.match(/^\/v1\/admin\/recording-session\/feed\/([a-f0-9-]{36})\/(diagnostic|report)$/);
+  if (report && request.method==='GET') return webVerificationReport(request,env,report[1],report[2]==='report');
   const owner=await sessionId(sessionToken(request));
   const entry=await readDesktopJob(env);
   const feed=path.match(/^\/v1\/admin\/recording-session\/feed\/([a-f0-9-]{36})$/);
@@ -421,13 +459,15 @@ async function recordingAdmin(request, env, path) {
       throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
     }
     const profile=feed
-      ? await env.DB.prepare('SELECT creator_id, creator_username FROM profiles WHERE id = ?').bind(feed[1]).first()
+      ? await env.DB.prepare('SELECT creator_id, creator_username, revision FROM profiles WHERE id = ?').bind(feed[1]).first()
       : null;
     if (feed && !profile) throw new ApiError(404,'La configuración de la modelo ya no existe');
     const session=await sharedSession(env);
     if (feed && !session.configured) return json({status:'no_session'});
     const job={id:crypto.randomUUID(),owner,kind:connect?'connect':'feed',
-      ...(profile?{profile_id:feed[1],creator_id:profile.creator_id,creator_username:profile.creator_username,connection:session.connection}:{}),revision:session.revision,status:'queued',expires:Date.now()+45000};
+      ...(profile?{profile_id:feed[1],creator_id:profile.creator_id,creator_username:profile.creator_username,
+        profile_revision:profile.revision,connection:session.connection}:{}),revision:session.revision,
+      requested_at:new Date().toISOString(),status:'queued',expires:Date.now()+45000};
     if (!await replaceDesktopJob(env,entry,job)) throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
     return json({id:job.id,status:job.status},202);
   }
@@ -475,14 +515,17 @@ async function desktopRecordingJob(request,env) {
       if (!expected || !job.observed_username) job.status = 'profile_unverified';
       else if (job.observed_username !== expected) job.status = 'wrong_profile';
     }
-    const check = {identity_checked:true, creator_id:job.creator_id, creator_username:job.creator_username,
+    const diagnostic = job.status!=='ready' ? cleanWebDiagnostic(input.diagnostic) : null;
+    const check = {id:job.id,kind:'feed',profile_id:job.profile_id,profile_revision:job.profile_revision,
+      identity_checked:true, creator_id:job.creator_id, creator_username:job.creator_username,
       observed_username:job.observed_username, connection:job.connection, status:job.status, checked_at:job.checked_at};
+    if (diagnostic) check.sealed_diagnostic=await encrypt(diagnostic,'web_report:'+job.profile_id,env);
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO settings(key,value)
         SELECT ?,? WHERE EXISTS (SELECT 1 FROM settings WHERE key = ? AND value = ?)
-        AND EXISTS (SELECT 1 FROM profiles WHERE id = ? AND creator_id = ? AND creator_username IS ?)
+        AND EXISTS (SELECT 1 FROM profiles WHERE id = ? AND creator_id = ? AND creator_username IS ? AND revision = ?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
-        .bind('feed_check:'+job.profile_id,JSON.stringify(check),desktopJobKey,entry.raw,job.profile_id,job.creator_id,job.creator_username ?? null),
+        .bind('feed_check:'+job.profile_id,JSON.stringify(check),desktopJobKey,entry.raw,job.profile_id,job.creator_id,job.creator_username ?? null,job.profile_revision),
       env.DB.prepare('UPDATE settings SET value = ? WHERE key = ? AND value = ?')
         .bind(JSON.stringify(job),desktopJobKey,entry.raw),
     ]);
@@ -594,7 +637,7 @@ async function handle(request, env) {
       'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
       'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`}});
   }
-  if (path === '/health' && request.method === 'GET') return json({service: 'agencykey-recorder-tests', version: 5});
+  if (path === '/health' && request.method === 'GET') return json({service: 'agencykey-recorder-tests', version: 6});
   if (path.startsWith('/v1/admin/')) return adminHandle(request, env, path);
   await authorize(request, env);
   if (path==='/v1/recording-desktop-job') return desktopRecordingJob(request,env);

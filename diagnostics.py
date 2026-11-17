@@ -1,9 +1,12 @@
 """Local, shareable failure reports. Never export browser storage or raw HTML."""
 import asyncio
+import base64
 from datetime import datetime, timezone
 import json
 import logging
+from pathlib import Path
 import re
+import tempfile
 import traceback
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -36,10 +39,10 @@ def safe_url(value):
 
 
 async def capture_failure(page, *, kind, profile_url, username=None, error=None, status=None, post_ids=(), stage=None,
-                          http_status=None):
+                          http_status=None, root=None, image_format='png', notify=True):
     """Bounded best-effort capture; a broken browser must not hide the original error."""
     import recorder
-    folder = recorder.ROOT / 'diagnostics' / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f') + '-' + uuid4().hex[:8])
+    folder = (root or recorder.ROOT / 'diagnostics') / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f') + '-' + uuid4().hex[:8])
     try:
         folder.mkdir(parents=True)
         report = dict(kind=kind, created_at_utc=datetime.now(timezone.utc).isoformat(),
@@ -78,19 +81,57 @@ async def capture_failure(page, *, kind, profile_url, username=None, error=None,
                 if not page.is_closed() and not await recorder.agencykey_sign_in_visible(page):
                     mask = [frame.locator('input, textarea, [contenteditable], pre, code, [data-sensitive]')
                             for frame in page.frames if not frame.is_detached()]
-                    await page.screenshot(path=str(folder / 'chrome.tmp.png'), timeout=3000, mask=mask)
-                    (folder / 'chrome.tmp.png').replace(folder / 'chrome.png')
-                    report['screenshot'] = 'chrome.png'
+                    name = 'chrome.jpg' if image_format == 'jpeg' else 'chrome.png'
+                    temporary = folder / ('tmp-' + name)
+                    await page.screenshot(path=str(temporary), timeout=3000, mask=mask,
+                                          **({'type': 'jpeg', 'quality': 55} if image_format == 'jpeg' else {}))
+                    temporary.replace(folder / name)
+                    report['screenshot'] = name
                 else:
                     report['screenshot_omitted'] = 'login_or_closed'
         except Exception as exc:
             report['screenshot_error'] = type(exc).__name__
         save_report()
-        log.error('Diagnóstico de %s guardado · Usa Guardar registro para exportarlo · %s', kind, folder.name)
+        if notify:
+            log.error('Diagnóstico de %s guardado · Usa Guardar registro para exportarlo · %s', kind, folder.name)
         return folder
     except Exception as exc:
-        log.warning('No se pudo guardar el diagnóstico (%s)', type(exc).__name__)
+        if notify:
+            log.warning('No se pudo guardar el diagnóstico (%s)', type(exc).__name__)
         return None
+
+
+async def capture_web_failure(page, **context):
+    """Return only this web request's evidence, without writing to app diagnostics."""
+    try:
+        with tempfile.TemporaryDirectory(prefix='recorder-web-') as directory:
+            folder = await capture_failure(page, root=Path(directory), image_format='jpeg', notify=False,
+                                           kind='verificacion_web', **context)
+            if not folder:
+                return {'stage': context.get('stage'), 'error': 'No se pudo recoger el diagnóstico de Chrome'}
+            report = json.loads((folder / 'diagnostic.json').read_text(encoding='utf-8'))
+            for name, limit in (('traceback', 12000), ('error', 2000)):
+                if isinstance(report.get(name), str):
+                    report[name] = report[name][:limit]
+            report['frames'] = report.get('frames', [])[:16]
+            for frame in report['frames']:
+                frame['cards'] = frame.get('cards', [])[:40]
+                frame['images'] = frame.get('images', [])[:60]
+            image = folder / 'chrome.jpg'
+            report.pop('screenshot', None)
+            if image.is_file() and image.stat().st_size <= 180_000:
+                report['screenshot'] = {'mime': 'image/jpeg', 'data': base64.b64encode(image.read_bytes()).decode('ascii')}
+            elif image.is_file():
+                report['screenshot_omitted'] = 'size_limit'
+            if len(json.dumps(report).encode('utf-8')) > 420_000:
+                report.pop('screenshot', None)
+                report['frames'] = []
+                report['inspection_error'] = 'payload_limit'
+                report['screenshot_omitted'] = 'payload_limit'
+            return report
+    except Exception as error:
+        return {'stage': context.get('stage'), 'error': 'No se pudo recoger el diagnóstico de Chrome',
+                'inspection_error': type(error).__name__}
 
 
 def export_diagnostics(destination, activity):

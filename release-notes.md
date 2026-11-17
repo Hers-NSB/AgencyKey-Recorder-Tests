@@ -1,3 +1,5 @@
-- Verificar Mi perfil compara la cuenta abierta en Chrome con la modelo asignada al bot, incluso con el muro vacío.
-- El grabador verifica la misma identidad y busca las publicaciones del lote al terminar de publicar.
-- El panel muestra las cuentas esperada y abierta cuando detecta una discrepancia.
+- La verificación manual ofrece Ver detalle y Descargar reporte directamente en la web, sin iniciar el bot.
+- El reporte web incluye error, etapa, modelo esperada, perfil detectado y captura cuando Chrome puede obtenerla. También informa si la app está desconectada o no puede abrir Chrome.
+- Los errores y reportes de la web son independientes de los registros de publicación y grabación de la app.
+- Las capturas ocultan campos de entrada; no se exportan cookies, sesiones, configuración ni HTML.
+- Cierra la app anterior y utiliza este EXE actualizado para devolver los diagnósticos a la web. Actualizar configuraciones no reemplaza el ejecutable.

@@ -3,6 +3,7 @@ import asyncio
 import json
 from contextlib import AsyncExitStack
 from pathlib import Path
+import logging
 import queue
 from types import SimpleNamespace
 from time import time, monotonic
@@ -14,6 +15,8 @@ from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 import recorder
 from config import log
 from cloud_client import CloudError
+
+web_log = logging.getLogger('agencykey-web-verification')
 
 
 AGENCYKEY_SIGN_IN = 'https://app.agencykey.com/auth/signin'
@@ -108,19 +111,19 @@ async def agencykey_login_complete(page):
 
 
 async def verify_profile_route(page, url, username):
-    from diagnostics import capture_failure
+    from diagnostics import capture_web_failure
     try:
         result = await _verify_profile_route(page, url, username)
     except Exception as error:
-        await capture_failure(page, kind='verificacion', profile_url=url, username=username,
-                              error=error, stage='abrir/verificar Mi perfil')
-        raise
+        diagnostic = await capture_web_failure(page, profile_url=url, username=username,
+                                              error=error, stage='abrir/verificar Mi perfil')
+        return {'status': 'connection_error', 'diagnostic': diagnostic}
     if result['status'] != 'ready':
         http_status = result.pop('_http_status', None)
         error = result.pop('_diagnostic_error', None) or recorder.FeedAccessError(
             result['status'], PROFILE_ERRORS[result['status']], observed=result.get('observed_username'))
-        await capture_failure(page, kind='verificacion', profile_url=url, username=username,
-                              error=error, status=result['status'], stage='verificar Mi perfil', http_status=http_status)
+        result['diagnostic'] = await capture_web_failure(page, profile_url=url, username=username,
+            error=error, status=result['status'], stage='verificar Mi perfil', http_status=http_status)
     return result
 
 
@@ -182,7 +185,7 @@ async def run_desktop_recording_job(client, job, stop_event):
                     url = recorder.model_profile_url(job['creator_id'])
                     result = await verify_profile_route(page, url, job.get('creator_username'))
                     if result['status'] != 'ready':
-                        log.warning('Verificación de Mi perfil | Modelo %s · %s', job['creator_id'],
+                        web_log.warning('Verificación web de Mi perfil | Modelo %s · %s', job['creator_id'],
                                     PROFILE_ERRORS[result['status']])
                     return {**result, 'identity_checked': True}
                 response = await page.goto(AGENCYKEY_SIGN_IN, wait_until='domcontentloaded', timeout=30000)
@@ -206,10 +209,13 @@ async def run_desktop_recording_job(client, job, stop_event):
                 result = running.result()
             except Exception as error:
                 detail = recorder.recording_error_detail(error)
-                log.error('Solicitud web de Chrome | %s', detail)
+                web_log.error('Solicitud web de Chrome | %s', detail)
                 result = {'status': 'connection_error'}
                 if job['kind'] == 'feed':
                     result['identity_checked'] = True
+                    from diagnostics import redact
+                    result['diagnostic'] = {'stage': 'preparar Chrome', 'error_type': type(error).__name__,
+                                            'error': redact(error), 'screenshot_omitted': 'browser_unavailable'}
             await asyncio.to_thread(client.update_recording_job, job, **result)
     finally:
         for task in (running, cancelled):
