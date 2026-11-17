@@ -17,10 +17,10 @@ Rama: `fix/profile-retry-and-diagnostic-export`, basada en main `cb84952`. PR [#
 
 175 pruebas sin navegador pasaron durante la implementación. Tras los últimos ajustes, 35 pruebas del área afectada pasaron; compilación Python y `git diff --check` correctos. Se añadieron cuatro regresiones con navegador para recarga, feed corto, inicio oculto y captura del fallo.
 
-Las pruebas locales con navegador están bloqueadas por el entorno: Chromium aborta en `socket() failed: Operation not permitted (1)`. La CI de Ubuntu del PR (ejecución 44118230038, código 48d0b67) ya validó las 199 pruebas Python, incluidas las cuatro regresiones con Chrome, la demo y las pruebas del Worker y del panel. Windows sigue en ejecución. El último ajuste de exportación preserva el JSON al ocultar valores Bearer; sus 35 pruebas locales pasan y la CI debe comprobar el commit final.
+Las pruebas locales con navegador están bloqueadas por el entorno: Chromium aborta en `socket() failed: Operation not permitted (1)`. La [CI final del PR](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/44118809019), código `4db380d`, terminó correctamente en Ubuntu y Windows: 199 pruebas Python por sistema, incluidas las cuatro regresiones con Chrome, demo de grabación y pruebas del Worker y del panel. El último ajuste de exportación preserva el JSON al ocultar valores Bearer y está incluido en esa validación.
 
 No se ha probado contra la sesión real del usuario, no se han creado posts ni reenviado videos.
 
 ## Siguiente acción
 
-Revisar los resultados de `.github/workflows/tests.yml` del PR. Tras su aprobación y fusión manual, el workflow existente de main genera el nuevo EXE. El EXE actual no se modifica al pulsar Actualizar (solo descarga configuraciones). Para la prueba real, usar el nuevo EXE, cambiar Lilith → Luna en el mismo bot y ejecutar Verificar Mi perfil y un comprobante. Si falla, exportar el ZIP desde la app y adjuntarlo al chat. No desplegar cambios en Cloudflare: esta corrección se ejecuta en la app local y conserva el contrato con el Worker.
+Revisar y aprobar el PR #27. Tras su fusión manual, el workflow existente de main genera el nuevo EXE. El EXE actual no se modifica al pulsar Actualizar (solo descarga configuraciones). Para la prueba real, usar el nuevo EXE, cambiar Lilith → Luna en el mismo bot y ejecutar Verificar Mi perfil y un comprobante. Si falla, exportar el ZIP desde la app y adjuntarlo al chat. No desplegar cambios en Cloudflare: esta corrección se ejecuta en la app local y conserva el contrato con el Worker.
