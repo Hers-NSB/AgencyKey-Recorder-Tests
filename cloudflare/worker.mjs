@@ -801,7 +801,7 @@ async function handle(request, env) {
     const row = await env.DB.prepare('SELECT * FROM profiles WHERE id = ?').bind(match[1]).first();
     if (!row) throw new ApiError(404, 'La configuración ya no existe');
     const secret = await decrypt(row.encrypted_secrets,row.id,env);
-    if ((scope || secret.telegram_users !== undefined) && request.headers.get('X-Recorder-Protocol') !== '2')
+    if (request.headers.get('X-Recorder-Protocol') !== '2')
       throw new ApiError(409, 'Actualiza la app de Windows antes de iniciar este bot');
     return json({...profile(row), telegram_users:secret.telegram_users ?? [],
       telegram_token:secret.telegram_token, api_key:scope ? secret.own_api : await globalApi(env)});

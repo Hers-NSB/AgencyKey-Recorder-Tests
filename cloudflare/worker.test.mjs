@@ -408,6 +408,7 @@ test('each PC only gets its own bot credentials, Chrome job and session', async(
   const {code}=await issue.json();
   const pc=(method,path,body)=>request(env,method,path,body,{Authorization:'Bearer '+code,'X-Recorder-Protocol':'2'});
   const credentials='/v1/profiles/'+firstId+'/credentials';
+  assert.equal((await request(env,'POST',credentials,undefined,{Authorization:'Bearer '+code})).status,409);
   const secret=await (await pc('POST',credentials)).json();
   assert.equal(secret.api_key,'own-model-key');
   assert.deepEqual(secret.telegram_users,['editor']);
@@ -428,4 +429,17 @@ test('each PC only gets its own bot credentials, Chrome job and session', async(
   assert.equal((await pc('GET','/v1/profiles')).status,401);
   assert.equal((await desktop(env,'POST',credentials)).status,403);
  } finally {globalThis.fetch=original;}
+});
+
+
+test('a recoverable verification expires after its maximum lifetime',async()=>{
+ await admin(env,'PUT',route,input);
+ await saveSharedSession(env,{cookies:[{name:'session',domain:'.agencykey.com',value:'test'}],origins:[]},null);
+ const root='/v1/admin/recording-session';
+ const first=await (await admin(env,'POST',root+'/feed/'+firstId,{request_id:crypto.randomUUID()})).json();
+ const row=JSON.parse(db.prepare('SELECT value FROM settings WHERE key=?').get('recording_desktop_job').value);
+ row.requested_at=new Date(Date.now()-31*60000).toISOString();
+ db.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify(row),'recording_desktop_job');
+ assert.equal((await (await admin(env,'POST',root+'/check',{id:first.id})).json()).status,'desktop_offline');
+ assert.equal((await admin(env,'POST',root+'/feed/'+firstId,{request_id:crypto.randomUUID()})).status,202);
 });

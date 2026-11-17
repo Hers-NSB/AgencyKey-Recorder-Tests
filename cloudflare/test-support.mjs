@@ -69,6 +69,6 @@ export async function admin(env,method,path,body,headers={}) {
   return request(env,method,path,body,{Cookie:cookie,...headers});
 }
 export function desktop(env,method,path,body,code=env.ACCESS_TOKEN) {
-  return request(env,method,path,body,{Authorization:'Bearer '+code});
+  return request(env,method,path,body,{Authorization:'Bearer '+code,'X-Recorder-Protocol':'2'});
 }
 
