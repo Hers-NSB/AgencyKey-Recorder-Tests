@@ -14,7 +14,7 @@ from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 
 import recorder
 from config import log
-from cloud_client import CloudError
+from cloud_client import CloudError, AccessDenied
 
 web_log = logging.getLogger('agencykey-web-verification')
 
@@ -108,72 +108,157 @@ PROFILE_ERRORS = {
 }
 
 
-async def run_desktop_recording_job(client, job, stop_event):
-    """Open AgencyKey on this PC, then return the result to the waiting admin page."""
-    from playwright.async_api import async_playwright
+async def recovery_pause(stop_event, seconds=3):
+    for _ in range(int(seconds * 5)):
+        if stop_event.is_set():
+            raise asyncio.CancelledError
+        await asyncio.sleep(.2)
+
+
+async def cloud_retry(call, stop_event):
+    while not stop_event.is_set():
+        try:
+            return await asyncio.to_thread(call)
+        except CloudError as error:
+            if not error.retryable:
+                raise
+            await recovery_pause(stop_event)
+    raise asyncio.CancelledError
+
+
+class VerificationBrowser:
+    """Owned by one event loop; reuse the login tab across model checks."""
+    def __init__(self):
+        self.stack = AsyncExitStack()
+        self.page = self.context = None
+        self.connection = None
+
+    async def close(self):
+        await self.stack.aclose()
+        self.page = self.context = None
+        self.connection = None
+
+    async def open(self, client, connect, stop_event):
+        from playwright.async_api import async_playwright
+        session = None if connect else await cloud_retry(client.recording_session, stop_event)
+        connection = session.get('connection', session.get('revision')) if session else None
+        if connect or (self.connection is not None and self.connection != connection):
+            await self.close()
+        if self.page is None or self.page.is_closed():
+            await self.close()
+            pw = await self.stack.enter_async_context(async_playwright())
+            browser = await recorder.launch_browser(pw, headless=not connect)
+            self.stack.push_async_callback(browser.close)
+            options = {'viewport': {'width': 1280, 'height': 720}}
+            if session:
+                options['storage_state'] = session['state']
+            self.context = await browser.new_context(**options)
+            self.page = await self.context.new_page()
+        self.connection = connection
+        return self.page, self.context
+
+
+async def run_verification_engine(client, stop_event, *, current=lambda: True, notify=lambda error: None):
+    browser = VerificationBrowser()
+    try:
+        while not stop_event.is_set() and current():
+            try:
+                job = await asyncio.to_thread(client.claim_recording_job)
+                notify(None)
+                if job:
+                    await run_desktop_recording_job(client, job, stop_event, browser_session=browser)
+                else:
+                    await recovery_pause(stop_event, 3)
+            except AccessDenied:
+                raise
+            except CloudError as error:
+                notify(str(error))
+                await recovery_pause(stop_event, 3)
+    finally:
+        await browser.close()
+
+
+async def run_desktop_recording_job(client, job, stop_event, *, browser_session=None):
+    """Keep a claimed check and its result alive through temporary network failures."""
+    session = browser_session or VerificationBrowser()
+    progress = {'phase': 'opening', 'attempt': 1}
+    updates = asyncio.Lock()
+
+    async def report(**value):
+        async with updates:
+            return await cloud_retry(lambda: client.update_recording_job(job, **value), stop_event)
 
     async def check_cancelled():
         while not stop_event.is_set():
-            await asyncio.sleep(3)
-            try:
-                status = await asyncio.to_thread(client.update_recording_job, job)
-            except CloudError:
-                continue
+            await recovery_pause(stop_event, 3)
+            status = await report(**progress)
             if not status.get('active'):
                 return
-        return
 
     async def open_agencykey():
         connect = job['kind'] == 'connect'
-        options = {'viewport': {'width': 1280, 'height': 720}}
+        page, context = await session.open(client, connect, stop_event)
         if not connect:
-            options['storage_state'] = (await asyncio.to_thread(client.recording_session))['state']
-        async with async_playwright() as pw:
-            browser = await recorder.launch_browser(pw, headless=not connect)
-            try:
-                context = await browser.new_context(**options)
-                page = await context.new_page()
-                if not connect:
-                    url = recorder.model_profile_url(job['creator_id'])
-                    result = await verify_profile_route(page, url, job.get('creator_username'))
-                    if result['status'] != 'ready':
-                        web_log.warning('Verificación web de Mi perfil | Modelo %s · %s', job['creator_id'],
-                                    PROFILE_ERRORS[result['status']])
+            url = recorder.model_profile_url(job['creator_id'])
+            while not stop_event.is_set():
+                result = await verify_profile_route(page, url, job.get('creator_username'))
+                if result['status'] not in {'connection_error', 'profile_unverified', 'profile_not_visible', 'profile_menu_missing'}:
                     return {**result, 'identity_checked': True}
-                response = await page.goto(AGENCYKEY_SIGN_IN, wait_until='domcontentloaded', timeout=30000)
-                if response is not None and response.status >= 400:
-                    return {'status': 'connection_error'}
-                deadline = monotonic() + 240
-                while not page.is_closed() and monotonic() < deadline:
-                    if await agencykey_login_complete(page):
-                        return {'status': 'ready', 'state': await context.storage_state(indexed_db=True)}
-                    await asyncio.sleep(.7)
-                return {'status': 'cancelled'}
-            finally:
-                await browser.close()
+                if page.is_closed():
+                    return {**result, 'identity_checked': True}
+                progress.update(phase='retrying', attempt=progress['attempt'] + 1)
+                web_log.warning('Mi perfil no terminó de cargar · reintento %s · modelo %s',
+                                progress['attempt'], job['creator_id'])
+                await recovery_pause(stop_event, min(15, progress['attempt'] * 2))
+        else:
+            from playwright.async_api import Error as BrowserError
+            while not stop_event.is_set():
+                try:
+                    response = await page.goto(AGENCYKEY_SIGN_IN, wait_until='domcontentloaded', timeout=30000)
+                    if response is not None and response.status in (401, 403):
+                        return {'status': 'unavailable'}
+                    if response is not None and response.status >= 400:
+                        await recovery_pause(stop_event)
+                        continue
+                    break
+                except BrowserError:
+                    if page.is_closed():
+                        return {'status': 'cancelled'}
+                    await recovery_pause(stop_event)
+            while not page.is_closed() and not stop_event.is_set():
+                if await agencykey_login_complete(page):
+                    return {'status': 'ready', 'state': await context.storage_state(indexed_db=True)}
+                await recovery_pause(stop_event, 1)
+            return {'status': 'cancelled'}
 
-    running = asyncio.create_task(open_agencykey())
+    async def execute_and_deliver():
+        try:
+            result = await open_agencykey()
+        except Exception as error:
+            web_log.error('Solicitud web de Chrome | %s', recorder.recording_error_detail(error))
+            result = {'status': 'connection_error'}
+            if job['kind'] == 'feed':
+                from diagnostics import redact
+                result.update(identity_checked=True, diagnostic={'stage': 'preparar Chrome',
+                    'error_type': type(error).__name__, 'error': redact(error),
+                    'screenshot_omitted': 'browser_unavailable'})
+        # A lost response must resend the same result, never rerun Chrome or create a new job.
+        progress['phase'] = 'saving'
+        await report(**result)
+
+    running = asyncio.create_task(execute_and_deliver())
     cancelled = asyncio.create_task(check_cancelled())
     try:
         done, _ = await asyncio.wait((running, cancelled), return_when=asyncio.FIRST_COMPLETED)
-        if running in done and not stop_event.is_set():
-            try:
-                result = running.result()
-            except Exception as error:
-                detail = recorder.recording_error_detail(error)
-                web_log.error('Solicitud web de Chrome | %s', detail)
-                result = {'status': 'connection_error'}
-                if job['kind'] == 'feed':
-                    result['identity_checked'] = True
-                    from diagnostics import redact
-                    result['diagnostic'] = {'stage': 'preparar Chrome', 'error_type': type(error).__name__,
-                                            'error': redact(error), 'screenshot_omitted': 'browser_unavailable'}
-            await asyncio.to_thread(client.update_recording_job, job, **result)
+        for task in done:
+            task.result()
     finally:
         for task in (running, cancelled):
             if not task.done():
                 task.cancel()
         await asyncio.gather(running, cancelled, return_exceptions=True)
+        if browser_session is None:
+            await session.close()
 
 
 class BrowserPreparation:

@@ -885,11 +885,14 @@ class DropperWindow:
 
         def run():
             try:
-                job = client.claim_recording_job()
-                self.recording_job_error = None
-                if job and not self.recording_job_stop.is_set():
-                    from recording_service import run_desktop_recording_job
-                    asyncio.run(run_desktop_recording_job(client, job, self.recording_job_stop))
+                from recording_service import run_verification_engine
+                def notify(error):
+                    self.recording_job_error = error
+                asyncio.run(run_verification_engine(client, self.recording_job_stop,
+                    current=lambda: self.client is client and not self.auth_required,
+                    notify=notify))
+            except asyncio.CancelledError:
+                pass
             except CloudError as error:
                 detail = str(error)
                 if detail != self.recording_job_error:

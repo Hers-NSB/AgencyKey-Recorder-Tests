@@ -383,6 +383,7 @@ export async function saveSharedSession(env, state, revision, connection=crypto.
 
 function profileCheckResult(job, status) {
   return {status, checked_at:job.checked_at, expected_username:job.creator_username, observed_username:job.observed_username,
+    ...(['queued','running','finishing'].includes(status) ? {id:job.id,phase:job.phase,attempt:job.attempt} : {}),
     ...(job.kind==='feed' && job.id && !['queued','running','finishing'].includes(status)
       ? {report_id:job.id,report_available:true} : {})};
 }
@@ -439,6 +440,7 @@ async function replaceDesktopJob(env, entry, job) {
 }
 
 function jobStatus(job) {
+  if (job.recover && ['queued','running'].includes(job.status)) return job.status;
   if (job.expires<=Date.now() && ['queued','running','finishing'].includes(job.status)) {
     return job.status==='queued' ? 'desktop_offline' : 'expired';
   }
@@ -451,20 +453,40 @@ async function recordingAdmin(request, env, path) {
   const report = path.match(/^\/v1\/admin\/recording-session\/feed\/([a-f0-9-]{36})\/(diagnostic|report)$/);
   if (report && request.method==='GET') return webVerificationReport(request,env,report[1],report[2]==='report');
   const owner=await sessionId(sessionToken(request));
-  const entry=await readDesktopJob(env);
+  let entry=await readDesktopJob(env);
+  if (path===root+'/active' && request.method==='GET') {
+    if (!entry || (entry.job.owner!==owner && !entry.job.recover)) return json({status:'none'});
+    return json({kind:entry.job.kind,profile_id:entry.job.profile_id,...profileCheckResult(entry.job,jobStatus(entry.job))});
+  }
   const feed=path.match(/^\/v1\/admin\/recording-session\/feed\/([a-f0-9-]{36})$/);
   const connect=path===root+'/connect';
   if (request.method==='POST' && (connect || feed)) {
-    if (entry && ['queued','running','finishing'].includes(jobStatus(entry.job))) {
-      throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
-    }
+    const input=await body(request);
+    const requestId=typeof input.request_id==='string' && /^[a-f0-9-]{36}$/.test(input.request_id) ? input.request_id : null;
     const profile=feed
       ? await env.DB.prepare('SELECT creator_id, creator_username, revision FROM profiles WHERE id = ?').bind(feed[1]).first()
       : null;
     if (feed && !profile) throw new ApiError(404,'La configuración de la modelo ya no existe');
     const session=await sharedSession(env);
+    if (requestId && entry?.job.request_id===requestId && (entry.job.owner===owner || entry.job.recover)
+        && entry.job.kind===(connect?'connect':'feed') && (!feed || (entry.job.profile_id===feed[1]
+          && entry.job.profile_revision===profile.revision && entry.job.creator_id===profile.creator_id
+          && entry.job.connection===session.connection))) {
+      return json({id:entry.job.id,...profileCheckResult(entry.job,jobStatus(entry.job))});
+    }
+    if (entry?.job.kind==='feed' && ['queued','running'].includes(jobStatus(entry.job))) {
+      const current=await env.DB.prepare('SELECT creator_id, creator_username, revision FROM profiles WHERE id = ?').bind(entry.job.profile_id).first();
+      if (!current || current.revision!==entry.job.profile_revision || current.creator_id!==entry.job.creator_id
+          || entry.job.connection!==session.connection) {
+        await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'});
+        entry=await readDesktopJob(env);
+      }
+    }
+    if (entry && ['queued','running','finishing'].includes(jobStatus(entry.job))) {
+      throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
+    }
     if (feed && !session.configured) return json({status:'no_session'});
-    const job={id:crypto.randomUUID(),owner,kind:connect?'connect':'feed',
+    const job={id:crypto.randomUUID(),owner,request_id:requestId,recover:Boolean(requestId),kind:connect?'connect':'feed',
       ...(profile?{profile_id:feed[1],creator_id:profile.creator_id,creator_username:profile.creator_username,
         profile_revision:profile.revision,connection:session.connection}:{}),revision:session.revision,
       requested_at:new Date().toISOString(),status:'queued',expires:Date.now()+45000};
@@ -473,7 +495,7 @@ async function recordingAdmin(request, env, path) {
   }
   if (request.method==='POST' && [root+'/check',root+'/cancel'].includes(path)) {
     const {id}=await body(request);
-    if (!entry || entry.job.id!==id || entry.job.owner!==owner) return json({status:'expired'});
+    if (!entry || entry.job.id!==id || (entry.job.owner!==owner && !entry.job.recover)) return json({status:'expired'});
     const status=jobStatus(entry.job);
     if (path.endsWith('/cancel') && ['queued','running'].includes(status)) {
       const cancelled=await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'});
@@ -487,7 +509,8 @@ async function recordingAdmin(request, env, path) {
 async function desktopRecordingJob(request,env) {
   const entry=await readDesktopJob(env);
   if (request.method==='POST') {
-    if (!entry || jobStatus(entry.job)!=='queued') return json({job:null});
+    if (!entry || !(jobStatus(entry.job)==='queued' ||
+        (entry.job.recover && entry.job.status==='running' && entry.job.expires<=Date.now()))) return json({job:null});
     const job={...entry.job,status:'running',claim:crypto.randomUUID(),expires:Date.now()+300000};
     if (!await replaceDesktopJob(env,entry,job)) return json({job:null});
     const {id,claim,kind,creator_id,creator_username}=job;
@@ -498,7 +521,21 @@ async function desktopRecordingJob(request,env) {
   if (!entry || entry.job.id!==input.id || entry.job.claim!==input.claim || jobStatus(entry.job)!=='running') {
     return json({active:false});
   }
-  if (!input.status) return json({active:true});
+  if (entry.job.kind==='feed') {
+    const current=await env.DB.prepare('SELECT creator_id, creator_username, revision FROM profiles WHERE id = ?').bind(entry.job.profile_id).first();
+    const session=await sharedSession(env);
+    if (!current || current.revision!==entry.job.profile_revision || current.creator_id!==entry.job.creator_id
+        || session.connection!==entry.job.connection) {
+      await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'});
+      return json({active:false});
+    }
+  }
+  if (!input.status) {
+    const heartbeat={...entry.job,expires:Date.now()+300000,
+      phase:['opening','retrying','saving'].includes(input.phase)?input.phase:entry.job.phase,
+      attempt:Number.isSafeInteger(input.attempt)?Math.max(1,Math.min(input.attempt,1000000)):entry.job.attempt};
+    return json({active:await replaceDesktopJob(env,entry,heartbeat)});
+  }
   if (!desktopResults.has(input.status)) throw new ApiError(400,'Resultado de Chrome inválido');
   const job={...entry.job,status:input.status,checked_at:new Date().toISOString()};
   if (job.kind==='connect' && input.status==='ready') {
@@ -637,7 +674,7 @@ async function handle(request, env) {
       'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
       'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`}});
   }
-  if (path === '/health' && request.method === 'GET') return json({service: 'agencykey-recorder-tests', version: 6});
+  if (path === '/health' && request.method === 'GET') return json({service: 'agencykey-recorder-tests', version: 7});
   if (path.startsWith('/v1/admin/')) return adminHandle(request, env, path);
   await authorize(request, env);
   if (path==='/v1/recording-desktop-job') return desktopRecordingJob(request,env);

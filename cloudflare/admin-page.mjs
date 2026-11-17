@@ -27,27 +27,33 @@ const $=id=>document.getElementById(id);
 const reportZip=__REPORT_ZIP__;
 let currentWebReport=null;
 let profiles=[],creators=[],editing=null,saving=false,checking=false,resolveRequest=0;
-let confirmResolve=null,recordingTimer=null,recordingBusy=false,recordingGeneration=0,recordingJob=null,feedBusy=false;
+let confirmResolve=null,recordingTimer=null,recordingBusy=false,recordingGeneration=0,recordingJob=null,feedBusy=false,feedCancel=false,activeFeed=null;
 const feedRows=new Map();
 let renderPending=false;
 let setupToken=new URLSearchParams(location.hash.slice(1)).get('configurar')||'';
 if(location.hash)history.replaceState(null,'',location.pathname);
 async function api(path,options={}) {
  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),60000);
- let response;
- try {response=await fetch('/v1/admin'+path,{...options,signal:controller.signal,credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json',...(options.headers||{})}});}catch{throw new Error('No se pudo conectar');}finally{clearTimeout(timer);}
- const data=await response.json().catch(()=>({error:'Vuelve a iniciar sesión'}));
- if(!response.ok){if(response.status===401&&path!=='/login')showLogin();throw new Error(data.error||'No se pudo completar la acción');}
+ let response,data;
+ try {
+  response=await fetch('/v1/admin'+path,{...options,signal:controller.signal,credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json',...(options.headers||{})}});
+  data=await response.json();
+ }catch{
+  if(response?.status===401){showLogin();throw new Error('Vuelve a iniciar sesión');}
+  throw Object.assign(new Error('Conexión interrumpida · esperando para continuar…'),{retryable:true});
+ }finally{clearTimeout(timer);}
+ if(!response.ok){if(response.status===401&&path!=='/login')showLogin();throw Object.assign(new Error(data.error||'No se pudo completar la acción'),{retryable:response.status===408||response.status===429||response.status>=500});}
  return data;
 }
 function showLogin(){
+ feedCancel=true;
  currentWebReport=null;$('web-report-image').removeAttribute('src');$('web-report-image').hidden=true;$('web-report-detail').textContent='';$('web-report-dialog').close();
  stopRecordingPoll();$('recording-dialog').close();if(confirmResolve)finishConfirm(false);
  profiles=[];creators=[];feedRows.clear();renderPending=false;resolveRequest++;$('profiles-body').replaceChildren();$('profile-form').reset();$('agency-form').reset();$('access-form').reset();$('admin-password-form').reset();$('admin-password').value='';$('admin-confirm').value='';
  if($('profile-dialog').open)$('profile-dialog').close();$('app-view').hidden=true;$('logout').hidden=true;$('login-view').hidden=false;
  const setup=Boolean(setupToken);$('login-title').textContent=setup?'Crea tu contraseña':'Entrar a AgencyKey Recorder Tests';$('login-help').textContent=setup?'Esta contraseña privada será solo para administrar la web':'Introduce tu contraseña de administrador';$('confirm-field').hidden=!setup;$('admin-confirm').required=setup;$('admin-password').minLength=setup?12:1;$('admin-password').autocomplete=setup?'new-password':'current-password';$('login-button').textContent=setup?'Crear contraseña y entrar':'Entrar';
 }
-async function showApp(){$('login-view').hidden=true;$('app-view').hidden=false;$('logout').hidden=false;$('admin-password').value='';$('admin-confirm').value='';section('profiles');await reload();await recordingStatus();try{const data=await api('/settings');$('api-status').textContent=data.api_configured?'API configurada':'API sin configurar';}catch(error){$('api-error').textContent=error.message;}}
+async function showApp(){$('login-view').hidden=true;$('app-view').hidden=false;$('logout').hidden=false;$('admin-password').value='';$('admin-confirm').value='';section('profiles');await resumeRecordingConnection();await reload();await recordingStatus();try{const data=await api('/settings');$('api-status').textContent=data.api_configured?'API configurada':'API sin configurar';}catch(error){$('api-error').textContent=error.message;}}
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();$('login-error').textContent='';if(setupToken&&$('admin-password').value!==$('admin-confirm').value){$('login-error').textContent='Las contraseñas no coinciden';return;}$('login-button').disabled=true;try{await api(setupToken?'/setup':'/login',{method:'POST',body:JSON.stringify({password:$('admin-password').value,...(setupToken?{token:setupToken}:{})})});setupToken='';await showApp();}catch(error){$('login-error').textContent=error.message;}finally{$('login-button').disabled=false;}});
 $('logout').addEventListener('click',async()=>{if(!await askConfirm('¿Cerrar sesión?','Tendrás que entrar de nuevo para administrar tus bots.','Cerrar sesión'))return;try{await api('/logout',{method:'POST',body:'{}'});showLogin();}catch(error){$('profiles-error').textContent=error.message;}});
 $('admin-password-form').addEventListener('submit',async event=>{event.preventDefault();if(!await askConfirm('¿Cambiar tu contraseña?','Las demás sesiones de administración tendrán que iniciar sesión de nuevo.','Cambiar contraseña'))return;$('save-admin-password').disabled=true;$('admin-password-error').textContent='';try{await api('/password',{method:'PUT',body:JSON.stringify({current_password:$('admin-current').value,password:$('admin-next').value})});$('admin-password-form').reset();$('admin-password-status').textContent='Contraseña de administrador cambiada';}catch(error){$('admin-password-error').textContent=error.message;}finally{$('save-admin-password').disabled=false;}});
@@ -111,39 +117,59 @@ function feedLabel(result){
  }
  return label+(time?' · '+time:'');
 }
+const recoveryWait=()=>new Promise(resolve=>setTimeout(resolve,2500));
+async function verificationRequest(path,options,onRetry,alive=()=>!$('app-view').hidden){
+ while(alive()){
+  try{return await api(path,options);}catch(error){if(!error.retryable)throw error;onRetry(error.message);await recoveryWait();}
+ }
+ throw new Error('Verificación interrumpida al cerrar la sesión de administración');
+}
 async function verifyFeed(profile, status, button){
- if(feedBusy)return;
- feedBusy=true;$('reload').disabled=true;
+ if(feedBusy){if(activeFeed===profile.id){feedCancel=true;button.disabled=true;status.textContent='Cancelando al recuperar la conexión…';}return;}
+ feedBusy=true;feedCancel=false;activeFeed=profile.id;$('reload').disabled=true;
  const buttons=[...feedRows.values()].map(row=>row.button);
  for(const item of buttons)item.disabled=true;
+ button.disabled=false;button.textContent='Cancelar verificación';
  status.textContent='Abriendo Mi perfil con la sesión guardada…';
  feedRows.get(profile.id)?.reportActions.setAttribute('hidden','');
+ const key='verification:'+profile.id;
+ let requestId=sessionStorage.getItem(key);
+ if(!requestId){requestId=crypto.randomUUID();sessionStorage.setItem(key,requestId);}
+ const retry=message=>{status.textContent=feedCancel?'Cancelación pendiente · esperando conexión…':message;};
  try{
-  let result=await api('/recording-session/feed/'+profile.id,{method:'POST',body:'{}'});
+  let result=profile.feed?.id ? {id:profile.feed.id,status:profile.feed.status} :
+   await verificationRequest('/recording-session/feed/'+profile.id,{method:'POST',body:JSON.stringify({request_id:requestId})},retry);
   const id=result.id;
-  while(['queued','running','finishing'].includes(result.status)&&status.isConnected){
-   status.textContent=result.status==='queued'?'Esperando la app de Windows…':'Comprobando la identidad del perfil en Chrome…';
-   await new Promise(resolve=>setTimeout(resolve,2500));
-   result=await checkDesktopJob(id);
+  while(['queued','running','finishing'].includes(result.status)&&status.isConnected&&!$('app-view').hidden){
+   status.textContent=feedCancel?'Cancelando…':result.status==='queued'?'Esperando la app de Windows…':
+    result.phase==='retrying'?'Mi perfil sigue cargando · reintento '+(result.attempt||1)+'…':
+    result.phase==='saving'?'Guardando el resultado…':'Abriendo Mi perfil de la modelo seleccionada…';
+   await recoveryWait();
+   result=await verificationRequest('/recording-session/'+(feedCancel?'cancel':'check'),
+    {method:'POST',body:JSON.stringify({id})},retry);
   }
-  const current=profiles.find(item=>item.id===profile.id&&item.creator.external_id===profile.creator.external_id);
+  sessionStorage.removeItem(key);
+  const current=profiles.find(item=>item.id===profile.id&&item.revision===profile.revision);
   if(current){current.feed=result;renderPending=true;}
   status.textContent=feedLabel(result);
  }catch(error){
-  const current=profiles.find(item=>item.id===profile.id&&item.creator.external_id===profile.creator.external_id);
+  sessionStorage.removeItem(key);
+  const current=profiles.find(item=>item.id===profile.id&&item.revision===profile.revision);
   if(current){current.feed={status:'web_request_error',error:error.message};renderPending=true;}
   status.textContent=error.message;
  }
  finally{
   for(const item of buttons)item.disabled=false;
-  button.disabled=false;$('reload').disabled=false;feedBusy=false;
+  button.textContent='Verificar Mi perfil';button.disabled=false;$('reload').disabled=false;
+  feedBusy=false;activeFeed=null;
   if(renderPending){renderPending=false;render();}
   void verifyPendingFeeds();
  }
 }
 async function verifyPendingFeeds(){
  if(feedBusy||$('app-view').hidden)return;
- const row=[...feedRows.values()].find(row=>row.profile.feed?.status==='pending');
+ const row=[...feedRows.values()].find(row=>['pending','queued','running','finishing'].includes(row.profile.feed?.status)
+   ||sessionStorage.getItem('verification:'+row.profile.id));
  if(row)await verifyFeed(row.profile,row.status,row.button);
 }
 async function reload(){try{$('reload').disabled=true;$('profiles-error').textContent='';profiles=(await api('/profiles')).profiles;render();}catch(error){$('profiles-error').textContent=error.message;}finally{$('reload').disabled=feedBusy;void verifyPendingFeeds();}}
@@ -168,6 +194,15 @@ async function recordingStatus(){try{const data=await api('/recording-session');
 function stopRecordingPoll(){recordingGeneration++;clearTimeout(recordingTimer);recordingTimer=null;}
 const desktopJobRequest=(action,id)=>api('/recording-session/'+action,{method:'POST',body:JSON.stringify({id})});
 const checkDesktopJob=id=>desktopJobRequest('check',id);
+async function resumeRecordingConnection(){
+ try{
+  const job=await api('/recording-session/active');
+  if(job.kind!=='connect'||!['queued','running','finishing'].includes(job.status))return;
+  stopRecordingPoll();recordingJob=job.id;$('recording-error').textContent='';
+  $('recording-help').textContent='Retomando la conexión de AgencyKey…';
+  $('recording-dialog').showModal();recordingTimer=setTimeout(()=>checkRecording(recordingGeneration),2500);
+ }catch(error){$('recording-session-status').textContent=error.message;}
+}
 async function checkRecording(generation){
  if(generation!==recordingGeneration||!$('recording-dialog').open)return;
  try{
@@ -186,7 +221,7 @@ async function checkRecording(generation){
   $('recording-error').textContent=data.status==='desktop_offline'?'Abre la app de Windows e inténtalo de nuevo':
    data.status==='connection_error'?'La app no pudo abrir AgencyKey en tu PC':'La conexión caducó o se canceló';
  }catch(error){
-  if(generation===recordingGeneration)$('recording-error').textContent=error.message;
+  if(generation===recordingGeneration){$('recording-error').textContent=error.message;if(error.retryable)recordingTimer=setTimeout(()=>checkRecording(generation),2500);}
  }
 }
 $('connect-recording').addEventListener('click',async()=>{
@@ -195,7 +230,8 @@ $('connect-recording').addEventListener('click',async()=>{
  $('recording-error').textContent='';$('recording-help').textContent='Esperando la app de Windows…';
  $('recording-dialog').showModal();$('recording-cancel').disabled=true;
  try{
-  const data=await api('/recording-session/connect',{method:'POST',body:'{}'});
+  const requestId=crypto.randomUUID();
+  const data=await verificationRequest('/recording-session/connect',{method:'POST',body:JSON.stringify({request_id:requestId})},message=>{$('recording-help').textContent=message;},()=>generation===recordingGeneration&&$('recording-dialog').open);
   recordingJob=data.id;recordingTimer=setTimeout(()=>checkRecording(generation),2500);
  }catch(error){$('recording-error').textContent=error.message;}
  finally{recordingBusy=false;$('recording-cancel').disabled=false;}

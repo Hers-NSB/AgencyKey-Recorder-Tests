@@ -87,17 +87,19 @@ test('manual web verification shows its own error, downloads a valid ZIP and rec
   assert.ok(!(await page.locator('#web-report-detail').textContent()).includes('no terminó de cargar después del cambio'));
   await page.locator('#web-report-close').click();mode='offline';
   await page.getByRole('button',{name:'Verificar Mi perfil de Lilith',exact:true}).click();
-  await page.locator('#profiles-body .muted').filter({hasText:'no recibió la solicitud'}).waitFor();
+  await page.locator('#profiles-body .muted').filter({hasText:'Esperando la app de Windows'}).waitFor();
+  await page.getByRole('button',{name:'Verificar Mi perfil de Lilith',exact:true}).click();
+  await page.getByRole('button',{name:'Ver detalle de verificación de Lilith',exact:true}).waitFor();
   await page.getByRole('button',{name:'Ver detalle de verificación de Lilith',exact:true}).click();
-  await page.locator('#web-report-detail').filter({hasText:'desktop_offline'}).waitFor();
+  await page.locator('#web-report-detail').filter({hasText:'cancelled'}).waitFor();
   assert.equal(await page.locator('#web-report-image').isVisible(),false);
   await page.locator('#web-report-close').click();mode='web_offline';
   await page.getByRole('button',{name:'Verificar Mi perfil de Lilith',exact:true}).click();
-  await page.locator('#profiles-body .muted').filter({hasText:'No se pudo conectar'}).waitFor();
+  await page.locator('#profiles-body .muted').filter({hasText:'Conexión interrumpida'}).waitFor();
+  mode='ready';
+  await page.locator('#profiles-body .muted').filter({hasText:'Mi perfil coincide'}).waitFor();
   await page.getByRole('button',{name:'Ver detalle de verificación de Lilith',exact:true}).click();
-  await page.locator('#web-report-detail').filter({hasText:'No se pudo conectar'}).waitFor();
-  const localDownload=page.waitForEvent('download');await page.locator('#web-report-download').click();
-  assert.equal((await localDownload).suggestedFilename(),'verificacion-web-52.zip');
+  await page.locator('#web-report-detail').filter({hasText:'Mi perfil coincide'}).waitFor();
   assert.deepEqual(errors,[]);
  }finally{await browser.close();sqlite.close();}
 });

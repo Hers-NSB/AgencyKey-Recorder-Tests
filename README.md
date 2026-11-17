@@ -18,7 +18,7 @@ Aplicación de Windows que publica los mensajes reenviados a un bot de Telegram 
 
 Se admiten mensajes de texto y fotos individuales con texto. El lote se publica del último mensaje reenviado al primero. Después se envían el video y la confirmación final al mismo chat.
 
-La app debe permanecer abierta para verificar, publicar y grabar. **Actualizar** descarga configuraciones; para actualizar la aplicación hay que descargar y abrir el nuevo EXE.
+La app debe permanecer abierta para verificar, publicar y grabar. Las verificaciones reutilizan Chrome al cambiar de modelo y reintentan las cargas incompletas o los cortes de conexión; puedes detenerlas con **Cancelar verificación**. Si recargas la web, se retoma la comprobación pendiente. La búsqueda de posts comienza al grabar, después de confirmar la identidad de la modelo. **Actualizar** descarga configuraciones; para actualizar la aplicación hay que descargar y abrir el nuevo EXE.
 
 ## Errores y reportes
 

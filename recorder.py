@@ -829,26 +829,44 @@ async def open_recording_page(stack, *, headless, storage_state=None):
 async def navigate_recording_page(page, url, *, fixture=None, stop_event=None, stage=None):
     from playwright.async_api import Error as BrowserError, TimeoutError as BrowserTimeout
     navigation_timeout = 45_000 if fixture else PROFILE_LOAD_TIMEOUT_MS
-    try:
-        response = await page.goto(url, wait_until='domcontentloaded', timeout=navigation_timeout)
-    except BrowserError as error:
-        transient = ('ERR_NETWORK_CHANGED', 'ERR_INTERNET_DISCONNECTED', 'ERR_CONNECTION_RESET',
-                     'ERR_TIMED_OUT', 'ERR_CONNECTION_CLOSED')
-        retryable = isinstance(error, BrowserTimeout) or any(code in str(error) for code in transient)
-        if fixture or (stop_event and stop_event.is_set()) or not retryable:
-            raise
+    while True:
+        if stop_event and stop_event.is_set():
+            raise asyncio.CancelledError
+        try:
+            response = await page.goto(url, wait_until='domcontentloaded', timeout=navigation_timeout)
+            if fixture or response is None or response.status < 500:
+                break
+        except BrowserError as error:
+            transient = ('ERR_NETWORK_CHANGED', 'ERR_INTERNET_DISCONNECTED', 'ERR_CONNECTION_RESET',
+                         'ERR_TIMED_OUT', 'ERR_CONNECTION_CLOSED', 'ERR_NAME_NOT_RESOLVED')
+            retryable = isinstance(error, BrowserTimeout) or any(code in str(error) for code in transient)
+            if fixture or page.is_closed() or (stop_event and stop_event.is_set()) or not retryable:
+                raise
         if stage:
             stage('reintentando abrir el perfil por un fallo de conexión')
-        await asyncio.sleep(2)
-        response = await page.goto(url, wait_until='domcontentloaded', timeout=navigation_timeout)
+        await page.wait_for_timeout(2000)
 
     if not fixture and response is not None:
         if response.status == 401:
             raise ValueError('AgencyKey pide iniciar sesión · Reconecta desde la web')
         if response.status in (403, 404):
             raise ValueError('AgencyKey no permite abrir las publicaciones de esta modelo. Revisa sus permisos en el panel web.')
-        if response.status >= 500:
-            raise ValueError('AgencyKey no pudo cargar el perfil. Pulsa Repetir grabación para intentarlo de nuevo.')
+
+
+async def recover_model_profile(page, url, username, *, stop_event=None, stage=None):
+    while True:
+        if stop_event and stop_event.is_set():
+            raise asyncio.CancelledError
+        try:
+            return await wait_for_model_identity(page, url, username, deadline=monotonic() + 35)
+        except FeedAccessError as error:
+            if error.status != 'profile_unverified' or page.is_closed():
+                raise
+        if stage:
+            stage('reintentando abrir el perfil por un fallo de conexión')
+        await page.wait_for_timeout(2000)
+        await navigate_recording_page(page, url, stop_event=stop_event, stage=stage)
+
 
 
 async def page_has_post(page, url, post_id):
@@ -914,8 +932,8 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 await navigate_recording_page(page, url, fixture=fixture, stop_event=stop_event, stage=stage)
             if not fixture and 'creator_username' in config:
                 stage('verificando identidad de la modelo')
-                verified_username = await wait_for_model_identity(
-                    page, url, config['creator_username'], deadline=monotonic() + 35)
+                verified_username = await recover_model_profile(
+                    page, url, config['creator_username'], stop_event=stop_event, stage=stage)
             else:
                 verified_username = None
             stage('cargando feed e imágenes')

@@ -1,5 +1,7 @@
 name: Ejecutable Windows
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main, feat/independent-publisher-recorder, fix/session-ui-autosave, fix/telegram-feed-verification]
   workflow_dispatch:
