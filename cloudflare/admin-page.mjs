@@ -96,12 +96,14 @@ const feedMessages={pending:'Mi perfil pendiente de verificar',ready:'Mi perfil 
  feed_unverified:'Verificación anterior · Vuelve a verificar Mi perfil',
  profile_unverified:'No se pudo verificar el perfil',
  connection_error:'La app no pudo abrir AgencyKey en tu PC',
+ web_request_error:'No se pudo completar la solicitud desde la web',
  desktop_update_required:'Actualiza la app de Windows y vuelve a verificar',
  desktop_offline:'La app de Windows no recibió la solicitud de verificación',expired:'La comprobación caducó',
  cancelled:'Comprobación cancelada'};
 function feedLabel(result){
  const time=result?.checked_at?new Date(result.checked_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
  let label=feedMessages[result?.status]||feedMessages.pending;
+ if(result?.status==='web_request_error'&&typeof result.error==='string')label=result.error;
  if(result?.status==='wrong_profile'&&result.expected_username&&result.observed_username
     && result.expected_username.toLowerCase()!==result.observed_username.toLowerCase()){
   label='Se esperaba @'+result.expected_username+' y Chrome abrió @'+result.observed_username;
@@ -128,7 +130,7 @@ async function verifyFeed(profile, status, button){
   status.textContent=feedLabel(result);
  }catch(error){
   const current=profiles.find(item=>item.id===profile.id&&item.creator.external_id===profile.creator.external_id);
-  if(current){current.feed={status:'connection_error',error:error.message};renderPending=true;}
+  if(current){current.feed={status:'web_request_error',error:error.message};renderPending=true;}
   status.textContent=error.message;
  }
  finally{
