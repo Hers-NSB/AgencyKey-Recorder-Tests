@@ -9,7 +9,9 @@ DEFAULT_URL = 'https://agencykey-recorder-tests.datosenviados07.workers.dev'
 
 
 class CloudError(Exception):
-    pass
+    def __init__(self, message, *, retryable=False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class AccessDenied(CloudError):
@@ -48,10 +50,11 @@ class CloudClient:
                     message = ''
                 if not isinstance(message, str) or len(message) > 180:
                     message = ''
-                raise CloudError(message or f'Error al descargar configuraciones (HTTP {response.status_code})')
+                raise CloudError(message or f'Error al descargar configuraciones (HTTP {response.status_code})',
+                                 retryable=response.status_code in (408, 429) or response.status_code >= 500)
             return response.json()
         except httpx.RequestError as error:
-            raise CloudError(network_message(error)) from None
+            raise CloudError(network_message(error), retryable=True) from None
         except ImportError:
             raise CloudError('No se pudo usar el proxy de esta red. Instala la versión actualizada de Dropper') from None
         except ValueError:

@@ -344,3 +344,42 @@ test('report sanitizer bounds evidence and discards unsupported image formats an
  assert.equal(new DataView(bytes.buffer).getUint32(bytes.length-22,true),0x06054b50);
  assert.equal(new DataView(bytes.buffer).getUint16(bytes.length-14,true),2);
 });
+
+test('recoverable check survives queue outage, lost start response, lease expiry and duplicate completion',async()=>{
+ await admin(env,'PUT',route,input);
+ await saveSharedSession(env,{cookies:[{name:'session',domain:'.agencykey.com',value:'test'}],origins:[]},null);
+ const root='/v1/admin/recording-session', claim='/v1/recording-desktop-job';
+ const login=await request(env,'POST','/v1/admin/login',{password:env.ADMIN_TOKEN});
+ const cookie={Cookie:login.headers.get('set-cookie').split(';')[0]};
+ const start=()=>request(env,'POST',root+'/feed/'+firstId,{request_id:firstId},cookie);
+ const first=await (await start()).json();
+ let row=JSON.parse(db.prepare('SELECT value FROM settings WHERE key=?').get('recording_desktop_job').value);
+ row.expires=Date.now()-1;db.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify(row),'recording_desktop_job');
+ const replay=await (await start()).json();assert.equal(replay.id,first.id);assert.equal(replay.status,'queued');
+ let {job}=await (await desktop(env,'POST',claim)).json();assert.equal(job.id,first.id);
+ assert.equal((await (await desktop(env,'PUT',claim,{...job,phase:'retrying',attempt:3})).json()).active,true);
+ const check=await (await request(env,'POST',root+'/check',{id:job.id},cookie)).json();
+ assert.equal(check.phase,'retrying');assert.equal(check.attempt,3);
+ const profiles=await (await request(env,'GET','/v1/admin/profiles',undefined,cookie)).json();
+ assert.equal(profiles.profiles[0].feed.id,job.id);
+ row=JSON.parse(db.prepare('SELECT value FROM settings WHERE key=?').get('recording_desktop_job').value);
+ row.expires=Date.now()-1;db.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify(row),'recording_desktop_job');
+ const old=job;({job}=await (await desktop(env,'POST',claim)).json());assert.notEqual(job.claim,old.claim);
+ assert.equal((await (await desktop(env,'PUT',claim,{...old,status:'ready',identity_checked:true,observed_username:'model_52'})).json()).active,false);
+ const result={...job,status:'ready',identity_checked:true,observed_username:'model_52'};
+ await desktop(env,'PUT',claim,result);await desktop(env,'PUT',claim,result);
+ assert.equal((await (await start()).json()).status,'ready');
+});
+
+test('editing the model cancels the old recoverable check and allows the new model',async()=>{
+ await admin(env,'PUT',route,input);
+ await saveSharedSession(env,{cookies:[{name:'session',domain:'.agencykey.com',value:'test'}],origins:[]},null);
+ const root='/v1/admin/recording-session', claim='/v1/recording-desktop-job';
+ const queued=await (await admin(env,'POST',root+'/feed/'+firstId,{request_id:firstId})).json();
+ const {job}=await (await desktop(env,'POST',claim)).json();
+ await admin(env,'PUT',route,{creator_id:99,revision:1});
+ const next=await admin(env,'POST',root+'/feed/'+firstId,{request_id:secondId});assert.equal(next.status,202);
+ assert.notEqual((await next.json()).id,queued.id);
+ assert.equal((await (await desktop(env,'PUT',claim,{...job,phase:'retrying'})).json()).active,false);
+ const fresh=await (await desktop(env,'POST',claim)).json();assert.equal(fresh.job.creator_id,99);
+});
