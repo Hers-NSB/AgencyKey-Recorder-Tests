@@ -58,7 +58,7 @@ class CloudClient:
         except ImportError:
             raise CloudError('No se pudo usar el proxy de esta red. Instala la versión actualizada de Dropper') from None
         except ValueError:
-            raise CloudError('Respuesta de configuración inválida') from None
+            raise CloudError('Respuesta de configuración inválida', retryable=True) from None
 
     def list_profiles(self):
         data = self.request('GET', '/v1/profiles')

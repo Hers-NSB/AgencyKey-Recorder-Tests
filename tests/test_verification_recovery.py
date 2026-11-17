@@ -4,13 +4,21 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 from playwright.async_api import Error as BrowserError
-from cloud_client import CloudError, AccessDenied
+from cloud_client import CloudClient, CloudError, AccessDenied
 import recorder
 import recording_service as service
 
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_truncated_cloud_response_can_be_retried(self):
+        client = CloudClient('test-access', transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=b'{', request=request)))
+        with self.assertRaises(CloudError) as caught:
+            client.recording_session()
+        self.assertTrue(caught.exception.retryable)
+
     async def test_cloud_retry_preserves_result_and_stops_on_invalid_credentials(self):
         stop = threading.Event()
         call = Mock(side_effect=[CloudError('offline', retryable=True), {'active': True}])
