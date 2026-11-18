@@ -1,21 +1,19 @@
 # Estado actual · 2026-11-17
 
-AgencyKey Recorder Tests publica mensajes reenviados por Telegram y genera un comprobante con Chrome en la PC. El panel web solicita a la app de Windows la verificación de Mi perfil, que puede ejecutarse con el bot detenido.
+AgencyKey Recorder Tests ejecuta los bots, la publicación, la grabación y los registros en la PC de Windows. El panel web guarda la configuración y permite solicitar la verificación de Mi perfil con la app abierta y el bot detenido.
 
-## Publicado
+## Producción
 
-- [Panel web v7](https://agencykey-recorder-tests.datosenviados07.workers.dev/admin) desplegado en Cloudflare. Se comprobó `/health`, la carga del panel actualizado y la protección de la ruta privada.
-- [EXE recorder-43-1](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/releases/tag/recorder-43-1) compilado, probado sin Python y verificado tras su publicación.
-- [PR #30](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/pull/30) integrada en `4c821f34`. La app reutiliza Chrome al cambiar de modelo, comprueba el ID y usuario de Mi perfil y reintenta las cargas incompletas. La web retoma verificaciones pendientes y la app reenvía resultados interrumpidos sin repetir la comprobación.
+- [Panel web v8](https://agencykey-recorder-tests.datosenviados07.workers.dev/admin) activo. Incluye la clave global de AgencyKey, los tokens de Telegram, los `@usuarios` autorizados y la verificación de Mi perfil.
+- [EXE oficial `recorder-47-1`](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/releases/tag/recorder-47-1) publicado. La compilación verificó el arranque sin Python y comparó los archivos descargados con los probados.
+- [PR #31](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/pull/31) integrada en `0a2ac86`. Guarda el avance del lote, identifica el post fallido y pide su enlace. Comprueba los posts y fotos antes de entregar el video. Las verificaciones abandonadas caducan tras 30 minutos y la retención local es opcional.
 
 ## Validación
 
-[Pruebas de main](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/44192358626) correctas en Windows y Ubuntu, incluida la grabación de demostración. [Compilación oficial de Windows](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/44192358541) correcta.
+- El usuario confirmó la prueba con el panel v8 simplificado y el EXE de la PR #31.
+- [Pruebas de main](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/44213868759) correctas en Windows y Ubuntu. Una captura de diagnóstico falló en la primera ejecución de Windows y pasó en la repetición.
+- [Compilación y publicación de Windows](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/runs/44213868727) correctas.
 
-## En revisión
+## Uso
 
-[PR #31](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/pull/31), rama `fix/recorder-safety-recovery`. Control de Telegram por usuario, recuperación de avance del lote y validación de capturas con fotos. Las verificaciones abandonadas caducan tras 30 minutos. La retención de archivos es opcional. La web v8 usa una configuración compartida y el EXE probado de la PR #31.
-
-## Siguiente acción
-
-Con el EXE actualizado abierto, cambiar el mismo bot de Lilith (600912674) a Luna (479099623) y pulsar **Verificar Mi perfil** desde el panel. Después probar un comprobante con la sesión real. La comprobación manual no busca posts y el resultado se consulta en la web.
+Consulta [README.md](README.md) para descargar el EXE, configurar los bots y recuperar lotes o comprobantes. Los errores del bot se consultan en el registro de la app y los de verificación en el panel web.
