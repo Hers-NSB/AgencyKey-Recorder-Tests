@@ -8,7 +8,7 @@ from config import log
 
 
 def main(stop_event=None, on_ready=None, credentials=None, creator=None, recording_events=None,
-         recording_session_client=None, telegram_users=()) -> None:
+         recording_session_client=None, telegram_users=(), publishing_client=None) -> None:
     if not credentials or creator is None:
         raise ValueError("Configura el bot y su modelo desde la app de escritorio")
     if stop_event is not None and stop_event.is_set():
@@ -23,11 +23,16 @@ def main(stop_event=None, on_ready=None, credentials=None, creator=None, recordi
                                      session_client=recording_session_client)
     from batch_journal import BatchJournal
     journal = BatchJournal(token.split(':', 1)[0])
-    agencykey = AgencyKey(api_key)
+    if not publishing_client and not api_key:
+        raise ValueError("No hay un servicio de publicación configurado")
+    agencykey = publishing_client or AgencyKey(api_key)
     if stop_event is not None:
         agencykey.stop_requested = stop_event.is_set
 
     async def on_startup(application):
+        if publishing_client:
+            log.info("Bot conectado · Modelo fija: %s · Publicación mediante Cloudflare", creator.name)
+            return
         creators = await agencykey.list_creators()
         selected = next((item for item in creators if item.external_id == creator.external_id), None)
         if selected is None:

@@ -33,12 +33,12 @@ test('encrypts one API globally and Telegram tokens per bot',async()=>{
  const row=db.prepare('SELECT encrypted_secrets FROM profiles WHERE id=?').get(firstId);assert.ok(!row.encrypted_secrets.includes(firstToken));
  const settings=db.prepare("SELECT value FROM settings WHERE key='agencykey'").get();assert.ok(!settings.value.includes(input.api_key));
  for(const response of [await admin(env,'GET','/v1/admin/profiles'),await desktop(env,'GET','/v1/profiles')]){const text=await response.text();assert.ok(!text.includes('api_key'));assert.ok(!text.includes('telegram_token'));}
- const response=await desktop(env,'POST',credentials);assert.match(response.headers.get('cache-control'),/no-store/);const result=await response.json();assert.equal(result.telegram_token,firstToken);assert.equal(result.api_key,input.api_key);
+ const response=await desktop(env,'POST',credentials);assert.match(response.headers.get('cache-control'),/no-store/);const result=await response.json();assert.equal(result.telegram_token,firstToken);assert.ok(!Object.hasOwn(result,'api_key'));
 });
 test('global API overrides stale per-bot keys supplied by a client',async()=>{
- const response=await admin(env,'PUT',route,{...input,api_key:'ignored-per-bot-key'});assert.equal(response.status,200);assert.equal((await (await desktop(env,'POST',credentials)).json()).api_key,input.api_key);
+ const response=await admin(env,'PUT',route,{...input,api_key:'ignored-per-bot-key'});assert.equal(response.status,200);assert.ok(!Object.hasOwn(await (await desktop(env,'POST',credentials)).json(),'api_key'));
  assert.equal((await admin(env,'PUT','/v1/admin/agencykey',{api_key:'wrong-key'})).status,400);
- assert.equal((await (await desktop(env,'POST',credentials)).json()).api_key,input.api_key);
+ assert.ok(!Object.hasOwn(await (await desktop(env,'POST',credentials)).json(),'api_key'));
 });
 test('rejects inaccessible IDs without saving a profile',async()=>{
  for(const creator_id of [88,'05',-2])assert.equal((await admin(env,'PUT',route,{...input,creator_id})).status,400);
@@ -91,7 +91,7 @@ test('automatically migrates the existing shared API without exposing it',async(
  const ciphertext=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode(firstId)},key,new TextEncoder().encode(JSON.stringify({api_key:input.api_key,telegram_token:firstToken})));
  db.prepare('INSERT INTO profiles(id,name,bot_id,creator_id,creator_name,encrypted_secrets,updated_at) VALUES(?,?,?,?,?,?,?)').run(firstId,'Lilith','12345678',52,'Lilith',JSON.stringify({v:1,iv:Buffer.from(iv).toString('base64'),ciphertext:Buffer.from(ciphertext).toString('base64')}),'now');
  assert.equal((await admin(env,'GET','/v1/admin/settings')).status,200);assert.ok(db.prepare("SELECT value FROM settings WHERE key='agencykey'").get());
- assert.equal((await (await desktop(env,'POST',credentials)).json()).api_key,input.api_key);
+ assert.ok(!Object.hasOwn(await (await desktop(env,'POST',credentials)).json(),'api_key'));
 });
 
 test('admin login uses a secure server-side session and logout revokes it',async()=>{
@@ -390,27 +390,17 @@ test('editing the model cancels the old recoverable check and allows the new mod
 });
 
 test('each PC only gets its own bot credentials, Chrome job and session', async()=>{
- const original=globalThis.fetch;
- globalThis.fetch=(url,options)=>{
-  if(options.headers['x-public-api-key']==='own-model-key'){
-   if(new URL(url).pathname.endsWith('/creators'))
-    return Promise.resolve(Response.json({data:[{account:{externalId:52,username:'model_52'},name:'Lilith'}],pagination:{pages:1}}));
-   return original(url,{...options,headers:{...options.headers,'x-public-api-key':input.api_key}});
-  }
-  return original(url,options);
- };
- try {
   const adminRoot='/v1/admin/profiles/';
-  assert.equal((await admin(env,'PUT',adminRoot+firstId,{...input,telegram_users:['@Editor','editor'],own_api:'own-model-key'})).status,200);
+  assert.equal((await admin(env,'PUT',adminRoot+firstId,{...input,telegram_users:['@Editor','editor']})).status,200);
   assert.equal((await admin(env,'PUT',adminRoot+secondId,{...input,creator_id:99,telegram_token:secondToken})).status,200);
   const issue=await admin(env,'POST',adminRoot+firstId+'/device',{});
   assert.equal(issue.status,200,await issue.clone().text());
   const {code}=await issue.json();
-  const pc=(method,path,body)=>request(env,method,path,body,{Authorization:'Bearer '+code,'X-Recorder-Protocol':'2'});
+  const pc=(method,path,body)=>request(env,method,path,body,{Authorization:'Bearer '+code,'X-Recorder-Protocol':'3'});
   const credentials='/v1/profiles/'+firstId+'/credentials';
   assert.equal((await request(env,'POST',credentials,undefined,{Authorization:'Bearer '+code})).status,409);
   const secret=await (await pc('POST',credentials)).json();
-  assert.equal(secret.api_key,'own-model-key');
+  assert.ok(!Object.hasOwn(secret,'api_key'));
   assert.deepEqual(secret.telegram_users,['editor']);
   assert.equal((await desktop(env,'POST',credentials)).status,403);
   assert.equal((await pc('POST','/v1/profiles/'+secondId+'/credentials')).status,403);
@@ -428,7 +418,6 @@ test('each PC only gets its own bot credentials, Chrome job and session', async(
   assert.equal((await admin(env,'DELETE',adminRoot+firstId+'/device')).status,200);
   assert.equal((await pc('GET','/v1/profiles')).status,401);
   assert.equal((await desktop(env,'POST',credentials)).status,403);
- } finally {globalThis.fetch=original;}
 });
 
 
@@ -442,4 +431,81 @@ test('a recoverable verification expires after its maximum lifetime',async()=>{
  db.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify(row),'recording_desktop_job');
  assert.equal((await (await admin(env,'POST',root+'/check',{id:first.id})).json()).status,'desktop_offline');
  assert.equal((await admin(env,'POST',root+'/feed/'+firstId,{request_id:crypto.randomUUID()})).status,202);
+});
+
+test('Cloudflare publishes only the assigned model, without returning the global key',async()=>{
+ const root='/v1/admin/profiles/';
+ await admin(env,'PUT',route,{...input,telegram_users:['editor']});
+ await admin(env,'PUT',root+secondId,{...input,creator_id:99,telegram_token:secondToken});
+ const {code}=await (await admin(env,'POST',route+'/device',{})).json();
+ const first='/v1/profiles/'+firstId+'/publish';
+ const second='/v1/profiles/'+secondId+'/publish';
+ const data={request_id:crypto.randomUUID(),revision:1,text:'Prueba simulada'};
+ const realFetch=globalThis.fetch;
+ const calls=[];
+ globalThis.fetch=async(url,init)=>{
+  calls.push([String(url),init]);
+  return Response.json({id:'919191'});
+ };
+ try {
+  assert.equal((await desktop(env,'POST',second,data,code)).status,403);
+  assert.equal((await desktop(env,'POST',first,{...data,creator_id:99},code)).status,400);
+  assert.equal((await desktop(env,'POST',first,{...data,revision:0},code)).status,409);
+  assert.equal(calls.length,0);
+  const sent=await desktop(env,'POST',first,data,code);
+  assert.equal(sent.status,200,await sent.clone().text());
+  assert.deepEqual(await sent.json(),{post_id:'919191'});
+  assert.equal(calls.length,1);
+  assert.match(calls[0][0],/\/52\/api2\/v2\/posts$/);
+  assert.equal(calls[0][1].headers['x-public-api-key'],input.api_key);
+  assert.deepEqual(JSON.parse(calls[0][1].body),{text:data.text,expireDays:1});
+  assert.deepEqual(await (await desktop(env,'POST',first,data,code)).json(),{post_id:'919191'});
+  const throttled=await desktop(env,'POST',first,{...data,request_id:crypto.randomUUID()},code);
+  assert.equal(throttled.status,429);
+  assert.ok(Number(throttled.headers.get('Retry-After'))>0);
+  assert.equal(calls.length,1);
+  await admin(env,'DELETE',route+'/device');
+  assert.equal((await desktop(env,'POST',first,data,code)).status,401);
+ } finally {globalThis.fetch=realFetch;}
+});
+
+test('photo uses allowlisted services and a lost response cannot trigger another final post',async()=>{
+ await admin(env,'PUT',route,{...input,telegram_users:['editor']});
+ const endpoint='/v1/profiles/'+firstId+'/publish';
+ const realFetch=globalThis.fetch;
+ const calls=[];
+ let sentKey;
+ globalThis.fetch=async(url,init)=>{
+  const dest=new URL(url);
+  calls.push(dest.pathname);
+  if(dest.pathname.endsWith('/users/me')) return Response.json({id:52,upload:{geoUploadArgs:{
+    preset:'test',isDelay:false,needThumbs:true,additional:{user:52},
+  }}});
+  if(dest.pathname.endsWith('/upload/signed/create')){
+   sentKey=JSON.parse(init.body).key;
+   return Response.json({putUrl:'https://of2transcoder.s3-accelerate.amazonaws.com/'+sentKey+'?signed=test',
+    key:sentKey,uploadToken:'simulated'});
+  }
+  if(dest.hostname==='of2transcoder.s3-accelerate.amazonaws.com'){
+   assert.ok(!Object.hasOwn(init.headers,'x-public-api-key'));
+   return new Response(null,{headers:{ETag:'simulated'}});
+  }
+  if(dest.hostname==='convert.onlyfans.com'){
+   assert.ok(!Object.hasOwn(init.headers,'x-public-api-key'));
+   return Response.json({processId:'test',host:'test',extra:'test'});
+  }
+  assert.equal(dest.pathname.endsWith('/posts'),true);
+  assert.equal(JSON.parse(init.body).mediaFiles[0].processId,'test');
+  throw Error('simulated lost response');
+ };
+ try{
+  const data={request_id:crypto.randomUUID(),revision:1,text:'Foto',photo:'/9j/'};
+  const out=await desktop(env,'POST',endpoint,data);
+  assert.equal(out.status,502,await out.clone().text());
+  assert.equal((await out.json()).uncertain,true);
+  const duplicate=await desktop(env,'POST',endpoint,data);
+  assert.equal(duplicate.status,409);
+  assert.equal((await duplicate.json()).uncertain,true);
+  assert.equal(calls.length,5);
+ }finally{globalThis.fetch=realFetch;}
 });

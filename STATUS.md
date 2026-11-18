@@ -16,6 +16,10 @@ AgencyKey Recorder Tests publica mensajes reenviados por Telegram y genera un co
 
 [PR #31](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/pull/31), rama `fix/recorder-safety-recovery`. Control de Telegram por usuario, acceso por PC con credenciales y sesiones separadas, recuperación de avance del lote y validación de capturas con fotos. Las verificaciones abandonadas caducan tras 30 minutos. La retención de archivos es opcional. La nueva web (v8) y el EXE deben validarse juntos antes de publicarse.
 
+## Publicación mediante Cloudflare en preparación
+
+La rama `feat/cloudflare-publishing` mueve la publicación y el uso de la clave global al Worker. La app conserva el token de Telegram y su sesión de grabación. El nuevo protocolo de escritorio requiere publicar el Worker y el EXE juntos. Validar publicación de texto y foto con una modelo de prueba antes de cambiar producción.
+
 ## Siguiente acción
 
 Con el EXE actualizado abierto, cambiar el mismo bot de Lilith (600912674) a Luna (479099623) y pulsar **Verificar Mi perfil** desde el panel. Después probar un comprobante con la sesión real. La comprobación manual no busca posts y el resultado se consulta en la web.

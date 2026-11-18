@@ -1,3 +1,4 @@
+import {PublicationError, decodePhoto, maxPublishBody, publishWithAgencyKey} from './publisher.mjs';
 import {adminPage} from './admin-page.mjs';
 import {cleanStorageState} from './recording-session.mjs';
 import {cleanWebDiagnostic, reportZip} from './web-report.mjs';
@@ -372,7 +373,7 @@ async function listAdminProfiles(env) {
       ? profileCheckResult(check, jobStatus(check))
       : {status:session.configured?'pending':'no_session'};
     const secrets = await decrypt(row.encrypted_secrets, row.id, env);
-    return {...profile(row), feed, telegram_users:secrets.telegram_users ?? [], device_enabled:Boolean(scope), own_api:Boolean(secrets.own_api)};
+    return {...profile(row), feed, telegram_users:secrets.telegram_users ?? [], device_enabled:Boolean(scope)};
   })), recording_session:shared});
 }
 
@@ -697,12 +698,8 @@ async function adminHandle(request, env, path) {
     const row = await env.DB.prepare('SELECT * FROM profiles WHERE id = ?').bind(id).first();
     if (!row) throw new ApiError(404, 'La configuración de la modelo ya no existe');
     const secrets = await decrypt(row.encrypted_secrets, id, env);
-    if (!secrets.own_api || !secrets.telegram_users?.length)
-      throw new ApiError(409, 'Configura una clave propia de AgencyKey y los usuarios de Telegram primero');
-    if (secrets.own_api === await globalApi(env)) throw new ApiError(400, 'La clave de esta PC debe ser distinta de la global');
-    const accounts = await listCreators(secrets.own_api);
-    if (accounts.length !== 1 || accounts[0].external_id !== row.creator_id)
-      throw new ApiError(400, 'La clave de AgencyKey debe estar limitada a la modelo de este bot');
+    if (!secrets.telegram_users?.length)
+      throw new ApiError(409, 'Configura los usuarios de Telegram primero');
     const code = 'pc_' + id + '_' + base64url(crypto.getRandomValues(new Uint8Array(32)));
     await env.DB.batch([
       env.DB.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
@@ -731,17 +728,9 @@ async function adminHandle(request, env, path) {
   const apiKey = await globalApi(env);
   const token = text(input.telegram_token || previous.telegram_token, 'Token de Telegram', 256);
   const modelId = creatorId(input.creator_id);
-  const own_api = input.own_api ? text(input.own_api, 'Clave propia de AgencyKey', 512)
-    : input.own_api === null ? null : previous.own_api;
-  if (await profileScope(env, id)) {
-    if (!own_api || own_api === apiKey) throw new ApiError(409, 'El acceso de esta PC requiere una clave propia');
-    const accounts = await listCreators(own_api);
-    if (accounts.length !== 1 || accounts[0].external_id !== modelId)
-      throw new ApiError(400, 'La clave de AgencyKey debe estar limitada a la modelo de este bot');
-  }
-  const [creator, botId] = await Promise.all([resolveCreator(own_api || apiKey, modelId), verifyBot(token)]);
+  const [creator, botId] = await Promise.all([resolveCreator(apiKey, modelId), verifyBot(token)]);
   const telegram_users = input.telegram_users === undefined ? (previous.telegram_users ?? []) : telegramUsers(input.telegram_users);
-  const encrypted = await encrypt({telegram_token:token, telegram_users, own_api}, id, env);
+  const encrypted = await encrypt({telegram_token:token, telegram_users}, id, env);
   const now = new Date().toISOString();
   let result;
   try {
@@ -761,6 +750,80 @@ async function adminHandle(request, env, path) {
   return json({id, name: creator.name, bot_id: botId, creator, revision: revision+1, updated_at: now});
 }
 
+function requireDesktopPublisher(request) {
+  if (request.headers.get('X-Recorder-Protocol') !== '3')
+    throw new ApiError(409, 'Actualiza la app de Windows para publicar con Cloudflare');
+}
+
+async function publishingProfile(env, scope, id) {
+  const assigned = await profileScope(env, id);
+  if ((scope && scope !== id) || scope !== assigned) throw new ApiError(403, 'Bot fuera del acceso de esta PC');
+  const row = await env.DB.prepare('SELECT * FROM profiles WHERE id = ?').bind(id).first();
+  if (!row) throw new ApiError(404, 'La configuración de la modelo ya no existe');
+  return row;
+}
+
+const publicationLease = 360_000;
+
+async function publishPost(request, env, scope, id) {
+  requireDesktopPublisher(request);
+  const profile = await publishingProfile(env, scope, id);
+  const secrets = await decrypt(profile.encrypted_secrets, id, env);
+  if (!secrets.telegram_users?.length) throw new ApiError(403, 'Configura los usuarios autorizados en el panel');
+  const input = await body(request, maxPublishBody);
+  if (Object.keys(input).some(key=>!['request_id','text','revision','photo','slow'].includes(key)) ||
+      !/^[a-f0-9-]{36}$/.test(input.request_id ?? '') || !Number.isSafeInteger(input.revision))
+    throw new ApiError(400, 'Solicitud de publicación inválida');
+  if (input.revision !== profile.revision) throw new ApiError(409, 'La configuración cambió. Actualiza la app');
+  if (typeof input.text !== 'string' || input.text.length > 8192 || (!input.text.trim() && input.photo === undefined))
+    throw new ApiError(400, 'El post debe tener texto o una foto válida');
+
+  const key = 'publish:' + id;
+  const entry = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(key).first();
+  const state = entry ? JSON.parse(entry.value) : {recent:[]};
+  const previous = state.recent.find(item=>item.id === input.request_id);
+  if (previous && previous.revision !== profile.revision)
+    throw new ApiError(409, 'La solicitud pertenece a otra configuración');
+  if (previous?.phase === 'done') return json({post_id:previous.postId});
+  if (previous?.phase === 'running' || previous?.phase === 'uncertain')
+    throw new PublicationError(409, 'Hay un envío sin confirmar. Revisa el muro antes de continuar', {uncertain:true});
+  const now = Date.now();
+  const running = state.recent.find(item=>item.phase==='running' && item.expires > now);
+  const waitUntil = running ? Math.min(running.expires, now+5000) : state.next ?? 0;
+  if (waitUntil > now)
+    throw new PublicationError(429, 'Espera antes de publicar otro post', {retryAfter:Math.ceil((waitUntil-now)/1000)});
+
+  const photo = decodePhoto(input.photo);
+  const secret = await globalApi(env);
+  if (!secret) throw new ApiError(503, 'Configura la API de AgencyKey en el panel');
+  const operation = {id:input.request_id, phase:'running', revision:profile.revision, expires:now+publicationLease};
+  const recent = state.recent.filter(item=>item.id!==operation.id).slice(0,127);
+  const runningValue = JSON.stringify({recent:[operation,...recent], next:now+publicationLease});
+  const changed = entry
+    ? await env.DB.prepare('UPDATE settings SET value = ? WHERE key = ? AND value = ? RETURNING key').bind(runningValue,key,entry.value).first()
+    : await env.DB.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO NOTHING RETURNING key').bind(key,runningValue).first();
+  if (!changed)
+    throw new PublicationError(429, 'Otra publicación está en curso', {retryAfter:5});
+
+  let error;
+  try {
+    operation.postId = await publishWithAgencyKey(secret,profile.creator_id,input.text,photo,async()=>{
+      await authorize(request,env);
+      const current = await publishingProfile(env,scope,id);
+      if (current.revision !== profile.revision) throw new ApiError(409, 'La configuración cambió antes de publicar');
+    });
+    operation.phase = 'done';
+  } catch (failure) {
+    error = failure;
+    operation.phase = failure instanceof PublicationError && failure.uncertain ? 'uncertain' : 'rejected';
+  }
+  const next = Date.now() + 1000*Math.max(input.slow === true ? 22 : 11, error?.retryAfter ?? 0);
+  await env.DB.prepare('UPDATE settings SET value = ? WHERE key = ? AND value = ?')
+    .bind(JSON.stringify({recent:[operation,...recent],next}),key,runningValue).run();
+  if (error) throw error;
+  return json({post_id:operation.postId});
+}
+
 async function handle(request, env) {
   const path = new URL(request.url).pathname;
   if (path === '/') return Response.redirect(new URL('/admin',request.url).href,302);
@@ -771,7 +834,7 @@ async function handle(request, env) {
       'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
       'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`}});
   }
-  if (path === '/health' && request.method === 'GET') return json({service: 'agencykey-recorder-tests', version: 8});
+  if (path === '/health' && request.method === 'GET') return json({service: 'agencykey-recorder-tests', version: 9});
   if (path.startsWith('/v1/admin/')) return adminHandle(request, env, path);
   const scope = await authorize(request, env);
   if (path==='/v1/recording-desktop-job') return desktopRecordingJob(request,env,scope);
@@ -794,17 +857,13 @@ async function handle(request, env) {
     const rows = await desktopProfiles(env,scope);
     return json({profiles:rows.map(({id,revision,updated_at})=>({id,revision,updated_at}))});
   }
-  const match = path.match(/^\/v1\/profiles\/([a-f0-9-]{36})\/credentials$/);
+  const match = path.match(/^\/v1\/profiles\/([a-f0-9-]{36})\/(credentials|publish)$/);
   if (match && request.method === 'POST') {
-    const assigned = await profileScope(env, match[1]);
-    if ((scope && scope!==match[1]) || scope!==assigned) throw new ApiError(403, 'Bot fuera del acceso de esta PC');
-    const row = await env.DB.prepare('SELECT * FROM profiles WHERE id = ?').bind(match[1]).first();
-    if (!row) throw new ApiError(404, 'La configuración ya no existe');
+    if (match[2] === 'publish') return publishPost(request,env,scope,match[1]);
+    const row = await publishingProfile(env,scope,match[1]);
+    requireDesktopPublisher(request);
     const secret = await decrypt(row.encrypted_secrets,row.id,env);
-    if (request.headers.get('X-Recorder-Protocol') !== '2')
-      throw new ApiError(409, 'Actualiza la app de Windows antes de iniciar este bot');
-    return json({...profile(row), telegram_users:secret.telegram_users ?? [],
-      telegram_token:secret.telegram_token, api_key:scope ? secret.own_api : await globalApi(env)});
+    return json({...profile(row), telegram_users:secret.telegram_users ?? [], telegram_token:secret.telegram_token});
   }
   if (['PUT','DELETE','PATCH','POST'].includes(request.method)) throw new ApiError(403, 'Gestiona las configuraciones desde el panel privado');
   throw new ApiError(404, 'Recurso no encontrado');
@@ -817,6 +876,11 @@ export default {
       console.log(JSON.stringify({method: request.method, path: new URL(request.url).pathname, status: result.status}));
       return result;
     } catch (error) {
+      if (error instanceof PublicationError) {
+        const response = json({error:error.message, uncertain:error.uncertain, retry_after:error.retryAfter},error.status);
+        if (error.retryAfter) response.headers.set('Retry-After',String(error.retryAfter));
+        return response;
+      }
       const status = error instanceof ApiError ? error.status : 500;
       if (status === 500) console.error(JSON.stringify({event: 'config_error', type: error.name}));
       return json({error: status === 500 ? 'No se pudo procesar la configuración' : error.message}, status);

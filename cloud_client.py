@@ -9,9 +9,12 @@ DEFAULT_URL = 'https://agencykey-recorder-tests.datosenviados07.workers.dev'
 
 
 class CloudError(Exception):
-    def __init__(self, message, *, retryable=False):
+    def __init__(self, message, *, retryable=False, status=None, uncertain=None, retry_after=None):
         super().__init__(message)
         self.retryable = retryable
+        self.status = status
+        self.uncertain = uncertain
+        self.retry_after = retry_after
 
 
 class AccessDenied(CloudError):
@@ -27,7 +30,7 @@ class CloudClient:
         self.transport = transport
         register_secrets(self.access_token)
 
-    def request(self, method, path, **kwargs):
+    def request(self, method, path, *, timeout=45, **kwargs):
         try:
             token = self.access_token
             authorization = f'Bearer {token}' if token.isascii() else 'Dropper ' + base64.urlsafe_b64encode(token.encode('utf-8')).decode('ascii').rstrip('=')
@@ -37,21 +40,27 @@ class CloudClient:
                 proxy = system_proxy(self.base_url)
                 if proxy:
                     options['proxy'] = proxy
-            with httpx.Client(base_url=self.base_url, timeout=httpx.Timeout(45, connect=20), follow_redirects=False,
-                              headers={'Authorization': authorization, 'X-Recorder-Protocol': '2'},
+            with httpx.Client(base_url=self.base_url, timeout=httpx.Timeout(timeout, connect=20), follow_redirects=False,
+                              headers={'Authorization': authorization, 'X-Recorder-Protocol': '3'},
                               transport=self.transport, **options) as client:
                 response = client.request(method, path, **kwargs)
             if response.status_code == 401:
                 raise AccessDenied('Contraseña incorrecta o cambiada')
             if not response.is_success:
                 try:
-                    message = response.json().get('error', '')
+                    data = response.json()
                 except ValueError:
-                    message = ''
+                    data = {}
+                if not isinstance(data, dict):
+                    data = {}
+                message = data.get('error', '')
                 if not isinstance(message, str) or len(message) > 180:
                     message = ''
-                raise CloudError(message or f'Error al descargar configuraciones (HTTP {response.status_code})',
-                                 retryable=response.status_code in (408, 429) or response.status_code >= 500)
+                uncertain = data.get('uncertain')
+                raise CloudError(message or f'Error de Cloudflare (HTTP {response.status_code})',
+                                 retryable=response.status_code in (408, 429) or response.status_code >= 500,
+                                 status=response.status_code, uncertain=uncertain if isinstance(uncertain, bool) else None,
+                                 retry_after=response.headers.get('Retry-After'))
             return response.json()
         except httpx.RequestError as error:
             raise CloudError(network_message(error), retryable=True) from None
@@ -76,8 +85,16 @@ class CloudClient:
 
     def credentials(self, profile_id):
         result = self.request('POST', f'/v1/profiles/{profile_id}/credentials')
-        register_secrets(result.get('telegram_token'), result.get('api_key'))
+        register_secrets(result.get('telegram_token'))
         return result
+
+    def publish_post(self, profile_id, revision, request_id, text, photo=None, *, slow=False):
+        payload = {'revision': revision, 'request_id': request_id, 'text': text, 'slow': slow}
+        if photo is not None:
+            if len(photo) > 10 * 1024 * 1024:
+                raise CloudError('La foto supera 10 MiB', status=413)
+            payload['photo'] = base64.b64encode(photo).decode('ascii')
+        return self.request('POST', f'/v1/profiles/{profile_id}/publish', timeout=330, json=payload)
 
     def claim_recording_job(self):
         return self.request('POST', '/v1/recording-desktop-job').get('job')

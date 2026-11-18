@@ -79,3 +79,37 @@ class CloudClientTests(unittest.TestCase):
         self.assertEqual(factory.call_args.kwargs['verify'],'verified-context')
         self.assertEqual(factory.call_args.kwargs['proxy'],'http://127.0.0.1:8080')
         self.assertFalse(factory.call_args.kwargs['follow_redirects'])
+
+
+class CloudPublicationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sends_text_and_photo_to_bound_profile_without_agencykey_secret(self):
+        import json
+        from cloud_publisher import CloudPublisher
+        calls = []
+        def respond(request):
+            calls.append(request)
+            return httpx.Response(200, json={'post_id': '987654'})
+        client = CloudClient('only-device-code', transport=httpx.MockTransport(respond))
+        publisher = CloudPublisher(client, 'profile-one', 7, 52, lambda: False)
+        self.assertEqual(await publisher.publish_photo(52, 'caption', b'\xff\xd8\xff'), 987654)
+        request = calls[0]
+        data = json.loads(request.content)
+        self.assertEqual(request.url.path, '/v1/profiles/profile-one/publish')
+        self.assertEqual(request.headers['X-Recorder-Protocol'], '3')
+        self.assertNotIn('x-public-api-key', request.headers)
+        self.assertEqual(data['photo'], '/9j/')
+        self.assertEqual(data['revision'], 7)
+        self.assertNotIn('creator_id', data)
+
+    async def test_network_or_unknown_outcome_is_never_retried_by_client(self):
+        from agencykey import UnconfirmedPost
+        from cloud_publisher import CloudPublisher
+        calls = []
+        def respond(request):
+            calls.append(request)
+            return httpx.Response(502,json={'error':'Revisa el muro','uncertain':True})
+        client = CloudClient('only-device-code', transport=httpx.MockTransport(respond))
+        publisher = CloudPublisher(client, 'profile-one', 7, 52, lambda: False)
+        with self.assertRaisesRegex(UnconfirmedPost, 'Revisa el muro'):
+            await publisher.publish_text(52, 'caption')
+        self.assertEqual(len(calls), 1)

@@ -23,12 +23,14 @@ La app debe permanecer abierta para verificar, publicar y grabar. Las verificaci
 ## Acceso de cada usuario
 
 1. En el panel, edita el bot y añade los `@usuarios` de Telegram autorizados. Una lista vacía bloquea la publicación. Al reconocer un usuario en una PC, la app lo vincula a su ID de Telegram para evitar que otra cuenta reutilice ese nombre.
-2. Para una PC de un usuario, guarda en el bot una clave de AgencyKey limitada a su modelo. Genera **Acceso de PC** y entrega únicamente ese código a la persona que usa la app. El código da acceso al bot seleccionado y se puede revocar desde la web.
+2. Genera **Acceso de PC** y entrega únicamente ese código a la persona que usa la app. Cloudflare guarda la clave global de AgencyKey y publica en la modelo asignada. El código da acceso al bot seleccionado y se puede revocar desde la web.
 3. Con la app de ese usuario abierta y conectada con el código, usa **Conectar AgencyKey de esta PC** en la configuración del bot. El usuario inicia sesión en su Chrome. Esa sesión queda separada de la sesión general y de las otras PC.
 4. Si falla un post, el bot indica su número y pide su enlace. Si el muro ya lo muestra, pega ese enlace. Si falta, publícalo manualmente y pega el enlace para reanudar. La app conserva el avance del lote tras reiniciar.
 5. Si faltan posts o fotos en la grabación, Telegram muestra el error y permite repetir el comprobante. La espera de carga no se graba como tiempo de video.
 
 Para conservar un número limitado de días de videos y diagnósticos locales, configura `AGENCYKEY_RECORDER_RETENTION_DAYS` en Windows antes de iniciar la app. La limpieza omite comprobantes que aún están asociados a un trabajo. Si no se configura, se conservan los archivos.
+
+La PC del usuario recibe el token del bot de Telegram, su configuración y su propia sesión de grabación. Usa un bot dedicado por colaborador y una cuenta de Chrome con los permisos correspondientes. La clave global de AgencyKey permanece en Cloudflare. Las fotos de hasta 10 MiB pasan por el Worker durante la publicación.
 
 ## Errores y reportes
 

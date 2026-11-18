@@ -79,9 +79,14 @@ class BotController:
         from agencykey import Creator
         from config import register_secrets
         telegram_users = ()
+        publishing_client = None
         if self.credential_loader:
             profile = self.credential_loader()
-            self.credentials = (profile['telegram_token'], profile['api_key'])
+            self.credentials = (profile['telegram_token'], profile.get('api_key'))
+            if self.session_client and 'revision' in profile and 'id' in profile:
+                from cloud_publisher import CloudPublisher
+                publishing_client = CloudPublisher(self.session_client, profile['id'], profile['revision'],
+                    profile['creator']['external_id'], stop_event.is_set)
             self.creator = Creator(**profile['creator'])
             telegram_users = profile.get('telegram_users', ())
             register_secrets(*self.credentials)
@@ -89,5 +94,5 @@ class BotController:
         if not stop_event.is_set():
             main(stop_event=stop_event, on_ready=on_ready, credentials=self.credentials, creator=self.creator,
                  recording_events=self.events, recording_session_client=self.session_client,
-                 telegram_users=telegram_users)
+                 telegram_users=telegram_users, publishing_client=publishing_client)
 
