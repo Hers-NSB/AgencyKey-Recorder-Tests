@@ -38,7 +38,7 @@ class CloudClient:
                 if proxy:
                     options['proxy'] = proxy
             with httpx.Client(base_url=self.base_url, timeout=httpx.Timeout(45, connect=20), follow_redirects=False,
-                              headers={'Authorization': authorization},
+                              headers={'Authorization': authorization, 'X-Recorder-Protocol': '2'},
                               transport=self.transport, **options) as client:
                 response = client.request(method, path, **kwargs)
             if response.status_code == 401:

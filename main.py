@@ -8,7 +8,7 @@ from config import log
 
 
 def main(stop_event=None, on_ready=None, credentials=None, creator=None, recording_events=None,
-         recording_session_client=None) -> None:
+         recording_session_client=None, telegram_users=()) -> None:
     if not credentials or creator is None:
         raise ValueError("Configura el bot y su modelo desde la app de escritorio")
     if stop_event is not None and stop_event.is_set():
@@ -21,6 +21,8 @@ def main(stop_event=None, on_ready=None, credentials=None, creator=None, recordi
     proxy = options.pop('proxy', None)
     recording = RecordingCoordinator(creator, events=recording_events, stop_event=stop_event,
                                      session_client=recording_session_client)
+    from batch_journal import BatchJournal
+    journal = BatchJournal(token.split(':', 1)[0])
     agencykey = AgencyKey(api_key)
     if stop_event is not None:
         agencykey.stop_requested = stop_event.is_set
@@ -42,7 +44,8 @@ def main(stop_event=None, on_ready=None, credentials=None, creator=None, recordi
             .post_init(on_startup)
             .build()
         )
-        bot.register(app, agencykey, creator, recording, events=recording_events)
+        bot.register(app, agencykey, creator, recording, events=recording_events,
+                     telegram_users=telegram_users, journal=journal)
         log.info("Iniciando AgencyKey Recorder Tests.")
         if stop_event is None:
             app.run_polling(allowed_updates=["message"])

@@ -11,6 +11,10 @@ def main():
         from desktop import main as desktop_main
         desktop_main()
     else:
+        if getattr(sys, 'frozen', False) and not (
+            sys.argv[1] in {'demo', 'check-chrome', '--check-telegram-support'}
+        ):
+            raise SystemExit('Abre la aplicación para verificar y grabar desde el panel.')
         from recorder import main as recorder_main
         recorder_main()
 

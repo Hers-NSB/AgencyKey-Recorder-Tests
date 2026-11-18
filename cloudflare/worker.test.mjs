@@ -388,3 +388,34 @@ test('editing the model cancels the old recoverable check and allows the new mod
  assert.equal((await (await desktop(env,'PUT',claim,{...job,phase:'retrying'})).json()).active,false);
  const fresh=await (await desktop(env,'POST',claim)).json();assert.equal(fresh.job.creator_id,99);
 });
+
+test('retired PC access is rejected and the app password still opens the bot',async()=>{
+ const saved=await admin(env,'PUT',route,{...input,telegram_users:['@Editor','editor']});
+ assert.equal(saved.status,200,await saved.clone().text());
+ const pc='pc_'+firstId+'_'+'x'.repeat(43);
+ const digest=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pc))).toString('base64');
+ db.prepare('INSERT INTO settings(key,value) VALUES (?,?)').run('device:'+firstId,digest);
+ assert.equal((await desktop(env,'GET','/v1/profiles',undefined,pc)).status,401);
+ assert.equal((await admin(env,'POST',route+'/device',{})).status,404);
+ const app=await (await desktop(env,'GET','/v1/profiles')).json();
+ assert.deepEqual(app.profiles.map(p=>p.id),[firstId]);
+ assert.deepEqual(app.profiles[0].telegram_users,['editor']);
+ const creds=await (await desktop(env,'POST',credentials)).json();
+ assert.equal(creds.api_key,input.api_key);
+ assert.equal(creds.telegram_token,firstToken);
+ const html=await (await request(env,'GET','/admin')).text();
+ assert.match(html,/Usuarios de Telegram autorizados/);
+ assert.doesNotMatch(html,/Clave de AgencyKey de esta PC|Generar acceso de PC/);
+});
+
+test('a recoverable verification expires after its maximum lifetime',async()=>{
+ await admin(env,'PUT',route,input);
+ await saveSharedSession(env,{cookies:[{name:'session',domain:'.agencykey.com',value:'test'}],origins:[]},null);
+ const root='/v1/admin/recording-session';
+ const first=await (await admin(env,'POST',root+'/feed/'+firstId,{request_id:crypto.randomUUID()})).json();
+ const row=JSON.parse(db.prepare('SELECT value FROM settings WHERE key=?').get('recording_desktop_job').value);
+ row.requested_at=new Date(Date.now()-31*60000).toISOString();
+ db.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify(row),'recording_desktop_job');
+ assert.equal((await (await admin(env,'POST',root+'/check',{id:first.id})).json()).status,'desktop_offline');
+ assert.equal((await admin(env,'POST',root+'/feed/'+firstId,{request_id:crypto.randomUUID()})).status,202);
+});

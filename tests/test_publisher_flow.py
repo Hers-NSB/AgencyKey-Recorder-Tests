@@ -41,8 +41,9 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((batch.status, batch.cursor), ("paused", 1))
         self.assertEqual(api.publish_text.await_count, 2)
         notice = ctx.bot.send_message.call_args.args[1]
-        self.assertEqual(notice, "⏸️ Falló el post #2 de 3 · Modelo")
-        ctx.bot.copy_message.assert_not_awaited()
+        self.assertIn("⏸️ Falló el post #2 de 3 · Modelo", notice)
+        self.assertIn("Pega el enlace del post #2", notice)
+        ctx.bot.copy_message.assert_awaited_once_with(chat_id=123, from_chat_id=123, message_id=2)
         keyboard = ctx.bot.send_message.call_args.kwargs["reply_markup"]
         self.assertIsInstance(keyboard, ReplyKeyboardMarkup)
         self.assertEqual([[button.text for button in row] for row in keyboard.keyboard], [[CONTINUE]])
@@ -84,7 +85,7 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((batch.status, batch.cursor), ("paused", 0))
         self.assertEqual(api.publish_text.await_count, 1)
         self.assertNotIn("RuntimeError", ctx.bot.send_message.call_args.args[1])
-        self.assertEqual(ctx.bot.send_message.call_args.args[1], "⏸️ Falló el post #1 de 3 · Modelo")
+        self.assertIn("⏸️ Falló el post #1 de 3 · Modelo", ctx.bot.send_message.call_args.args[1])
 
     async def test_photo_download_failure_stops_before_api(self):
         from telegram.error import NetworkError
@@ -131,7 +132,7 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         await bot.publish(update(), ctx)
 
         self.assertEqual((batch.order, batch.cursor), ([3, 2, 1], 0))
-        self.assertEqual(ctx.bot.send_message.call_args.args[1], "⏸️ Falló el post #1 de 3 · Modelo")
+        self.assertIn("⏸️ Falló el post #1 de 3 · Modelo", ctx.bot.send_message.call_args.args[1])
         await bot.menu(update(CONTINUE), ctx)
         ctx.bot.copy_message.assert_awaited_once_with(chat_id=123, from_chat_id=123, message_id=3)
         await bot.menu(update("https://onlyfans.com/101/modelo"), ctx)

@@ -20,6 +20,16 @@ Se admiten mensajes de texto y fotos individuales con texto. El lote se publica 
 
 La app debe permanecer abierta para verificar, publicar y grabar. Las verificaciones reutilizan Chrome al cambiar de modelo y reintentan las cargas incompletas o los cortes de conexión; puedes detenerlas con **Cancelar verificación**. Si recargas la web, se retoma la comprobación pendiente. La búsqueda de posts comienza al grabar, después de confirmar la identidad de la modelo. **Actualizar** descarga configuraciones; para actualizar la aplicación hay que descargar y abrir el nuevo EXE.
 
+## Acceso de cada usuario
+
+1. En el panel, edita el bot y añade los `@usuarios` de Telegram autorizados. Una lista vacía bloquea la publicación. Al reconocer un usuario en una PC, la app lo vincula a su ID de Telegram para evitar que otra cuenta reutilice ese nombre.
+2. Configura una sola clave de AgencyKey en **Ajustes**. La app descarga la clave y el token del bot usando su contraseña general. Compártela únicamente con quienes puedan usar las configuraciones de todos los bots.
+3. Con la app abierta, usa **Conectar AgencyKey** y **Verificar Mi perfil** desde el panel.
+4. Si falla un post, el bot indica su número y pide su enlace. Si el muro ya lo muestra, pega ese enlace. Si falta, publícalo manualmente y pega el enlace para reanudar. La app conserva el avance del lote tras reiniciar.
+5. Si faltan posts o fotos en la grabación, Telegram muestra el error y permite repetir el comprobante. La espera de carga no se graba como tiempo de video.
+
+Para conservar un número limitado de días de videos y diagnósticos locales, configura `AGENCYKEY_RECORDER_RETENTION_DAYS` en Windows antes de iniciar la app. La limpieza omite comprobantes que aún están asociados a un trabajo. Si no se configura, se conservan los archivos.
+
 ## Errores y reportes
 
 | Dónde ocurre | Dónde consultar y descargar el reporte |
