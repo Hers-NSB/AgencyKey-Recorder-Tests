@@ -51,7 +51,8 @@ async function authorize(request, env) {
       provided = new TextDecoder('utf-8',{fatal:true}).decode(fromBase64url(encoded));
     } catch {throw new ApiError(401,'Contraseña incorrecta o cambiada');}
   }
-  const device = /^pc_([a-f0-9-]{36})_[A-Za-z0-9_-]{43}$/.exec(provided);
+  if (/^pc_[a-f0-9-]{36}_[A-Za-z0-9_-]{43}$/.test(provided))
+    throw new ApiError(401, 'Usa la contraseña general de la app');
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
   const attemptId = 'app:' + encode(await digest(ip));
   const blocked = await env.DB.prepare('SELECT attempts, expires FROM login_attempts WHERE id = ?').bind(attemptId).first();
@@ -60,10 +61,7 @@ async function authorize(request, env) {
   const saved = row ? JSON.parse(row.value) : null;
   const source = encode(await digest(env.ACCESS_TOKEN));
   let valid;
-  if (device) {
-    const registration = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind('device:' + device[1]).first();
-    valid = registration && await equal(encode(await digest(provided)), registration.value);
-  } else if (saved?.source === source && saved.kind === 'pbkdf2') {
+  if (saved?.source === source && saved.kind === 'pbkdf2') {
     valid = await equal(await passwordHash(provided, saved.salt), saved.hash);
   } else {
     valid = await equal(encode(await digest(provided)), await accessHash(env));
@@ -77,7 +75,6 @@ async function authorize(request, env) {
       expires = CASE WHEN expires < ? THEN excluded.expires ELSE expires END RETURNING attempts`).bind(id, now+900000, now, now).first();
     throw new ApiError(attempts.attempts > 10 ? 429 : 401, attempts.attempts > 10 ? 'Demasiados intentos, espera 15 minutos' : 'Contraseña incorrecta o cambiada');
   }
-  return device?.[1] ?? null;
 }
 
 async function passwordHash(password, salt) {
@@ -353,15 +350,12 @@ async function verifyBot(token) {
 }
 
 async function listAdminProfiles(env) {
-  const shared = await sharedSession(env);
-  const globalJob = (await readDesktopJob(env))?.job;
+  const session = await sharedSession(env);
+  const latest = (await readDesktopJob(env))?.job;
   const result = await env.DB.prepare(`SELECT p.*, s.value AS feed_result
     FROM profiles p LEFT JOIN settings s ON s.key = 'feed_check:' || p.id
     ORDER BY p.name COLLATE NOCASE`).all();
   return json({profiles: await Promise.all(result.results.map(async row => {
-    const scope = await profileScope(env, row.id);
-    const session = scope ? await sharedSession(env, false, scope) : shared;
-    const latest = scope ? (await readDesktopJob(env, scope))?.job : globalJob;
     const stored = row.feed_result && JSON.parse(row.feed_result);
     const check = latest?.kind==='feed' && latest.profile_id===row.id && latest.creator_id===row.creator_id
       && latest.creator_username===row.creator_username && latest.profile_revision===row.revision
@@ -372,33 +366,23 @@ async function listAdminProfiles(env) {
       ? profileCheckResult(check, jobStatus(check))
       : {status:session.configured?'pending':'no_session'};
     const secrets = await decrypt(row.encrypted_secrets, row.id, env);
-    return {...profile(row), feed, telegram_users:secrets.telegram_users ?? [], device_enabled:Boolean(scope), own_api:Boolean(secrets.own_api)};
-  })), recording_session:shared});
+    return {...profile(row), feed, telegram_users:secrets.telegram_users ?? []};
+  })), recording_session:session});
 }
 
-async function desktopProfiles(env, scope) {
-  const clause = scope ? 'p.id = ?' : "NOT EXISTS (SELECT 1 FROM settings WHERE key = 'device:' || p.id)";
-  const query = env.DB.prepare(`SELECT ${columns}, encrypted_secrets FROM profiles p WHERE ${clause} ORDER BY p.name COLLATE NOCASE`);
-  return (await (scope ? query.bind(scope) : query).all()).results;
-}
-
-async function listProfiles(env, scope) {
-  return json({profiles:await Promise.all((await desktopProfiles(env, scope)).map(async row => ({
+async function listProfiles(env) {
+  const {results} = await env.DB.prepare(`SELECT ${columns}, encrypted_secrets FROM profiles ORDER BY name COLLATE NOCASE`).all();
+  const profiles = await Promise.all(results.map(async row => ({
     ...profile(row), telegram_users:(await decrypt(row.encrypted_secrets,row.id,env)).telegram_users ?? [],
-  }))),
-    recording_session:await sharedSession(env, false, scope)});
+  })));
+  return json({profiles, recording_session:await sharedSession(env)});
 }
 
-const sessionKey = scope => scope ? 'recording_session:' + scope : 'recording_session';
-const jobKey = scope => scope ? 'recording_desktop_job:' + scope : 'recording_desktop_job';
+const sessionKey = 'recording_session';
+const desktopJobKey = 'recording_desktop_job';
 
-async function profileScope(env, id) {
-  const device = await env.DB.prepare('SELECT key FROM settings WHERE key = ?').bind('device:' + id).first();
-  return device ? id : null;
-}
-
-export async function sharedSession(env, includeState=false, scope=null) {
-  const key = sessionKey(scope);
+export async function sharedSession(env, includeState=false) {
+  const key = sessionKey;
   const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(key).first();
   if (!row) return {configured:false, revision:null};
   const value = JSON.parse(row.value);
@@ -406,8 +390,8 @@ export async function sharedSession(env, includeState=false, scope=null) {
     ...(includeState ? {state:await decrypt(value.sealed,key,env)} : {})};
 }
 
-export async function saveSharedSession(env, state, revision, connection=crypto.randomUUID(), scope=null) {
-  const key = sessionKey(scope);
+export async function saveSharedSession(env, state, revision, connection=crypto.randomUUID()) {
+  const key = sessionKey;
   try {state=cleanStorageState(state);} catch {throw new ApiError(400,'Sesión de AgencyKey inválida');}
   const value={revision:crypto.randomUUID(),connection,updated_at:new Date().toISOString(),sealed:await encrypt(state,key,env)};
   const saved=await env.DB.prepare(`INSERT INTO settings(key,value) VALUES (?,?)
@@ -427,9 +411,8 @@ function profileCheckResult(job, status) {
 async function webVerificationReport(request, env, profileId, download) {
   const profile = await env.DB.prepare('SELECT creator_id, creator_username, revision FROM profiles WHERE id = ?').bind(profileId).first();
   if (!profile) throw new ApiError(404,'La configuración de la modelo ya no existe');
-  const scope = await profileScope(env, profileId);
-  const session = await sharedSession(env, false, scope);
-  const current = await readDesktopJob(env, scope);
+  const session = await sharedSession(env);
+  const current = await readDesktopJob(env);
   const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind('feed_check:'+profileId).first();
   const saved = row ? JSON.parse(row.value) : null;
   const matches = job => job?.kind==='feed' && job.profile_id===profileId && job.creator_id===profile.creator_id
@@ -460,13 +443,12 @@ function normalizedUsername(value) {
 
 const desktopResults = new Set(['ready','login_required','unavailable','profile_menu_missing','wrong_profile','profile_not_visible','feed_unverified','profile_unverified','connection_error','cancelled']);
 
-async function readDesktopJob(env, scope=null) {
-  const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(jobKey(scope)).first();
+async function readDesktopJob(env) {
+  const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(desktopJobKey).first();
   return row ? {raw:row.value, job:JSON.parse(row.value)} : null;
 }
 
-async function replaceDesktopJob(env, entry, job, scope=null) {
-  const desktopJobKey = jobKey(scope);
+async function replaceDesktopJob(env, entry, job) {
   const value = JSON.stringify(job);
   const result = entry
     ? await env.DB.prepare('UPDATE settings SET value = ? WHERE key = ? AND value = ? RETURNING key')
@@ -496,13 +478,6 @@ async function recordingAdmin(request, env, path) {
   const owner=await sessionId(sessionToken(request));
   let entry=await readDesktopJob(env);
   if (path===root+'/active' && request.method==='GET') {
-    if (entry?.job.kind !== 'connect' || !['queued','running','finishing'].includes(jobStatus(entry.job))) {
-      const recent = await env.DB.prepare(`SELECT value FROM settings WHERE key GLOB 'recording_desktop_job:*'
-        AND json_extract(value,'$.kind') = 'connect' ORDER BY json_extract(value,'$.requested_at') DESC`).all();
-      const active = recent.results.map(({value})=>JSON.parse(value)).find(job=>
-        ['queued','running','finishing'].includes(jobStatus(job)));
-      if (active) entry = {job:active};
-    }
     if (!entry || (entry.job.owner!==owner && !entry.job.recover)) return json({status:'none'});
     return json({kind:entry.job.kind,profile_id:entry.job.profile_id,...profileCheckResult(entry.job,jobStatus(entry.job))});
   }
@@ -510,17 +485,12 @@ async function recordingAdmin(request, env, path) {
   const connect=path===root+'/connect';
   if (request.method==='POST' && (connect || feed)) {
     const input=await body(request);
-    const profileId = feed?.[1] ?? input.profile_id;
-    if (profileId && !/^[a-f0-9-]{36}$/.test(profileId)) throw new ApiError(400, 'Bot inválido');
-    const scope = profileId ? await profileScope(env, profileId) : null;
-    if (connect && profileId && !scope) throw new ApiError(409, 'Genera primero un acceso para este bot');
-    entry = await readDesktopJob(env, scope);
     const requestId=typeof input.request_id==='string' && /^[a-f0-9-]{36}$/.test(input.request_id) ? input.request_id : null;
     const profile=feed
       ? await env.DB.prepare('SELECT creator_id, creator_username, revision FROM profiles WHERE id = ?').bind(feed[1]).first()
       : null;
     if (feed && !profile) throw new ApiError(404,'La configuración de la modelo ya no existe');
-    const session=await sharedSession(env, false, scope);
+    const session=await sharedSession(env);
     if (requestId && entry?.job.request_id===requestId && (entry.job.owner===owner || entry.job.recover)
         && entry.job.kind===(connect?'connect':'feed') && (!feed || (entry.job.profile_id===feed[1]
           && entry.job.profile_revision===profile.revision && entry.job.creator_id===profile.creator_id
@@ -531,8 +501,8 @@ async function recordingAdmin(request, env, path) {
       const current=await env.DB.prepare('SELECT creator_id, creator_username, revision FROM profiles WHERE id = ?').bind(entry.job.profile_id).first();
       if (!current || current.revision!==entry.job.profile_revision || current.creator_id!==entry.job.creator_id
           || entry.job.connection!==session.connection) {
-        await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'},scope);
-        entry=await readDesktopJob(env, scope);
+        await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'});
+        entry=await readDesktopJob(env);
       }
     }
     if (entry && ['queued','running','finishing'].includes(jobStatus(entry.job))) {
@@ -541,21 +511,17 @@ async function recordingAdmin(request, env, path) {
     if (feed && !session.configured) return json({status:'no_session'});
     const job={id:crypto.randomUUID(),owner,request_id:requestId,recover:Boolean(requestId),kind:connect?'connect':'feed',
       ...(profile?{profile_id:feed[1],creator_id:profile.creator_id,creator_username:profile.creator_username,
-        profile_revision:profile.revision,connection:session.connection}:scope?{profile_id:scope}:{}),revision:session.revision,
+        profile_revision:profile.revision,connection:session.connection}:{}),revision:session.revision,
       requested_at:new Date().toISOString(),status:'queued',expires:Date.now()+45000};
-    if (!await replaceDesktopJob(env,entry,job,scope)) throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
+    if (!await replaceDesktopJob(env,entry,job)) throw new ApiError(409,'Ya hay una solicitud de Chrome en curso');
     return json({id:job.id,status:job.status},202);
   }
   if (request.method==='POST' && [root+'/check',root+'/cancel'].includes(path)) {
     const {id}=await body(request);
-    const scoped = await env.DB.prepare(`SELECT key FROM settings WHERE key GLOB 'recording_desktop_job:*'
-      AND json_extract(value,'$.id') = ?`).bind(id ?? null).first();
-    const scope = scoped?.key.split(':')[1] ?? null;
-    if (scope) entry = await readDesktopJob(env, scope);
     if (!entry || entry.job.id!==id || (entry.job.owner!==owner && !entry.job.recover)) return json({status:'expired'});
     const status=jobStatus(entry.job);
     if (path.endsWith('/cancel') && ['queued','running'].includes(status)) {
-      const cancelled=await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'},scope);
+      const cancelled=await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'});
       return json({status:cancelled?'cancelled':'finishing'});
     }
     return json(profileCheckResult(entry.job, status));
@@ -563,14 +529,13 @@ async function recordingAdmin(request, env, path) {
   throw new ApiError(405,'Método no permitido');
 }
 
-async function desktopRecordingJob(request,env,scope=null) {
-  const desktopJobKey = jobKey(scope);
-  const entry=await readDesktopJob(env,scope);
+async function desktopRecordingJob(request,env) {
+  const entry=await readDesktopJob(env);
   if (request.method==='POST') {
     if (!entry || !(jobStatus(entry.job)==='queued' ||
         (entry.job.recover && jobStatus(entry.job)==='running' && entry.job.expires<=Date.now()))) return json({job:null});
     const job={...entry.job,status:'running',claim:crypto.randomUUID(),expires:Date.now()+300000};
-    if (!await replaceDesktopJob(env,entry,job,scope)) return json({job:null});
+    if (!await replaceDesktopJob(env,entry,job)) return json({job:null});
     const {id,claim,kind,creator_id,creator_username}=job;
     return json({job:{id,claim,kind,creator_id,creator_username}});
   }
@@ -581,10 +546,10 @@ async function desktopRecordingJob(request,env,scope=null) {
   }
   if (entry.job.kind==='feed') {
     const current=await env.DB.prepare('SELECT creator_id, creator_username, revision FROM profiles WHERE id = ?').bind(entry.job.profile_id).first();
-    const session=await sharedSession(env, false, scope);
+    const session=await sharedSession(env);
     if (!current || current.revision!==entry.job.profile_revision || current.creator_id!==entry.job.creator_id
         || session.connection!==entry.job.connection) {
-      await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'},scope);
+      await replaceDesktopJob(env,entry,{...entry.job,status:'cancelled'});
       return json({active:false});
     }
   }
@@ -592,16 +557,16 @@ async function desktopRecordingJob(request,env,scope=null) {
     const heartbeat={...entry.job,expires:Date.now()+300000,
       phase:['opening','retrying','saving'].includes(input.phase)?input.phase:entry.job.phase,
       attempt:Number.isSafeInteger(input.attempt)?Math.max(1,Math.min(input.attempt,1000000)):entry.job.attempt};
-    return json({active:await replaceDesktopJob(env,entry,heartbeat,scope)});
+    return json({active:await replaceDesktopJob(env,entry,heartbeat)});
   }
   if (!desktopResults.has(input.status)) throw new ApiError(400,'Resultado de Chrome inválido');
   const job={...entry.job,status:input.status,checked_at:new Date().toISOString()};
   if (job.kind==='connect' && input.status==='ready') {
     const finishing={...entry.job,status:'finishing',expires:Date.now()+30000};
-    if (!await replaceDesktopJob(env,entry,finishing,scope)) return json({active:false});
-    try {await saveSharedSession(env,input.state,job.revision,undefined,scope);}
+    if (!await replaceDesktopJob(env,entry,finishing)) return json({active:false});
+    try {await saveSharedSession(env,input.state,job.revision);}
     catch {job.status='connection_error';}
-    await replaceDesktopJob(env,{raw:JSON.stringify(finishing)},job,scope);
+    await replaceDesktopJob(env,{raw:JSON.stringify(finishing)},job);
   } else if (job.kind === 'feed' && job.profile_id) {
     if (input.identity_checked !== true && job.status !== 'cancelled') job.status = 'desktop_update_required';
     job.observed_username = normalizedUsername(input.observed_username);
@@ -624,7 +589,7 @@ async function desktopRecordingJob(request,env,scope=null) {
       env.DB.prepare('UPDATE settings SET value = ? WHERE key = ? AND value = ?')
         .bind(JSON.stringify(job),desktopJobKey,entry.raw),
     ]);
-  } else if (!await replaceDesktopJob(env,entry,job,scope)) {
+  } else if (!await replaceDesktopJob(env,entry,job)) {
     return json({active:false});
   }
   return json({active:false});
@@ -681,36 +646,6 @@ async function adminHandle(request, env, path) {
     const apiKey = await globalApi(env);
     return json({creator: await resolveCreator(apiKey, id)});
   }
-  const device = path.match(/^\/v1\/admin\/profiles\/([a-f0-9-]{36})\/device$/);
-  if (device && request.method === 'DELETE') {
-    const id = device[1];
-    const entry = await env.DB.prepare('SELECT key FROM settings WHERE key = ?').bind('device:'+id).first();
-    if (!entry) throw new ApiError(404, 'Esta PC no tiene acceso');
-    await env.DB.batch([
-      env.DB.prepare("UPDATE settings SET value = 'revoked' WHERE key = ?").bind('device:'+id),
-      env.DB.prepare('DELETE FROM settings WHERE key IN (?,?)').bind(sessionKey(id),jobKey(id)),
-    ]);
-    return json({revoked:true});
-  }
-  if (device && request.method === 'POST') {
-    const id = device[1];
-    const row = await env.DB.prepare('SELECT * FROM profiles WHERE id = ?').bind(id).first();
-    if (!row) throw new ApiError(404, 'La configuración de la modelo ya no existe');
-    const secrets = await decrypt(row.encrypted_secrets, id, env);
-    if (!secrets.own_api || !secrets.telegram_users?.length)
-      throw new ApiError(409, 'Configura una clave propia de AgencyKey y los usuarios de Telegram primero');
-    if (secrets.own_api === await globalApi(env)) throw new ApiError(400, 'La clave de esta PC debe ser distinta de la global');
-    const accounts = await listCreators(secrets.own_api);
-    if (accounts.length !== 1 || accounts[0].external_id !== row.creator_id)
-      throw new ApiError(400, 'La clave de AgencyKey debe estar limitada a la modelo de este bot');
-    const code = 'pc_' + id + '_' + base64url(crypto.getRandomValues(new Uint8Array(32)));
-    await env.DB.batch([
-      env.DB.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
-        .bind('device:'+id, encode(await digest(code))),
-      env.DB.prepare('DELETE FROM settings WHERE key IN (?,?)').bind(sessionKey(id),jobKey(id)),
-    ]);
-    return json({code});
-  }
   const match = path.match(/^\/v1\/admin\/profiles\/([a-f0-9-]{36})$/);
   if (!match) throw new ApiError(404, 'Recurso no encontrado');
   const id = match[1];
@@ -731,17 +666,9 @@ async function adminHandle(request, env, path) {
   const apiKey = await globalApi(env);
   const token = text(input.telegram_token || previous.telegram_token, 'Token de Telegram', 256);
   const modelId = creatorId(input.creator_id);
-  const own_api = input.own_api ? text(input.own_api, 'Clave propia de AgencyKey', 512)
-    : input.own_api === null ? null : previous.own_api;
-  if (await profileScope(env, id)) {
-    if (!own_api || own_api === apiKey) throw new ApiError(409, 'El acceso de esta PC requiere una clave propia');
-    const accounts = await listCreators(own_api);
-    if (accounts.length !== 1 || accounts[0].external_id !== modelId)
-      throw new ApiError(400, 'La clave de AgencyKey debe estar limitada a la modelo de este bot');
-  }
-  const [creator, botId] = await Promise.all([resolveCreator(own_api || apiKey, modelId), verifyBot(token)]);
+  const [creator, botId] = await Promise.all([resolveCreator(apiKey, modelId), verifyBot(token)]);
   const telegram_users = input.telegram_users === undefined ? (previous.telegram_users ?? []) : telegramUsers(input.telegram_users);
-  const encrypted = await encrypt({telegram_token:token, telegram_users, own_api}, id, env);
+  const encrypted = await encrypt({telegram_token:token, telegram_users}, id, env);
   const now = new Date().toISOString();
   let result;
   try {
@@ -773,38 +700,36 @@ async function handle(request, env) {
   }
   if (path === '/health' && request.method === 'GET') return json({service: 'agencykey-recorder-tests', version: 8});
   if (path.startsWith('/v1/admin/')) return adminHandle(request, env, path);
-  const scope = await authorize(request, env);
-  if (path==='/v1/recording-desktop-job') return desktopRecordingJob(request,env,scope);
+  await authorize(request, env);
+  if (path==='/v1/recording-desktop-job') return desktopRecordingJob(request,env);
   if (path==='/v1/recording-session') {
     if (request.method==='GET') {
-      const session=await sharedSession(env,true,scope);
+      const session=await sharedSession(env,true);
       if (!session.configured) throw new ApiError(409,'Conecta la sesión compartida de AgencyKey desde la web');
       return json(session);
     }
     if (request.method==='PUT') {
       const input=await body(request,524288);
-      const session=await sharedSession(env,false,scope);
+      const session=await sharedSession(env);
       if (typeof input.revision!=='string' || !session.configured) throw new ApiError(409,'Conecta AgencyKey desde la web');
-      return json(await saveSharedSession(env,input.state,input.revision,session.connection,scope));
+      return json(await saveSharedSession(env,input.state,input.revision,session.connection));
     }
     throw new ApiError(405,'Método no permitido');
   }
-  if (path === '/v1/profiles' && request.method === 'GET') return listProfiles(env,scope);
+  if (path === '/v1/profiles' && request.method === 'GET') return listProfiles(env);
   if (path === '/v1/profile-revisions' && request.method === 'GET') {
-    const rows = await desktopProfiles(env,scope);
-    return json({profiles:rows.map(({id,revision,updated_at})=>({id,revision,updated_at}))});
+    const {results} = await env.DB.prepare('SELECT id, revision, updated_at FROM profiles').all();
+    return json({profiles:results});
   }
   const match = path.match(/^\/v1\/profiles\/([a-f0-9-]{36})\/credentials$/);
   if (match && request.method === 'POST') {
-    const assigned = await profileScope(env, match[1]);
-    if ((scope && scope!==match[1]) || scope!==assigned) throw new ApiError(403, 'Bot fuera del acceso de esta PC');
     const row = await env.DB.prepare('SELECT * FROM profiles WHERE id = ?').bind(match[1]).first();
     if (!row) throw new ApiError(404, 'La configuración ya no existe');
     const secret = await decrypt(row.encrypted_secrets,row.id,env);
     if (request.headers.get('X-Recorder-Protocol') !== '2')
       throw new ApiError(409, 'Actualiza la app de Windows antes de iniciar este bot');
     return json({...profile(row), telegram_users:secret.telegram_users ?? [],
-      telegram_token:secret.telegram_token, api_key:scope ? secret.own_api : await globalApi(env)});
+      telegram_token:secret.telegram_token, api_key:await globalApi(env)});
   }
   if (['PUT','DELETE','PATCH','POST'].includes(request.method)) throw new ApiError(403, 'Gestiona las configuraciones desde el panel privado');
   throw new ApiError(404, 'Recurso no encontrado');

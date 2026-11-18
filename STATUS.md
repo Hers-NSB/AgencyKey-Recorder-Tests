@@ -14,7 +14,7 @@ AgencyKey Recorder Tests publica mensajes reenviados por Telegram y genera un co
 
 ## En revisión
 
-[PR #31](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/pull/31), rama `fix/recorder-safety-recovery`. Control de Telegram por usuario, acceso por PC con credenciales y sesiones separadas, recuperación de avance del lote y validación de capturas con fotos. Las verificaciones abandonadas caducan tras 30 minutos. La retención de archivos es opcional. La nueva web (v8) y el EXE deben validarse juntos antes de publicarse.
+[PR #31](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/pull/31), rama `fix/recorder-safety-recovery`. Control de Telegram por usuario, recuperación de avance del lote y validación de capturas con fotos. Las verificaciones abandonadas caducan tras 30 minutos. La retención de archivos es opcional. La web v8 usa una configuración compartida y el EXE probado de la PR #31.
 
 ## Siguiente acción
 

@@ -389,48 +389,24 @@ test('editing the model cancels the old recoverable check and allows the new mod
  const fresh=await (await desktop(env,'POST',claim)).json();assert.equal(fresh.job.creator_id,99);
 });
 
-test('each PC only gets its own bot credentials, Chrome job and session', async()=>{
- const original=globalThis.fetch;
- globalThis.fetch=(url,options)=>{
-  if(options.headers['x-public-api-key']==='own-model-key'){
-   if(new URL(url).pathname.endsWith('/creators'))
-    return Promise.resolve(Response.json({data:[{account:{externalId:52,username:'model_52'},name:'Lilith'}],pagination:{pages:1}}));
-   return original(url,{...options,headers:{...options.headers,'x-public-api-key':input.api_key}});
-  }
-  return original(url,options);
- };
- try {
-  const adminRoot='/v1/admin/profiles/';
-  assert.equal((await admin(env,'PUT',adminRoot+firstId,{...input,telegram_users:['@Editor','editor'],own_api:'own-model-key'})).status,200);
-  assert.equal((await admin(env,'PUT',adminRoot+secondId,{...input,creator_id:99,telegram_token:secondToken})).status,200);
-  const issue=await admin(env,'POST',adminRoot+firstId+'/device',{});
-  assert.equal(issue.status,200,await issue.clone().text());
-  const {code}=await issue.json();
-  const pc=(method,path,body)=>request(env,method,path,body,{Authorization:'Bearer '+code,'X-Recorder-Protocol':'2'});
-  const credentials='/v1/profiles/'+firstId+'/credentials';
-  assert.equal((await request(env,'POST',credentials,undefined,{Authorization:'Bearer '+code})).status,409);
-  const secret=await (await pc('POST',credentials)).json();
-  assert.equal(secret.api_key,'own-model-key');
-  assert.deepEqual(secret.telegram_users,['editor']);
-  assert.equal((await desktop(env,'POST',credentials)).status,403);
-  assert.equal((await pc('POST','/v1/profiles/'+secondId+'/credentials')).status,403);
-  assert.deepEqual((await (await pc('GET','/v1/profiles')).json()).profiles.map(p=>p.id),[firstId]);
-  const root='/v1/admin/recording-session';
-  const claim='/v1/recording-desktop-job';
-  const connect=await (await admin(env,'POST',root+'/connect',{profile_id:firstId,request_id:crypto.randomUUID()})).json();
-  assert.deepEqual((await (await desktop(env,'POST',claim)).json()).job,null);
-  const {job}=await (await pc('POST',claim)).json();
-  assert.equal(job.id,connect.id);
-  const state={cookies:[{name:'session',domain:'.agencykey.com',value:'isolated'}],origins:[]};
-  assert.equal((await pc('PUT',claim,{...job,status:'ready',state})).status,200);
-  assert.deepEqual((await (await pc('GET','/v1/recording-session')).json()).state,state);
-  assert.equal((await desktop(env,'GET','/v1/recording-session')).status,409);
-  assert.equal((await admin(env,'DELETE',adminRoot+firstId+'/device')).status,200);
-  assert.equal((await pc('GET','/v1/profiles')).status,401);
-  assert.equal((await desktop(env,'POST',credentials)).status,403);
- } finally {globalThis.fetch=original;}
+test('retired PC access is rejected and the app password still opens the bot',async()=>{
+ const saved=await admin(env,'PUT',route,{...input,telegram_users:['@Editor','editor']});
+ assert.equal(saved.status,200,await saved.clone().text());
+ const pc='pc_'+firstId+'_'+'x'.repeat(43);
+ const digest=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pc))).toString('base64');
+ db.prepare('INSERT INTO settings(key,value) VALUES (?,?)').run('device:'+firstId,digest);
+ assert.equal((await desktop(env,'GET','/v1/profiles',undefined,pc)).status,401);
+ assert.equal((await admin(env,'POST',route+'/device',{})).status,404);
+ const app=await (await desktop(env,'GET','/v1/profiles')).json();
+ assert.deepEqual(app.profiles.map(p=>p.id),[firstId]);
+ assert.deepEqual(app.profiles[0].telegram_users,['editor']);
+ const creds=await (await desktop(env,'POST',credentials)).json();
+ assert.equal(creds.api_key,input.api_key);
+ assert.equal(creds.telegram_token,firstToken);
+ const html=await (await request(env,'GET','/admin')).text();
+ assert.match(html,/Usuarios de Telegram autorizados/);
+ assert.doesNotMatch(html,/Clave de AgencyKey de esta PC|Generar acceso de PC/);
 });
-
 
 test('a recoverable verification expires after its maximum lifetime',async()=>{
  await admin(env,'PUT',route,input);

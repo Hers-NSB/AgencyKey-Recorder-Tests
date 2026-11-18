@@ -1,5 +1,4 @@
 - Acceso al bot por nombres de usuario de Telegram configurados en el panel.
-- Códigos de PC revocables con una clave y sesión de AgencyKey separadas por bot.
 - Recuperación del lote tras un reinicio y aviso inmediato con el número del post fallido y el enlace que necesita el bot.
 - El comprobante omite las esperas de carga y se bloquea si faltan posts o fotos que debían aparecer.
 - Retención local opcional para videos y diagnósticos. Actualiza el EXE para usar los accesos por PC.
