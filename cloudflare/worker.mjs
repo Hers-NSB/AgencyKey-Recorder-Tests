@@ -5,6 +5,7 @@ import {cleanWebDiagnostic, reportZip} from './web-report.mjs';
 const encoder = new TextEncoder();
 const columns = 'id, name, bot_id, creator_id, creator_name, creator_username, revision, updated_at';
 const verificationLifetime = 30 * 60 * 1000;
+const appAccessVerificationLifetime = 24 * 60 * 60 * 1000;
 
 class ApiError extends Error {
   constructor(status, message) {
@@ -40,6 +41,38 @@ async function accessHash(env) {
   return source;
 }
 
+function appAccessVerificationId(access, expires) {
+  return JSON.stringify(['app_access_verification', access, expires]);
+}
+
+async function verifyAppAccess(provided, saved, row, env) {
+  const fingerprint = encode(await digest(provided));
+  if (row.verification) {
+    try {
+      const {expires, encrypted} = JSON.parse(row.verification);
+      if (Number.isSafeInteger(expires) && expires > Date.now()) {
+        // Authenticate the expiry and the exact password record along with the verifier.
+        const {verified} = await decrypt(encrypted, appAccessVerificationId(row.value, expires), env);
+        return await equal(fingerprint, verified);
+      }
+    } catch {
+      // A damaged entry or a rotated key requires the original password check.
+    }
+  }
+  if (!await equal(await passwordHash(provided, saved.salt), saved.hash)) return false;
+  try {
+    const expires = Date.now() + appAccessVerificationLifetime;
+    const encrypted = await encrypt({verified:fingerprint}, appAccessVerificationId(row.value, expires), env);
+    // A request that started before password rotation must not replace the new entry.
+    await env.DB.prepare(`INSERT INTO settings(key, value)
+      SELECT 'app_access_verification', ? WHERE EXISTS (SELECT 1 FROM settings WHERE key = 'app_access' AND value = ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(JSON.stringify({expires, encrypted}), row.value).run();
+  } catch {
+    console.error(JSON.stringify({event:'app_access_verification_write_failed'}));
+  }
+  return true;
+}
+
 async function authorize(request, env) {
   if (!env.ACCESS_TOKEN || !env.ENCRYPTION_KEY) throw new ApiError(503, 'Servicio sin configurar');
   const value = request.headers.get('Authorization') || '';
@@ -57,22 +90,22 @@ async function authorize(request, env) {
   const attemptId = 'app:' + encode(await digest(ip));
   const blocked = await env.DB.prepare('SELECT attempts, expires FROM login_attempts WHERE id = ?').bind(attemptId).first();
   if (blocked?.expires > Date.now() && blocked.attempts >= 10) throw new ApiError(429, 'Demasiados intentos, espera 15 minutos');
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'app_access'").first();
+  const row = await env.DB.prepare(`SELECT value,
+    (SELECT value FROM settings WHERE key = 'app_access_verification') AS verification
+    FROM settings WHERE key = 'app_access'`).first();
   const saved = row ? JSON.parse(row.value) : null;
   const source = encode(await digest(env.ACCESS_TOKEN));
   let valid;
   if (saved?.source === source && saved.kind === 'pbkdf2') {
-    valid = await equal(await passwordHash(provided, saved.salt), saved.hash);
+    valid = await verifyAppAccess(provided, saved, row, env);
   } else {
-    valid = await equal(encode(await digest(provided)), await accessHash(env));
+    valid = await equal(encode(await digest(provided)), saved?.source === source ? saved.hash : source);
   }
   if (!valid) {
-    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-    const id = 'app:' + encode(await digest(ip));
     const now = Date.now();
     const attempts = await env.DB.prepare(`INSERT INTO login_attempts(id, attempts, expires) VALUES (?, 1, ?)
       ON CONFLICT(id) DO UPDATE SET attempts = CASE WHEN expires < ? THEN 1 ELSE attempts+1 END,
-      expires = CASE WHEN expires < ? THEN excluded.expires ELSE expires END RETURNING attempts`).bind(id, now+900000, now, now).first();
+      expires = CASE WHEN expires < ? THEN excluded.expires ELSE expires END RETURNING attempts`).bind(attemptId, now+900000, now, now).first();
     throw new ApiError(attempts.attempts > 10 ? 429 : 401, attempts.attempts > 10 ? 'Demasiados intentos, espera 15 minutos' : 'Contraseña incorrecta o cambiada');
   }
 }
