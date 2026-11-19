@@ -181,9 +181,9 @@ MEDIA_HELPERS = r'''
    return r.width>0 && r.height>0 && r.bottom>100 && r.top<innerHeight &&
      r.right>0 && r.left<innerWidth && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
  };
- const photos = card => [...card.querySelectorAll('img')].filter(img => {
+ const photos = (card, minSize=32) => [...card.querySelectorAll('img')].filter(img => {
    const r = img.getBoundingClientRect();
-   return r.width>=32 && r.height>=32 && inView(img) &&
+   return r.width>=minSize && r.height>=minSize && inView(img) &&
      !img.closest('[class*="avatar" i], [class*="post__header" i], [class*="post__author" i]');
  });
  const loaded = img => img.complete && img.naturalWidth>0;
@@ -213,7 +213,7 @@ PENDING_BATCH_PHOTOS = post_expression(r'''ids => {
  const wanted = new Set(ids);
  return [...document.querySelectorAll('POST_SELECTOR')].filter(card =>
    wanted.has(POST_ID(card)) && !card.classList.contains('m-pinned') && inView(card) &&
-   !drm(card) && photos(card).some(img => !loaded(img))).map(POST_ID);
+   !drm(card) && photos(card, 1).some(img => !loaded(img))).map(POST_ID);
 }'''.replace('MEDIA_HELPERS', MEDIA_HELPERS))
 
 RETRY_BATCH_PHOTO = post_expression(r'''id => {
@@ -221,7 +221,7 @@ RETRY_BATCH_PHOTO = post_expression(r'''id => {
  const card = [...document.querySelectorAll('POST_SELECTOR')].find(card =>
    POST_ID(card) === id && !card.classList.contains('m-pinned') && inView(card));
  if (!card || drm(card)) return;
- for (const img of photos(card)) {
+ for (const img of photos(card, 1)) {
    if (!img.complete || loaded(img)) continue;
    const source = img.hasAttribute('srcset') ? 'srcset' : 'src';
    if (img.hasAttribute(source)) img.setAttribute(source, img.getAttribute(source));
@@ -375,6 +375,8 @@ class PhotoWaitControl:
             await self.notify(self.pending_post)
             while not self.cancelled:
                 pending = await frame.evaluate(PENDING_BATCH_PHOTOS, ids)
+                if self.cancelled:
+                    break
                 if not pending:
                     self.pending_post = None
                     await self.notify(None)
@@ -729,10 +731,11 @@ async def prepare_feed(page, ids, *, timeout=600, profile_url=None, photo_ids=No
 async def mask_other_posts(frame, ids):
     # Keep the positions of virtualized cards while omitting them from every frame.
     allowed = ', '.join(f'[id="postId_{pid}"], :not([id^="postId_"])[data-post-id="{pid}"]' for pid in ids)
-    await frame.evaluate('''css => {
+    await frame.evaluate('''async css => {
         const sheet = new CSSStyleSheet();
         sheet.replaceSync(css);
         document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     }''', f':is({POST_SELECTOR}):is(.m-pinned, :not(:is({allowed}))) '
           '{ opacity: 0 !important; pointer-events: none !important; }')
 
