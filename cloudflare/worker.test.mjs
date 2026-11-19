@@ -84,6 +84,71 @@ test('limits failed desktop password attempts',async()=>{
  for(let i=0;i<10;i++)assert.equal((await desktop(env,'GET','/v1/profiles',undefined,'wrong')).status,401);
  assert.equal((await desktop(env,'GET','/v1/profiles',undefined,'wrong')).status,429);
 });
+test('desktop polling reuses an encrypted password verification across Worker instances until it expires',async t=>{
+ const code='desktop-polling-password';
+ assert.equal((await admin(env,'POST','/v1/admin/access',{code})).status,200);
+ const clock=t.mock.method(Date,'now',()=>1700000000000);
+ const pbkdf2=t.mock.method(crypto.subtle,'deriveBits');
+ const cached=()=>db.prepare("SELECT value FROM settings WHERE key='app_access_verification'").get();
+ const revisions='/v1/profile-revisions';
+ const jobs='/v1/recording-desktop-job';
+ assert.equal((await desktop(env,'GET',revisions,undefined,'wrong')).status,401);
+ assert.equal(cached(),undefined);
+ assert.equal((await desktop(env,'GET',revisions,undefined,code)).status,200);
+ assert.equal(pbkdf2.mock.callCount(),2);
+ const saved=cached().value;
+ const {expires,encrypted}=JSON.parse(saved);
+ assert.equal(expires,Date.now()+86400000);
+ assert.equal(typeof JSON.parse(encrypted).ciphertext,'string');
+ assert.ok(!saved.includes(code));
+ const freshWorker=(await import('./worker.mjs?desktop-polling')).default;
+ const poll=method=>freshWorker.fetch(new Request('https://dropper.test'+(method==='GET'?revisions:jobs),{
+   method,headers:{Authorization:'Bearer '+code,'X-Recorder-Protocol':'2'},
+ }),env);
+ for(let i=0;i<5;i++){
+  assert.deepEqual(await (await poll('GET')).json(),{profiles:[]});
+  assert.deepEqual(await (await poll('POST')).json(),{job:null});
+ }
+ for(let i=0;i<9;i++)assert.equal((await desktop(env,'GET',revisions,undefined,'wrong')).status,401);
+ assert.equal((await poll('GET')).status,429);
+ assert.equal(pbkdf2.mock.callCount(),2);
+ assert.equal(cached().value,saved);
+ clock.mock.mockImplementation(()=>expires);
+ assert.equal((await poll('GET')).status,200);
+ assert.equal(pbkdf2.mock.callCount(),3);
+ assert.equal(JSON.parse(cached().value).expires,expires+86400000);
+});
+
+test('rotating app access or the Worker encryption key invalidates the encrypted verifier',async t=>{
+ const old='contraseña anterior 🔐';
+ const current='contraseña vigente 🔐';
+ const revisions='/v1/profile-revisions';
+ const unicode=code=>request(env,'GET',revisions,undefined,{
+  Authorization:'Dropper '+Buffer.from(code,'utf8').toString('base64url'),'X-Recorder-Protocol':'2',
+ });
+ assert.equal((await admin(env,'POST','/v1/admin/access',{code:old})).status,200);
+ assert.equal((await unicode(old)).status,200);
+ assert.equal((await admin(env,'POST','/v1/admin/access',{code:current})).status,200);
+ const pbkdf2=t.mock.method(crypto.subtle,'deriveBits');
+ assert.equal((await unicode(old)).status,401);
+ assert.equal((await unicode(current)).status,200);
+ assert.equal((await unicode(old)).status,401);
+ assert.equal((await unicode(current)).status,200);
+ assert.equal(pbkdf2.mock.callCount(),2);
+ const read=()=>db.prepare("SELECT value FROM settings WHERE key='app_access_verification'").get().value;
+ const saved=read();
+ const tampered=JSON.parse(saved);
+ tampered.expires+=86400000;
+ db.prepare("UPDATE settings SET value=? WHERE key='app_access_verification'").run(JSON.stringify(tampered));
+ assert.equal((await unicode(current)).status,200);
+ assert.equal(pbkdf2.mock.callCount(),3);
+ env.ENCRYPTION_KEY=Buffer.alloc(32,30).toString('base64');
+ assert.equal((await unicode(current)).status,200);
+ assert.equal((await unicode(current)).status,200);
+ assert.equal(pbkdf2.mock.callCount(),4);
+ assert.notEqual(read(),saved);
+});
+
 test('automatically migrates the existing shared API without exposing it',async()=>{
  // Build a legacy encrypted profile using the same AES-GCM envelope.
  db.prepare("DELETE FROM settings WHERE key='agencykey'").run();
@@ -156,6 +221,19 @@ test('Workers runtime connects to AgencyKey without unsupported redirect mode or
   const save=()=>runtime.dispatchFetch('https://dropper.test/v1/admin/agencykey',{method:'PUT',headers:{Origin:'https://dropper.test','Content-Type':'application/json',Cookie:cookie},body:JSON.stringify({api_key:input.api_key})});
   const result=await save();assert.equal(result.status,200);assert.equal((await result.json()).creators[0].username,'model_52');assert.equal(calls.length,1);
   redirect=true;const rejected=await save();assert.equal(rejected.status,502);assert.match((await rejected.json()).error,/redirección/);assert.equal(calls.length,2);
+  const code='runtime-desktop-password';
+  const rotated=await runtime.dispatchFetch('https://dropper.test/v1/admin/access',{method:'POST',headers:{Origin:'https://dropper.test','Content-Type':'application/json',Cookie:cookie},body:JSON.stringify({code})});
+  assert.equal(rotated.status,200);
+  const headers={Authorization:'Bearer '+code,'X-Recorder-Protocol':'2'};
+  const revisions=await runtime.dispatchFetch('https://dropper.test/v1/profile-revisions',{headers});
+  assert.deepEqual(await revisions.json(),{profiles:[]});
+  const stored=await database.prepare("SELECT value FROM settings WHERE key='app_access_verification'").first();
+  assert.ok(stored?.value);
+  for(let i=0;i<5;i++){
+   const jobs=await runtime.dispatchFetch('https://dropper.test/v1/recording-desktop-job',{method:'POST',headers});
+   assert.deepEqual(await jobs.json(),{job:null});
+  }
+  assert.deepEqual(await database.prepare("SELECT value FROM settings WHERE key='app_access_verification'").first(),stored);
  }finally{await runtime.dispose();}
 });
 

@@ -2,6 +2,11 @@
 
 AgencyKey Recorder Tests ejecuta los bots, la publicación, la grabación y los registros en la PC de Windows. El panel web guarda la configuración y permite solicitar la verificación de Mi perfil con la app abierta y el bot detenido.
 
+## Corrección de CPU del Worker
+
+- Rama `fix/cloudflare-desktop-auth-cpu`. El Worker reutiliza durante 24 horas una comprobación cifrada de la contraseña de la app. La comprobación caduca o se invalida al rotar la contraseña. El EXE instalado conserva el protocolo y la contraseña.
+- Los tests del Worker cubren ambas consultas periódicas, el arranque de otra instancia, la caducidad, la revocación y las contraseñas Unicode. Tras desplegar, comprobar que las dos rutas responden HTTP 200 y revisar si Cloudflare vuelve a registrar `exceededCpu`.
+
 ## Producción
 
 - [Panel web v8](https://agencykey-recorder-tests.datosenviados07.workers.dev/admin) activo. Incluye la clave global de AgencyKey, los tokens de Telegram, los `@usuarios` autorizados y la verificación de Mi perfil.
