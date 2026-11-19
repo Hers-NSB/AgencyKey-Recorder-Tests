@@ -11,7 +11,7 @@ from agencykey import Creator
 from bot import DropperBot
 from core import Batch, Post
 from recording_service import (
-    AGENCYKEY_SIGN_IN, RecordingCoordinator, agencykey_login_complete,
+    AGENCYKEY_SIGN_IN, CANCEL_RECORDING, RETRY_RECORDING, RecordingCoordinator, agencykey_login_complete,
     run_desktop_recording_job, session_path, verify_profile_route,
 )
 import recorder
@@ -222,7 +222,7 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
             bot.send_video.assert_not_awaited()
             self.assertEqual(json.loads(coordinator.job_path(42).read_text())['status'],'error')
             button = bot.send_message.call_args.kwargs['reply_markup'].keyboard[0][0]
-            self.assertIn('Repetir grabación', button.text)
+            self.assertEqual(button.text, RETRY_RECORDING)
             from test_publisher_flow import update
             event = update(button.text)
             event.effective_chat.id = 42
@@ -233,6 +233,40 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(retry.call_args.args[0].published_ids, batch.published_ids)
                 self.assertFalse(retry.call_args.kwargs['resend'])
                 retry.assert_awaited_once()
+
+    async def test_telegram_controls_cancel_only_the_paused_recording_for_the_same_chat(self):
+        from test_publisher_flow import update
+        with tempfile.TemporaryDirectory() as folder, patch.object(recorder, 'ROOT', Path(folder)):
+            batch = self.batch()
+            coordinator = RecordingCoordinator(batch.creator)
+            publisher = DropperBot(SimpleNamespace(), batch.creator, coordinator)
+            bot = SimpleNamespace(send_message=AsyncMock(), send_video=AsyncMock())
+            context = SimpleNamespace(user_data={'batch': batch}, bot=bot, application=object())
+
+            async def record(config, *, photo_wait, **kwargs):
+                photo_wait.pending_post = '102'
+                await photo_wait.notify('102')
+                notice = bot.send_message.call_args
+                self.assertIn('post #2', notice.args[1])
+                self.assertEqual([b.text for b in notice.kwargs['reply_markup'].keyboard[0]],
+                                 [RETRY_RECORDING, CANCEL_RECORDING])
+                self.assertFalse(coordinator.control_photo_wait(43, cancel=True))
+                for command in (RETRY_RECORDING, CANCEL_RECORDING):
+                    event = update(command)
+                    event.effective_chat.id = 42
+                    with patch.object(coordinator, 'start', new_callable=AsyncMock) as restart:
+                        await publisher.menu(event, context)
+                    restart.assert_not_awaited()
+                self.assertTrue(photo_wait.changed.is_set())
+                self.assertTrue(photo_wait.cancelled)
+                raise recorder.RecordingCancelled('Grabación cancelada')
+
+            with patch.object(recorder, 'record', side_effect=record):
+                await coordinator.run(batch, bot, 42)
+            self.assertEqual(json.loads(coordinator.job_path(42).read_text())['status'], 'cancelled')
+            self.assertEqual(coordinator.restore_batch(42).published_ids, batch.published_ids)
+            self.assertIsNone(coordinator.active_photo_wait)
+            bot.send_video.assert_not_awaited()
 
     async def test_integrated_telegram_error_uses_safe_network_diagnosis(self):
         import httpx

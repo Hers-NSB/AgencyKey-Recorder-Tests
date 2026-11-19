@@ -1,4 +1,4 @@
-- Acceso al bot por nombres de usuario de Telegram configurados en el panel.
-- Recuperación del lote tras un reinicio y aviso inmediato con el número del post fallido y el enlace que necesita el bot.
-- El comprobante omite las esperas de carga y se bloquea si faltan posts o fotos que debían aparecer.
-- Retención local opcional para videos y diagnósticos. Actualiza el EXE para usar los accesos por PC.
+- El comprobante en Chrome oculto incluye solo los posts del Drop, en el orden del muro.
+- Si una foto tarda más de 120 segundos, Telegram permite reintentar o cancelar la grabación. Si la foto carga, el video continúa desde el mismo post.
+- Reintentar después de que Chrome se cierre vuelve a grabar el mismo Drop publicado.
+- Los avisos visibles de DRM se graban y el comprobante identifica las fotos que quedaron sin verificar.

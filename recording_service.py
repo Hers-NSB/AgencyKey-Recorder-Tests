@@ -20,7 +20,8 @@ web_log = logging.getLogger('agencykey-web-verification')
 
 
 AGENCYKEY_SIGN_IN = 'https://app.agencykey.com/auth/signin'
-RETRY_RECORDING = '🎥 Repetir grabación'
+RETRY_RECORDING = '🔄 Reintentar'
+CANCEL_RECORDING = '⏹️ Cancelar grabación'
 RETRY_DELIVERY = '🎥 Reintentar video'
 RESEND_PROOF = '📤 Reenviar video'
 RECORDING_STEPS = {
@@ -270,7 +271,7 @@ class BrowserPreparation:
         if stop_event:
             while not self.task.done():
                 if stop_event.is_set():
-                    raise ValueError('Grabación detenida · Pulsa Repetir grabación para reintentar el comprobante')
+                    raise ValueError('Grabación detenida · Pulsa Reintentar para volver a grabar el comprobante')
                 await asyncio.wait({self.task}, timeout=0.25)
         return await self.task
 
@@ -289,6 +290,7 @@ class RecordingCoordinator:
         self.session_client = session_client
         self.completion_markup = None
         self.last_recording_step = None
+        self.active_photo_wait = None
 
     def emit(self, event, value):
         if self.events is not None:
@@ -309,6 +311,18 @@ class RecordingCoordinator:
         if self.completion_markup:
             rows.extend(self.completion_markup.keyboard)
         return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
+
+    def photo_wait_keyboard(self, chat_id):
+        if self.active_photo_wait and self.active_photo_wait[0] == chat_id:
+            if self.active_photo_wait[1].pending_post is not None:
+                return ReplyKeyboardMarkup([[RETRY_RECORDING, CANCEL_RECORDING]], resize_keyboard=True,
+                                           is_persistent=True)
+        return ReplyKeyboardRemove()
+
+    def control_photo_wait(self, chat_id, *, cancel=False):
+        if not self.active_photo_wait or self.active_photo_wait[0] != chat_id:
+            return False
+        return self.active_photo_wait[1].resume_check(cancel=cancel)
 
     def prepare_browser(self):
         if not self.session_client:
@@ -410,9 +424,22 @@ class RecordingCoordinator:
                 except TelegramError:
                     log.warning('Comprobante | No se pudo entregar el aviso inicial; la grabación continúa.')
                 ids = [recorder.post_id(batch.published_ids[n]) for n in range(len(batch.order), 0, -1)]
+                post_numbers = {pid: number for number, pid in enumerate(reversed(ids), 1)}
                 config = recorder.validate_config({'profile_url': recorder.model_profile_url(self.creator.external_id),
                                                    'creator_username': self.creator.username,
                                                    'post_ids_newest_first': ids, 'photo_post_ids': job['photo_post_ids']})
+
+                async def notify_photo_wait(post_id):
+                    message = (f'⏳ Esperando la foto del post #{post_numbers[post_id]}' if post_id
+                               else '▶️ Foto lista. Continuando la grabación')
+                    try:
+                        await bot.send_message(chat_id, message, reply_markup=self.photo_wait_keyboard(chat_id),
+                                               read_timeout=10, write_timeout=10, connect_timeout=10, pool_timeout=10)
+                    except TelegramError:
+                        log.warning('Comprobante | No se pudo avisar del estado de carga en Telegram.')
+
+                photo_wait = recorder.PhotoWaitControl(notify_photo_wait)
+                self.active_photo_wait = (chat_id, photo_wait)
                 options = {}
                 if self.session_client:
                     self.progress({'stage': 'cargando sesión de AgencyKey', 'completed': 0, 'total': len(batch.order)})
@@ -435,15 +462,23 @@ class RecordingCoordinator:
                     options['on_session_saved'] = refresh
                 report_path = await recorder.record(config, headless=True,
                     session_path=session_path(self.creator.external_id),
-                    on_progress=self.progress, stop_event=self.stop_event, **options)
+                    on_progress=self.progress, stop_event=self.stop_event, photo_wait=photo_wait, **options)
                 job['report'] = str(report_path)
             report, video = recorder.verified_video(report_path)
             self.progress({'stage': 'enviando video', 'completed': len(report['seen']), 'total': len(report['seen'])})
             job['status'] = 'sending'
             recorder.save_json(path, job)
+            caption = f'✅ Comprobante · {len(report["seen"])} posts · {self.creator.name}'
+            if drm_ids := report.get('drm_photo_ids'):
+                protected = set(drm_ids)
+                display = [str(number) for number, pid in enumerate(job['post_ids_oldest_first'], 1)
+                           if recorder.post_id(pid) in protected]
+                numbers = ', '.join(display)
+                caption += ('\n🔒 Fotos sin verificar por DRM · Posts ' + numbers if len(numbers) < 800 else
+                            f'\n🔒 {len(display)} fotos sin verificar por DRM')
             with video.open('rb') as stream:
                 message = await bot.send_video(chat_id=chat_id, video=stream,
-                    caption=f'✅ Comprobante · {len(report["seen"])} posts · {self.creator.name}',
+                    caption=caption,
                     supports_streaming=True, read_timeout=180, write_timeout=180, connect_timeout=30, pool_timeout=30)
             job.update(status='sent', message_id=message.message_id, delivered_wall_at=time())
             recorder.save_json(path, job)
@@ -451,6 +486,15 @@ class RecordingCoordinator:
                 batch.finished_at = monotonic()
             self.progress({'stage': 'enviado', 'completed': len(report['seen']), 'total': len(report['seen'])})
             await self.send_summary(job, bot, chat_id, path)
+        except recorder.RecordingCancelled:
+            job.update(status='cancelled')
+            self.progress({'stage': 'Grabación cancelada', 'completed': 0, 'total': len(batch.order)})
+            recorder.save_json(path, job)
+            try:
+                await bot.send_message(chat_id, '⏹️ Grabación cancelada. Puedes volver a grabar el mismo Drop',
+                                       reply_markup=self.proof_keyboard(RETRY_RECORDING))
+            except TelegramError:
+                pass
         except TelegramError as error:
             uncertain = job.get('status') == 'sending' and not isinstance(error, (BadRequest, Forbidden, RetryAfter))
             detail = 'No se pudo enviar el video a Telegram.'
@@ -502,6 +546,7 @@ class RecordingCoordinator:
             except TelegramError:
                 pass
         finally:
+            self.active_photo_wait = None
             recorder.save_json(path, job)
 
     async def send_summary(self, job, bot, chat_id, path):

@@ -18,7 +18,7 @@ from telegram.ext import (
 from agencykey import AgencyKey, AgencyKeyError
 from config import log
 from core import Batch, Post, SessionStats
-from recording_service import RETRY_RECORDING, RETRY_DELIVERY, RESEND_PROOF
+from recording_service import CANCEL_RECORDING, RETRY_RECORDING, RETRY_DELIVERY, RESEND_PROOF
 
 NEW_BATCH = "🔄 Nuevo Drop"
 PUBLISH = "📤 Publicar"
@@ -28,7 +28,8 @@ RESUME_SLOW = "🐢 Continuar lento"
 CANCEL = "❌ Cancelar Drop"
 CONTINUE = "Continuar"
 CONTROL_TEXTS = {NEW_BATCH, PUBLISH, PUBLISH_NORMAL, PUBLISH_SLOW, CANCEL, CONTINUE,
-                 RESUME_SLOW, RETRY_RECORDING, RETRY_DELIVERY, RESEND_PROOF}
+                 RESUME_SLOW, RETRY_RECORDING, CANCEL_RECORDING, RETRY_DELIVERY, RESEND_PROOF,
+                 "🎥 Repetir grabación"}
 
 
 def without_final_periods(text):
@@ -134,7 +135,8 @@ class DropperBot:
         handlers = {NEW_BATCH: self.start, PUBLISH: self.publish, PUBLISH_NORMAL: self.publish,
                     PUBLISH_SLOW: self.publish, CANCEL: self.cancel,
                     CONTINUE: self.resume, RESUME_SLOW: self.resume,
-                    RETRY_RECORDING: self.video, RETRY_DELIVERY: self.video, RESEND_PROOF: self.video}
+                    RETRY_RECORDING: self.video, RETRY_DELIVERY: self.video, RESEND_PROOF: self.video,
+                    CANCEL_RECORDING: self.cancel_video, "🎥 Repetir grabación": self.video}
         if message.text in handlers:
             await handlers[message.text](update, context)
         else:
@@ -311,17 +313,25 @@ class DropperBot:
         return False
 
     async def video(self, update, context):
+        chat_id = update.effective_chat.id
+        if (update.effective_message.text == RETRY_RECORDING and self.recording and
+                self.recording.control_photo_wait(chat_id)):
+            return
         batch = context.user_data.get('batch')
         if batch and batch.status in {'paused', 'publishing'}:
             await self.status(update, context)
             return
         if self.recording and (not batch or batch.status != 'done'):
-            batch = self.recording.restore_batch(update.effective_chat.id)
+            batch = self.recording.restore_batch(chat_id)
         if not self.recording or not batch or batch.status != 'done':
             await self.reply(update, context, 'Finaliza primero el Drop para generar su comprobante')
             return
-        await self.recording.start(batch, context.bot, update.effective_chat.id, context.application,
+        await self.recording.start(batch, context.bot, chat_id, context.application,
                                    resend=update.effective_message.text == RESEND_PROOF)
+
+    async def cancel_video(self, update, context):
+        if not self.recording or not self.recording.control_photo_wait(update.effective_chat.id, cancel=True):
+            await self.reply(update, context, 'No hay una grabación en pausa')
 
     @staticmethod
     def cancel_queue_notice(context):
@@ -418,7 +428,7 @@ class DropperBot:
                 await self.notify(context, update.effective_chat.id,
                                   '🎥 Comprobante en proceso' if self.recording.busy else '🎥 Comprobante del último Drop',
                                   reply_markup=self.recording.proof_keyboard(RETRY_DELIVERY) if not self.recording.busy
-                                  else ReplyKeyboardRemove())
+                                  else self.recording.photo_wait_keyboard(update.effective_chat.id))
                 return
             text = (f"✅ Drop finalizado · {batch.creator.name}\n"
                     f"📦 Total del Drop: {batch.cursor}\n"
