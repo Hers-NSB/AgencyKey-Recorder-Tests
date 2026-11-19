@@ -174,19 +174,59 @@ def post_expression(script):
     return script.replace('POST_SELECTOR', POST_SELECTOR).replace('POST_ID', f'({POST_ID})')
 
 
+# The profile also renders author avatars and icons inside post cards.
+MEDIA_HELPERS = r'''
+ const inView = e => {
+   const r = e.getBoundingClientRect();
+   return r.width>0 && r.height>0 && r.bottom>100 && r.top<innerHeight &&
+     r.right>0 && r.left<innerWidth && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+ };
+ const photos = card => [...card.querySelectorAll('img')].filter(img => {
+   const r = img.getBoundingClientRect();
+   return r.width>=32 && r.height>=32 && inView(img) &&
+     !img.closest('[class*="avatar" i], [class*="post__header" i], [class*="post__author" i]');
+ });
+ const loaded = img => img.complete && img.naturalWidth>0;
+ const drm = card => [...card.querySelectorAll('div, p, span, [role="alert"]')].some(e => {
+   const text = e.textContent.trim();
+   return text.length<250 && /\bDRM\b/i.test(text) &&
+     /^(Su navegador no admite este tipo de medios|Your browser (?:does not|doesn't) support this (?:type of )?media|Enable DRM in this browser|Active el DRM en este navegador)/i.test(text) &&
+     !e.closest('[class*="post__text" i], [class*="post__caption" i]') && inView(e);
+ });
+'''
+
 # A recycled feed removes off-screen cards. Read only currently attached nodes.
-SNAPSHOT = post_expression(r'''() => [...document.querySelectorAll('POST_SELECTOR')].map(e => {
+SNAPSHOT = post_expression(r'''() => {
+ MEDIA_HELPERS
+ return [...document.querySelectorAll('POST_SELECTOR')].map(e => {
  const r=e.getBoundingClientRect();
  return {id:POST_ID(e),top:r.top,bottom:r.bottom,height:r.height,
  pinned:e.classList.contains('m-pinned'),
- readyImage:[...e.querySelectorAll('img')].some(img => {
-   const box=img.getBoundingClientRect();
-   return img.complete && img.naturalWidth>0 && box.width>=32 && box.height>=32 &&
-     box.bottom>100 && box.top<innerHeight && img.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
- }),
+ readyImage:photos(e).some(loaded), drmVisible:drm(e),
  visible:r.bottom>100 && r.top<innerHeight && r.right>0 && r.left<innerWidth
   && r.width>0 && r.height>0 && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})};
-}).filter(p=>p.id && p.visible).sort((a,b)=>a.top-b.top)''')
+ }).filter(p=>p.id && p.visible).sort((a,b)=>a.top-b.top);
+}'''.replace('MEDIA_HELPERS', MEDIA_HELPERS))
+
+PENDING_BATCH_PHOTOS = post_expression(r'''ids => {
+ MEDIA_HELPERS
+ const wanted = new Set(ids);
+ return [...document.querySelectorAll('POST_SELECTOR')].filter(card =>
+   wanted.has(POST_ID(card)) && !card.classList.contains('m-pinned') && inView(card) &&
+   !drm(card) && photos(card).some(img => !loaded(img))).map(POST_ID);
+}'''.replace('MEDIA_HELPERS', MEDIA_HELPERS))
+
+RETRY_BATCH_PHOTO = post_expression(r'''id => {
+ MEDIA_HELPERS
+ const card = [...document.querySelectorAll('POST_SELECTOR')].find(card =>
+   POST_ID(card) === id && !card.classList.contains('m-pinned') && inView(card));
+ if (!card || drm(card)) return;
+ for (const img of photos(card)) {
+   if (!img.complete || loaded(img)) continue;
+   const source = img.hasAttribute('srcset') ? 'srcset' : 'src';
+   if (img.hasAttribute(source)) img.setAttribute(source, img.getAttribute(source));
+ }
+}'''.replace('MEDIA_HELPERS', MEDIA_HELPERS))
 
 IMAGES_READY = post_expression(r'''() => {
  const cards=[...document.querySelectorAll('POST_SELECTOR')].filter(POST_ID);
@@ -303,18 +343,80 @@ FEED_IDLE_TIMEOUT_SECONDS = 180
 SLOW_IMAGE_TIMEOUT_MS = 120_000
 
 
-async def images_ready(page, timeout: int = 20000, *, frame=None) -> None:
+class RecordingCancelled(ValueError):
+    pass
+
+
+class FirstPostOutOfFrame(ValueError):
+    pass
+
+
+class PhotoWaitControl:
+    def __init__(self, notify):
+        self.notify = notify
+        self.pending_post = None
+        self.changed = asyncio.Event()
+        self.cancelled = False
+
+    def resume_check(self, *, cancel=False):
+        if self.pending_post is None:
+            return False
+        if cancel:
+            self.cancelled = True
+        self.changed.set()
+        return True
+
+    async def wait(self, frame, ids):
+        pending = await frame.evaluate(PENDING_BATCH_PHOTOS, ids)
+        if not pending:
+            return
+        self.pending_post = pending[0]
+        try:
+            await self.notify(self.pending_post)
+            while not self.cancelled:
+                pending = await frame.evaluate(PENDING_BATCH_PHOTOS, ids)
+                if not pending:
+                    self.pending_post = None
+                    await self.notify(None)
+                    return
+                if pending[0] != self.pending_post:
+                    self.pending_post = pending[0]
+                    await self.notify(self.pending_post)
+                try:
+                    await asyncio.wait_for(self.changed.wait(), 2)
+                except TimeoutError:
+                    continue
+                self.changed.clear()
+                if not self.cancelled:
+                    await frame.evaluate(RETRY_BATCH_PHOTO, self.pending_post)
+            raise RecordingCancelled('Grabación cancelada')
+        finally:
+            self.pending_post = None
+
+
+async def images_ready(page, timeout: int = 20000, *, frame=None, photo_ids=None, photo_wait=None) -> None:
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+    frame = frame or page.main_frame
+    if photo_ids is not None and not photo_ids:
+        return
     try:
-        await (frame or page.main_frame).wait_for_function(IMAGES_READY, timeout=timeout)
+        if photo_ids is None:
+            await frame.wait_for_function(IMAGES_READY, timeout=timeout)
+        else:
+            await frame.wait_for_function(f'ids => !({PENDING_BATCH_PHOTOS})(ids).length',
+                                          arg=list(photo_ids), timeout=timeout)
     except PlaywrightTimeoutError as error:
+        if photo_wait and photo_ids:
+            await photo_wait.wait(frame, list(photo_ids))
+            return
         raise PlaywrightTimeoutError(IMAGE_TIMEOUT_MESSAGE) from error
 
 
-async def confirm_start(page, frame, newest: str, *, image_timeout: int = 20_000, reframe=False) -> dict:
+async def confirm_start(page, frame, newest: str, *, image_timeout: int = 20_000, reframe=False,
+                        photo_ids=None, photo_wait=None) -> dict:
     # The recycled feed can move the target while visible images settle.
     for attempt in range(4 if reframe else 1):
-        await images_ready(page, timeout=image_timeout, frame=frame)
+        await images_ready(page, timeout=image_timeout, frame=frame, photo_ids=photo_ids, photo_wait=photo_wait)
         if not await frame_is_visible(page, frame):
             raise ValueError('El primer post está en un panel oculto. No se inició el comprobante.')
         await frame.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
@@ -356,7 +458,7 @@ async def confirm_start(page, frame, newest: str, *, image_timeout: int = 20_000
                 await locator.scroll_into_view_if_needed(timeout=1500)
             except PlaywrightTimeout:
                 pass
-    raise ValueError(f'El post {newest} ya no está encuadrado en el panel visible. No se inició el comprobante.')
+    raise FirstPostOutOfFrame(f'El post {newest} ya no está encuadrado en el panel visible. No se inició el comprobante.')
 
 
 def scroll_steps(pixels: int, *, rng=None) -> list[tuple[int, int]]:
@@ -423,7 +525,8 @@ async def scroll_down(page, pixels: int = 190, *, frame=None, anchor=None, smoot
     })
 
 
-async def seek_start(page, newest: str, timeout: float = 120, *, image_timeout: int = 20_000, profile_url=None) -> dict:
+async def seek_start(page, newest: str, timeout: float = 120, *, image_timeout: int = 20_000,
+                     profile_url=None, photo_ids=None) -> dict:
     deadline = monotonic() + timeout
     while monotonic() < deadline:
         if profile_url and not same_profile_route(page.url, profile_url):
@@ -432,23 +535,18 @@ async def seek_start(page, newest: str, timeout: float = 120, *, image_timeout: 
         cards = await frame.evaluate(SNAPSHOT)
         target = next((p for p in cards if p['id'] == newest and not p['pinned']), None)
         if target:
-            locator = frame.locator(
-                f'[id="postId_{newest}"]:not(.m-pinned):visible, '
-                f'[data-post-id="{newest}"]:not(.m-pinned):visible'
-            ).first
-            for _ in range(3):
-                top = await locator.evaluate('e => e.getBoundingClientRect().top', timeout=3000)
-                if 95 <= top <= 145:
-                    break
-                if not await scroll_down(page, round(top - 115), frame=frame, anchor=newest, smooth=False):
-                    break
-                await page.wait_for_timeout(100)
-            await confirm_start(page, frame, newest, image_timeout=image_timeout, reframe=True)
+            try:
+                await confirm_start(page, frame, newest, image_timeout=image_timeout, reframe=True,
+                                    photo_ids=photo_ids)
+            except FirstPostOutOfFrame:
+                await scroll_down(page, -1_000_000, frame=frame, smooth=False)
+                await page.wait_for_timeout(250)
+                continue
             target['_frame'] = frame
             return target
         if not await scroll_down(page, 260, frame=frame, smooth=False):
             await page.wait_for_timeout(250)
-    raise ValueError(f'El feed abrió, pero no se encontró el post {newest} del lote · Pulsa Repetir grabación para reintentar')
+    raise ValueError(f'El feed abrió, pero no pudo encuadrar el post {newest} del lote')
 
 
 class FeedAccessError(ValueError):
@@ -616,23 +714,39 @@ async def wait_for_feed(page, profile_url, *, deadline, preferred_id=None):
     raise FeedAccessError('feed_unverified', f'Mi perfil abrió, pero el feed no mostró publicaciones reconocibles.{target}')
 
 
-async def prepare_feed(page, ids, *, timeout=600, profile_url=None):
+async def prepare_feed(page, ids, *, timeout=600, profile_url=None, photo_ids=None):
     """Wait for the first post. The recording verifies the rest as it scrolls."""
     deadline = monotonic() + timeout
     seek_timeout = FEED_IDLE_TIMEOUT_SECONDS if profile_url else 30
     await wait_for_feed(page, profile_url, deadline=min(deadline, monotonic() + seek_timeout),
                         preferred_id=ids[0])
     options = {'image_timeout': SLOW_IMAGE_TIMEOUT_MS, 'profile_url': profile_url} if profile_url else {}
+    if photo_ids is not None:
+        options['photo_ids'] = photo_ids
     return await seek_start(page, ids[0], timeout=max(.1, min(seek_timeout, deadline - monotonic())), **options)
+
+
+async def mask_other_posts(frame, ids):
+    # Keep the positions of virtualized cards while omitting them from every frame.
+    allowed = ', '.join(f'[id="postId_{pid}"], :not([id^="postId_"])[data-post-id="{pid}"]' for pid in ids)
+    await frame.evaluate('''css => {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync(css);
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    }''', f':is({POST_SELECTOR}):is(.m-pinned, :not(:is({allowed}))) '
+          '{ opacity: 0 !important; pointer-events: none !important; }')
 
 
 async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 600, *,
                        frame=None, seen=None, on_progress=None, reset_on_progress=False,
-                       image_timeout: int = 20_000, profile_url=None, capture=None, photo_ids=()) -> list[str]:
+                       image_timeout: int = 20_000, profile_url=None, capture=None, photo_ids=None,
+                       photo_wait=None, protected_photos=None) -> list[str]:
     frame = frame or await post_frame(page) or page.main_frame
     seen = [] if seen is None else seen
     deadline = monotonic() + timeout
     photographed = set()
+    expected_photos = set(photo_ids or ())
+    protected_photos = protected_photos if protected_photos is not None else set()
     while monotonic() < deadline:
         if capture:
             capture.accepting = False
@@ -643,18 +757,24 @@ async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 
             raise ValueError('El panel de publicaciones se recargó. Repite únicamente la grabación.')
         if not await frame_is_visible(page, frame):
             raise ValueError('El panel de publicaciones quedó oculto durante el recorrido. Repite la grabación.')
-        await images_ready(page, timeout=image_timeout, frame=frame)
+        waiting_since = monotonic() if photo_wait else None
+        await images_ready(page, timeout=image_timeout, frame=frame,
+                           photo_ids=ids if photo_ids is None else photo_ids, photo_wait=photo_wait)
+        if waiting_since is not None:
+            deadline += monotonic() - waiting_since
         _, _, height = await frame_geometry(page, frame)
-        cards = await frame.evaluate(SNAPSHOT)
-        if not cards:
-            await page.wait_for_timeout(250)
-            continue
-        photographed.update(card['id'] for card in cards if card.get('readyImage') and not card['pinned'])
-        if capture and any(card['id'] in ids and not card['pinned'] for card in cards):
+        cards = [card for card in await frame.evaluate(SNAPSHOT) if card['id'] in ids and not card['pinned']]
+        if capture and cards:
             await capture.checkpoint()
             capture.accepting = True
         for card in cards:
-            if card['pinned'] or card['id'] not in ids or card['id'] in seen or not (100 <= card['top'] < height - 40):
+            if card['id'] in expected_photos:
+                if card.get('drmVisible'):
+                    protected_photos.add(card['id'])
+                elif card.get('readyImage'):
+                    photographed.add(card['id'])
+        for card in cards:
+            if card['id'] in seen or not (100 <= card['top'] < height - 40):
                 continue
             expected = ids[len(seen)]
             if card['id'] != expected:
@@ -666,9 +786,9 @@ async def capture_walk(page, ids: list[str], dwell: float = 0, timeout: float = 
             await page.wait_for_timeout(dwell * 1000)
             if reset_on_progress:
                 deadline = monotonic() + timeout
-        last = next((p for p in cards if p['id'] == ids[-1] and not p['pinned']), None)
+        last = next((p for p in cards if p['id'] == ids[-1]), None)
         if last and 100 < last['bottom'] <= height - 20 and seen == ids:
-            if missing_photos := set(photo_ids) - photographed:
+            if missing_photos := expected_photos - photographed - protected_photos:
                 raise ValueError('No se comprobaron las fotos de los posts: ' + ', '.join(sorted(missing_photos)))
             await page.wait_for_timeout(dwell * 1000)
             return seen
@@ -921,7 +1041,8 @@ async def page_has_post(page, url, post_id):
 
 async def record(config: dict, *, fixture: Path | None = None, headless: bool = False, dwell: float = 0,
                  session_path: Path | None = None, on_progress=None, on_preview=None, stop_event=None,
-                 session_state=None, on_session_saved=None, on_browser_failure=None, prepared_page=None) -> Path:
+                 session_state=None, on_session_saved=None, on_browser_failure=None, prepared_page=None,
+                 photo_wait=None) -> Path:
     state = session_path or STATE
     if not fixture and session_state is None and not state.exists():
         raise ValueError('Conecta la sesión compartida de AgencyKey desde la web.')
@@ -934,6 +1055,8 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
               'first_post_id': config['post_ids_newest_first'][0], 'headless': headless, 'post_hold_seconds': dwell}
     save_json(report_path, report)
     capture = TabCapture(output / 'raw')
+    image_ids = config.get('photo_post_ids')
+    protected_photos = set()
     error = None
     def stage(value):
         report['stage'] = value
@@ -977,21 +1100,32 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             try:
                 async with asyncio.timeout(start_limit if fixture else None):
                     first = await prepare_feed(page, config['post_ids_newest_first'], timeout=start_limit,
-                                               profile_url=None if fixture else url)
+                                               profile_url=None if fixture else url, photo_ids=())
             except TimeoutError as exc:
                 raise ValueError(f'Se agotó la búsqueda del primer post {report["first_post_id"]}.') from exc
             print(f'Inicio del comprobante: post {config["post_ids_newest_first"][0]} · segundo plano: {headless}', flush=True)
             stage('marcar inicio del video')
-            if not fixture and (not same_profile_route(page.url, url)
-                                or not frame_matches_model(first['_frame'], url)):
-                raise FeedAccessError('wrong_profile', 'El perfil activo cambió antes de iniciar el comprobante')
-            if verified_username:
-                identity = profile_frame_identity(first['_frame'])
-                if not identity or identity[1] != verified_username:
-                    raise FeedAccessError('wrong_profile', 'El panel del primer post pertenece a otro perfil')
-            report['start_verified'] = await confirm_start(
-                page, first['_frame'], report['first_post_id'], reframe=True,
-                **({} if fixture else {'image_timeout': SLOW_IMAGE_TIMEOUT_MS}))
+            for attempt in range(2):
+                if not fixture and (not same_profile_route(page.url, url)
+                                    or not frame_matches_model(first['_frame'], url)):
+                    raise FeedAccessError('wrong_profile', 'El perfil activo cambió antes de iniciar el comprobante')
+                if verified_username:
+                    identity = profile_frame_identity(first['_frame'])
+                    if not identity or identity[1] != verified_username:
+                        raise FeedAccessError('wrong_profile', 'El panel del primer post pertenece a otro perfil')
+                try:
+                    report['start_verified'] = await confirm_start(
+                        page, first['_frame'], report['first_post_id'], reframe=True,
+                        photo_ids=report['post_ids'] if image_ids is None else image_ids, photo_wait=photo_wait,
+                        **({} if fixture else {'image_timeout': SLOW_IMAGE_TIMEOUT_MS}))
+                    break
+                except FirstPostOutOfFrame:
+                    if attempt:
+                        raise
+                    await scroll_down(page, -1_000_000, frame=first['_frame'], smooth=False)
+                    first = await prepare_feed(page, report['post_ids'], timeout=start_limit,
+                                               profile_url=None if fixture else url, photo_ids=())
+            await mask_other_posts(first['_frame'], report['post_ids'])
             await capture.start(page)
             stage('recorrer posts / cargar imágenes')
             walk_limit = 30 if fixture else FEED_IDLE_TIMEOUT_SECONDS
@@ -999,7 +1133,8 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 async with asyncio.timeout(walk_limit if fixture else None):
                     await capture_walk(page, config['post_ids_newest_first'], dwell=dwell, timeout=walk_limit,
                                        frame=first['_frame'], seen=report['seen'], on_progress=on_progress,
-                                       capture=capture, photo_ids=config.get('photo_post_ids', ()),
+                                       capture=capture, photo_ids=image_ids, photo_wait=photo_wait,
+                                       protected_photos=protected_photos,
                                        **({} if fixture else {'reset_on_progress': True,
                                                               'image_timeout': SLOW_IMAGE_TIMEOUT_MS,
                                                               'profile_url': url}))
@@ -1015,7 +1150,7 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
             error = exc
             report['error_type'] = type(exc).__name__
             if stop_event and stop_event.is_set():
-                exc = ValueError('Grabación detenida · Pulsa Repetir grabación para reintentar el comprobante')
+                exc = ValueError('Grabación detenida · Pulsa Reintentar para volver a grabar el comprobante')
                 error = exc
                 report['error_type'] = 'RecordingStopped'
             if isinstance(exc, FeedAccessError):
@@ -1027,16 +1162,18 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                 if not isinstance(exc, FeedAccessError) and not isinstance(exc, ValueError):
                     reason += f' Siguiente post del lote: {report["next_post_id"]}.'
             report['error'] = f'Etapa: {report["stage"]}. {reason}'
-            try:
-                async with asyncio.timeout(5):
-                    report['diagnostics'] = await failure_diagnostics(page)
-            except TimeoutError:
-                report['diagnostics'] = []
+            if not isinstance(exc, RecordingCancelled):
+                try:
+                    async with asyncio.timeout(5):
+                        report['diagnostics'] = await failure_diagnostics(page)
+                except TimeoutError:
+                    report['diagnostics'] = []
             save_json(report_path, report)
-            from diagnostics import capture_failure
-            await capture_failure(page, kind='grabacion', profile_url=config['profile_url'],
-                                  username=config.get('creator_username'), error=exc,
-                                  status=report.get('error_code'), post_ids=report['post_ids'], stage=report['stage'])
+            if not isinstance(exc, RecordingCancelled):
+                from diagnostics import capture_failure
+                await capture_failure(page, kind='grabacion', profile_url=config['profile_url'],
+                                      username=config.get('creator_username'), error=exc,
+                                      status=report.get('error_code'), post_ids=report['post_ids'], stage=report['stage'])
             print(f'{report["error"]}\nPosts comprobados: {len(report["seen"])}/{len(report["post_ids"])}'
                   f' · siguiente ID: {report["next_post_id"]}\nInforme: {report_path}', flush=True)
             if not headless and not fixture and not page.is_closed() and not (stop_event and stop_event.is_set()):
@@ -1065,6 +1202,8 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
                         on_progress({'stage': 'Aviso: no se pudo actualizar la sesión guardada',
                                      'completed': len(report['seen']), 'total': len(report['post_ids'])})
     try:
+        if isinstance(error, RecordingCancelled):
+            raise error
         if error:
             raise ValueError(report['error']) from error
         if report['seen'] != report['post_ids']:
@@ -1074,7 +1213,8 @@ async def record(config: dict, *, fixture: Path | None = None, headless: bool = 
         duration = await asyncio.to_thread(capture.encode, video)
         report.update(status='complete', capture_validation=2, stage='completo', duration_seconds=round(duration, 2),
                       bytes=video.stat().st_size, sha256=hashlib.sha256(video.read_bytes()).hexdigest(),
-                      video='comprobante.mp4')
+                      video='comprobante.mp4',
+                      drm_photo_ids=[pid for pid in report['post_ids'] if pid in protected_photos])
         if on_progress:
             on_progress({'stage': 'video listo', 'completed': len(report['seen']), 'total': len(report['post_ids'])})
         print(f'Video completo: {video}\nTamaño: {video.stat().st_size / 1_000_000:.2f} MB')

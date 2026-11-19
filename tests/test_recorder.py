@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch, AsyncMock, Mock
 
@@ -205,6 +206,67 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         await self.page.set_content('<p>Sesión vencida o feed vacío</p>')
         with self.assertRaises(ValueError):
             await recorder.seek_start(self.page, '999', timeout=.1)
+
+    async def test_batch_skips_unrelated_posts_and_keeps_the_visible_drm_warning(self):
+        await self.page.set_content('''
+            <style>body{margin:0;padding:110px 0 500px}article{height:190px}img{width:100px;height:100px}</style>
+            <article id="postId_900" class="m-pinned"><img></article>
+            <article id="postId_200"><img><p>Su navegador no admite este tipo de medios.
+            Active el <strong>DRM</strong> en este navegador o utilice otro navegador o dispositivo.</p></article>
+            <article id="postId_800"><img></article>
+            <article data-post-id="100">Último post del lote</article>
+        ''')
+        await recorder.mask_other_posts(self.page.main_frame, ['200', '100'])
+        for selector in ('#postId_900', '#postId_800'):
+            self.assertEqual(await self.page.locator(selector).evaluate('e => getComputedStyle(e).opacity'), '0')
+        self.assertEqual(await self.page.locator('#postId_200').evaluate('e => getComputedStyle(e).opacity'), '1')
+        protected = set()
+        capture = SimpleNamespace(accepting=False, checkpoint=AsyncMock())
+        seen = await recorder.capture_walk(self.page, ['200', '100'], timeout=8, image_timeout=250,
+                                           frame=self.page.main_frame, photo_ids=['200'], capture=capture,
+                                           protected_photos=protected)
+        self.assertEqual(seen, ['200', '100'])
+        self.assertEqual(protected, {'200'})
+        capture.checkpoint.assert_awaited()
+
+    async def test_wait_rechecks_late_photos_in_the_same_tab(self):
+        await self.page.set_content('<article id="postId_200" style="margin-top:120px">'
+                                    '<img style="width:100px;height:100px"></article>')
+        notified = asyncio.Event()
+        changes = []
+
+        async def notice(post_id):
+            changes.append(post_id)
+            notified.set()
+
+        photo_wait = recorder.PhotoWaitControl(notice)
+        waiting = asyncio.create_task(recorder.images_ready(self.page, timeout=100, photo_ids=['200'],
+                                                             photo_wait=photo_wait))
+        try:
+            await asyncio.wait_for(notified.wait(), 3)
+            self.assertFalse(waiting.done())
+            self.assertFalse(self.page.is_closed())
+            await self.page.locator('img').evaluate('''img => { img.src = 'data:image/svg+xml,' + encodeURIComponent(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"/>'); }''')
+            await asyncio.wait_for(waiting, 5)
+            self.assertEqual(changes, ['200', None])
+            self.assertFalse(self.page.is_closed())
+        finally:
+            if not waiting.done():
+                waiting.cancel()
+                await asyncio.gather(waiting, return_exceptions=True)
+
+    async def test_closed_chrome_ends_the_photo_pause(self):
+        await self.page.set_content('<article id="postId_200" style="margin-top:120px">'
+                                    '<img style="width:100px;height:100px"></article>')
+        from playwright.async_api import Error
+
+        async def close_chrome(post_id):
+            await self.browser.close()
+
+        with self.assertRaisesRegex(Error, 'closed'):
+            await recorder.images_ready(self.page, timeout=100, photo_ids=['200'],
+                                        photo_wait=recorder.PhotoWaitControl(close_chrome))
 
     async def test_failure_diagnostics_omit_private_content_and_urls(self):
         await self.page.set_content('<div id="postId_1" style="margin-top:120px;height:500px">Private caption'
