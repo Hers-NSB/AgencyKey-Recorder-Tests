@@ -1,14 +1,16 @@
 # Estado actual · 2026-11-20
 
-Dropper publica desde Telegram y graba el comprobante en la PC de Windows. El panel de Cloudflare administra los bots y muestra las publicaciones confirmadas por fecha y modelo.
+Dropper publica desde Telegram y graba el comprobante en una PC con Windows. El panel de Cloudflare administra los bots y permite consultar las confirmaciones de cada modelo.
 
 ## Resumen diario y recuperación desde Telegram
 
-- Rama `feat/dropper-daily-drops`. En **Drops**, el panel agrupa las publicaciones automáticas y manuales por modelo y día de Caracas. La app sincroniza las confirmaciones pendientes cuando recupera la conexión.
-- Tras un fallo, **Enviar enlace** confirma el post manual y **Omitir post** avanza al siguiente. El comprobante usa los IDs confirmados, en el orden del Drop. La compilación de Windows genera `Dropper.exe`.
-- Validación local con la suite de Python sin navegador, los tests del Worker, la interfaz del resumen con el Worker y la compilación de Cloudflare. Los flujos con Chrome y el EXE se verifican en GitHub Actions.
+- El [PR #35](https://github.com/Hers-NSB/Dropper/pull/35) incorpora el resumen diario por modelo en hora de Caracas. Dropper conserva las confirmaciones pendientes y las sincroniza cuando recupera la conexión.
+- Si falla un post, **Enviar enlace** permite confirmar la publicación manual y **Omitir post** continúa con las demás. El video conserva el orden del muro e incluye los posts automáticos y manuales confirmados.
+- La compilación de Windows genera `Dropper.exe`. Pasaron las [pruebas en Ubuntu y Windows](https://github.com/Hers-NSB/Dropper/actions/runs/44774214889) y la [compilación y prueba del EXE](https://github.com/Hers-NSB/Dropper/actions/runs/44774215246).
 
 ## Producción
 
-- El [panel web](https://agencykey-recorder-tests.datosenviados07.workers.dev/admin) sigue en v8 hasta el despliegue del Worker v9.
-- Tras la revisión del PR, aplicar `cloudflare/schema.sql` en el D1 existente, desplegar el Worker v9 y comprobar `/health` y la sección **Drops**. Instalar el [nuevo EXE oficial](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/releases/latest) cuando lo publique el flujo de Windows en `main`.
+- Pendiente publicar el Worker v9 en el [panel de Cloudflare](https://agencykey-recorder-tests.datosenviados07.workers.dev/admin). Aplicar `cloudflare/schema.sql` a la base D1 existente, desplegar el Worker y verificar `/health` y la sección **Drops**.
+- La [publicación de Windows](https://github.com/Hers-NSB/Dropper/actions/workflows/windows-exe.yml) se ejecuta al integrar en `main`. Instalar `Dropper.exe` desde la [última versión oficial](https://github.com/Hers-NSB/Dropper/releases/latest) cuando aparezca entre los archivos de descarga.
+
+Consulta [README.md](README.md) para configurar los bots, recuperar publicaciones y consultar el resumen.
