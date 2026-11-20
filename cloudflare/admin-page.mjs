@@ -1,17 +1,24 @@
 import {reportZip} from './web-report.mjs';
 
 const PAGE = String.raw`<!doctype html>
-<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>AgencyKey Recorder Tests · Administración</title>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Dropper · Administración</title>
 <style nonce="__NONCE__">
 :root{font:14px/1.5 'Segoe UI',system-ui,sans-serif;color:#eef2fa;background:#10131a;color-scheme:dark;--muted:#a3aec2;--line:#30394a;--panel:#1f2633;--surface:#181d27;--brand:#738bff;--green:#52d9a6;--red:#f68d9d}*{box-sizing:border-box}body{margin:0}button,input,select{font:inherit}button{cursor:pointer;border:1px solid var(--line);background:var(--panel);color:inherit;border-radius:7px;padding:10px 14px;min-height:42px;display:inline-flex;align-items:center;justify-content:center;gap:7px}button:hover{filter:brightness(1.1)}button:disabled{opacity:.5;cursor:default}.primary{background:var(--brand);border-color:var(--brand);color:#10131a}.danger{color:var(--red)}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #90a2ff;outline-offset:3px}input,select{padding:11px;border:1px solid var(--line);border-radius:7px;width:100%;background:var(--panel);color:inherit;min-width:0}input[readonly]{color:var(--green)}[hidden]{display:none!important}h1,h2,h3,p{margin:0}h1{font-size:23px;font-weight:500}h2{font-size:21px;font-weight:500}h3{font-size:17px;font-weight:500}.muted{color:var(--muted);font-size:13px}.brand{font-size:24px;font-weight:500}.top{max-width:1180px;margin:auto;display:flex;align-items:center;justify-content:space-between;padding:24px;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--line)}.actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:18px}.shell{max-width:1180px;margin:auto;display:grid;grid-template-columns:190px minmax(0,1fr);min-height:540px}.nav{padding:26px 18px;display:flex;flex-direction:column;gap:8px}.nav button{border-color:transparent;background:transparent;justify-content:flex-start;text-align:left}.nav button[aria-selected=true]{background:var(--panel);border-color:var(--line)}main{padding:28px 24px;background:var(--surface);min-width:0}.heading{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:20px}.heading .actions{margin:0}.model-name{font-size:16px;font-weight:500}.bot-row{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;padding:18px 0;border-bottom:1px solid var(--line)}.row-actions{display:flex;gap:7px}.row-actions button{font-size:13px;padding:8px 12px}.empty{padding:40px 0;color:var(--muted)}.field{display:grid;gap:7px;margin:17px 0;color:var(--muted);font-size:13px}.error{color:var(--red);font-size:13px;white-space:pre-wrap}.error:not(:empty){margin:12px 0}.status{color:var(--green);font-size:13px;min-height:22px;margin-top:12px}.dialog::backdrop{background:#000b}.dialog{border:1px solid var(--line);border-radius:12px;background:var(--surface);color:inherit;width:470px;max-width:calc(100% - 28px);padding:26px;max-height:calc(100% - 32px);overflow:auto}.dialog .actions{justify-content:flex-end}.settings-form{max-width:520px;margin-top:26px}.settings-form+.settings-form{border-top:1px solid var(--line);padding-top:26px}.settings-form p{margin-top:14px;color:var(--muted);font-size:13px}.settings-form .actions{margin:18px 0}.access-note{font-size:12px;color:var(--muted)}.keep{font-size:12px;color:var(--muted)}.login-wrap{padding:24px 16px}.login-form{max-width:410px;margin:45px auto;padding:28px;background:var(--surface);border:1px solid var(--line);border-radius:12px}.login-form p{margin-top:10px}.top-right{display:flex;gap:12px;align-items:center}
 @media(max-width:680px){.shell{grid-template-columns:1fr}.nav{flex-direction:row;flex-wrap:wrap;padding:14px}main{padding:20px 16px}.top{padding:18px}.dialog{padding:20px}.bot-row{gap:12px}.top .access-note{width:100%}}
 @media(pointer:coarse){input,select{font-size:16px}button{min-height:44px}}
 .report-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.report-actions button{font-size:13px;padding:6px 10px}.report-dialog{width:850px}.report-detail{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.5 monospace;margin:16px 0}.report-image{max-width:100%;height:auto;border:1px solid var(--line)}.row-actions{flex-wrap:wrap}
+#drops-date{width:fit-content}#drops-body article{display:block;margin-bottom:12px}
+#drops-body h2{margin:0}#drops-body ul{padding-left:22px;margin:10px 0 0}#drops-body li{margin:4px 0}
 </style></head><body>
-<header class="top"><div><span class="brand">AgencyKey Recorder Tests</span><span class="muted"> / Administración</span></div><div class="top-right"><button id="logout" hidden>Cerrar sesión</button></div></header>
-<div id="login-view" class="login-wrap" hidden><form id="login-form" class="login-form"><h1 id="login-title">Entrar a AgencyKey Recorder Tests</h1><p id="login-help" class="muted">Introduce tu contraseña de administrador</p><label class="field">Contraseña<input id="admin-password" type="password" autocomplete="current-password" maxlength="256" required></label><label class="field" id="confirm-field" hidden>Repite la contraseña<input id="admin-confirm" type="password" autocomplete="new-password" maxlength="256"></label><button class="primary" id="login-button" type="submit">Entrar</button><div class="error" id="login-error" role="alert"></div></form></div>
-<div class="shell" id="app-view" hidden><nav class="nav" aria-label="Administración"><button id="nav-profiles" aria-selected="true">Bots</button><button id="nav-access" aria-selected="false">Ajustes</button></nav><main>
+<header class="top"><div><span class="brand">Dropper</span><span class="muted"> / Administración</span></div><div class="top-right"><button id="logout" hidden>Cerrar sesión</button></div></header>
+<div id="login-view" class="login-wrap" hidden><form id="login-form" class="login-form"><h1 id="login-title">Entrar a Dropper</h1><p id="login-help" class="muted">Introduce tu contraseña de administrador</p><label class="field">Contraseña<input id="admin-password" type="password" autocomplete="current-password" maxlength="256" required></label><label class="field" id="confirm-field" hidden>Repite la contraseña<input id="admin-confirm" type="password" autocomplete="new-password" maxlength="256"></label><button class="primary" id="login-button" type="submit">Entrar</button><div class="error" id="login-error" role="alert"></div></form></div>
+<div class="shell" id="app-view" hidden><nav class="nav" aria-label="Administración"><button id="nav-profiles" aria-selected="true">Bots</button><button id="nav-drops" aria-selected="false">Drops</button><button id="nav-access" aria-selected="false">Ajustes</button></nav><main>
 <section id="profiles-section"><div class="heading"><h1>Bots</h1><div class="actions"><button id="reload">Actualizar</button><button class="primary" id="add">Añadir bot</button></div></div><div class="bot-row"><div><h3>Sesión compartida de AgencyKey</h3><span class="muted" id="recording-session-status">Consultando sesión…</span></div><button id="connect-recording">Conectar AgencyKey</button></div><div id="profiles-error" class="error" role="alert"></div><div id="profiles-body" aria-label="Bots configurados"></div><div class="empty" id="empty" hidden>No hay bots configurados</div></section>
+<section id="drops-section" hidden>
+<div class="heading"><div><h1>Resumen diario de Drops</h1><p class="muted">Hora de Caracas</p></div><div class="actions"><button id="drops-today">Hoy</button></div></div>
+<label class="field">Fecha<input id="drops-date" type="date"></label>
+<p class="muted" id="drops-status" role="status"></p><div id="drops-body"></div>
+</section>
 <section id="access-section" hidden><h1>Ajustes</h1><form id="agency-form" class="settings-form"><h3>AgencyKey</h3><label class="field">API única<input id="agency-key" type="password" autocomplete="new-password" maxlength="512" placeholder="API para todos los bots"></label><div class="actions"><button class="primary" id="save-api" type="submit">Guardar API y cargar modelos</button></div><div class="error" id="api-error" role="alert"></div><div class="status" id="api-status" aria-live="polite"></div></form>
 <form id="access-form" class="settings-form"><h3>Acceso de las apps</h3><label class="field">Nueva contraseña<input id="access-input" type="password" autocomplete="new-password" minlength="8" maxlength="256" required></label><div class="actions"><button class="primary" id="rotate" type="submit">Cambiar contraseña</button></div><p>Se pedirá la nueva contraseña en la próxima descarga de configuraciones.</p><div class="error" id="access-error" role="alert"></div><div class="status" id="access-status" aria-live="polite"></div></form>
 <form id="admin-password-form" class="settings-form"><h3>Acceso de administrador</h3><label class="field">Contraseña actual<input id="admin-current" type="password" autocomplete="current-password" maxlength="256" required></label><label class="field">Nueva contraseña<input id="admin-next" type="password" autocomplete="new-password" minlength="12" maxlength="256" required></label><div class="actions"><button class="primary" id="save-admin-password" type="submit">Cambiar mi contraseña</button></div><div class="error" id="admin-password-error" role="alert"></div><div class="status" id="admin-password-status" aria-live="polite"></div></form></section>
@@ -26,6 +33,7 @@ const PAGE = String.raw`<!doctype html>
 const $=id=>document.getElementById(id);
 const reportZip=__REPORT_ZIP__;
 let currentWebReport=null;
+let dropsRequest=0,followToday=true;
 let profiles=[],creators=[],editing=null,saving=false,checking=false,resolveRequest=0;
 let confirmResolve=null,recordingTimer=null,recordingBusy=false,recordingGeneration=0,recordingJob=null,feedBusy=false,feedCancel=false,activeFeed=null;
 const feedRows=new Map();
@@ -47,17 +55,66 @@ async function api(path,options={}) {
 }
 function showLogin(){
  feedCancel=true;
+ dropsRequest++;followToday=true;$('drops-date').value='';$('drops-body').replaceChildren();
  currentWebReport=null;$('web-report-image').removeAttribute('src');$('web-report-image').hidden=true;$('web-report-detail').textContent='';$('web-report-dialog').close();
  stopRecordingPoll();$('recording-dialog').close();if(confirmResolve)finishConfirm(false);
  profiles=[];creators=[];feedRows.clear();renderPending=false;resolveRequest++;$('profiles-body').replaceChildren();$('profile-form').reset();$('agency-form').reset();$('access-form').reset();$('admin-password-form').reset();$('admin-password').value='';$('admin-confirm').value='';
  if($('profile-dialog').open)$('profile-dialog').close();$('app-view').hidden=true;$('logout').hidden=true;$('login-view').hidden=false;
- const setup=Boolean(setupToken);$('login-title').textContent=setup?'Crea tu contraseña':'Entrar a AgencyKey Recorder Tests';$('login-help').textContent=setup?'Esta contraseña privada será solo para administrar la web':'Introduce tu contraseña de administrador';$('confirm-field').hidden=!setup;$('admin-confirm').required=setup;$('admin-password').minLength=setup?12:1;$('admin-password').autocomplete=setup?'new-password':'current-password';$('login-button').textContent=setup?'Crear contraseña y entrar':'Entrar';
+ const setup=Boolean(setupToken);$('login-title').textContent=setup?'Crea tu contraseña':'Entrar a Dropper';$('login-help').textContent=setup?'Esta contraseña privada será solo para administrar la web':'Introduce tu contraseña de administrador';$('confirm-field').hidden=!setup;$('admin-confirm').required=setup;$('admin-password').minLength=setup?12:1;$('admin-password').autocomplete=setup?'new-password':'current-password';$('login-button').textContent=setup?'Crear contraseña y entrar':'Entrar';
 }
 async function showApp(){$('login-view').hidden=true;$('app-view').hidden=false;$('logout').hidden=false;$('admin-password').value='';$('admin-confirm').value='';section('profiles');await resumeRecordingConnection();await reload();await recordingStatus();try{const data=await api('/settings');$('api-status').textContent=data.api_configured?'API configurada':'API sin configurar';}catch(error){$('api-error').textContent=error.message;}}
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();$('login-error').textContent='';if(setupToken&&$('admin-password').value!==$('admin-confirm').value){$('login-error').textContent='Las contraseñas no coinciden';return;}$('login-button').disabled=true;try{await api(setupToken?'/setup':'/login',{method:'POST',body:JSON.stringify({password:$('admin-password').value,...(setupToken?{token:setupToken}:{})})});setupToken='';await showApp();}catch(error){$('login-error').textContent=error.message;}finally{$('login-button').disabled=false;}});
 $('logout').addEventListener('click',async()=>{if(!await askConfirm('¿Cerrar sesión?','Tendrás que entrar de nuevo para administrar tus bots.','Cerrar sesión'))return;try{await api('/logout',{method:'POST',body:'{}'});showLogin();}catch(error){$('profiles-error').textContent=error.message;}});
 $('admin-password-form').addEventListener('submit',async event=>{event.preventDefault();if(!await askConfirm('¿Cambiar tu contraseña?','Las demás sesiones de administración tendrán que iniciar sesión de nuevo.','Cambiar contraseña'))return;$('save-admin-password').disabled=true;$('admin-password-error').textContent='';try{await api('/password',{method:'PUT',body:JSON.stringify({current_password:$('admin-current').value,password:$('admin-next').value})});$('admin-password-form').reset();$('admin-password-status').textContent='Contraseña de administrador cambiada';}catch(error){$('admin-password-error').textContent=error.message;}finally{$('save-admin-password').disabled=false;}});
-function section(which){const list=which==='profiles';$('profiles-section').hidden=!list;$('access-section').hidden=list;$('nav-profiles').setAttribute('aria-selected',String(list));$('nav-access').setAttribute('aria-selected',String(!list));$('status').textContent='';}
+function section(which){
+ for(const name of ['profiles','drops','access']){
+  $(name+'-section').hidden=name!==which;
+  $('nav-'+name).setAttribute('aria-selected',String(name===which));
+ }
+ $('status').textContent='';
+ if(which==='drops')void loadDrops();
+}
+const dropTime = new Intl.DateTimeFormat('es-VE',{timeZone:'America/Caracas',hour:'2-digit',minute:'2-digit'});
+function counted(total,singular,plural){return total+' '+(total===1?singular:plural);}
+function postCounts(automatic,manual){
+ return [counted(automatic+manual,'post','posts'),counted(automatic,'automático','automáticos'),counted(manual,'manual','manuales')].join(' · ');
+}
+async function loadDrops(){
+ const generation=++dropsRequest;
+ const date=followToday?'':$('drops-date').value;
+ try{
+  const data=await api('/drops'+(date?'?date='+encodeURIComponent(date):''));
+  if(generation!==dropsRequest)return;
+  $('drops-date').value=data.date;$('drops-date').max=data.today;
+  const models=new Map();
+  for(const drop of data.drops){
+   if(!models.has(drop.creator_id))models.set(drop.creator_id,{name:drop.creator_name,drops:[],auto:0,manual:0});
+   const model=models.get(drop.creator_id);
+   model.drops.push(drop);model.auto+=drop.automatic;model.manual+=drop.manual;
+  }
+  const cards=document.createDocumentFragment();
+  for(const model of models.values()){
+   const card=document.createElement('article');card.className='bot-row';
+   const heading=document.createElement('h2');heading.textContent=model.name;
+   const total=document.createElement('div');total.className='muted';
+   total.textContent=model.drops.length+(model.drops.length===1?' Drop · ':' Drops · ')+postCounts(model.auto,model.manual);
+   const list=document.createElement('ul');
+   for(const drop of model.drops){
+    const item=document.createElement('li');
+    item.textContent=dropTime.format(new Date(drop.last_at*1000))+' · '+postCounts(drop.automatic,drop.manual);
+    list.append(item);
+   }
+   card.append(heading,total,list);cards.append(card);
+  }
+  $('drops-body').replaceChildren(cards);
+  $('drops-status').textContent=models.size?'':'No hay publicaciones confirmadas para esta fecha';
+ }catch(error){
+  if(generation===dropsRequest){$('drops-body').replaceChildren();$('drops-status').textContent=error.message;}
+ }
+}
+$('drops-date').addEventListener('change',()=>{followToday=!$('drops-date').value;void loadDrops();});
+$('drops-today').addEventListener('click',()=>{followToday=true;void loadDrops();});
+setInterval(()=>{if(!$('app-view').hidden&&!$('drops-section').hidden&&!document.hidden)void loadDrops();},45000);
 function render(){
  if(feedBusy){renderPending=true;return;}
  feedRows.clear();$('profiles-body').replaceChildren();$('empty').hidden=profiles.length>0;
@@ -186,7 +243,7 @@ $('cancel').addEventListener('click',close);$('profile-dialog').addEventListener
 async function deleteProfile(profile,button){if(!await askConfirm('¿Eliminar este bot?','Se eliminará la configuración de '+profile.creator.name+'. Sus publicaciones se conservarán.','Eliminar bot'))return;button.disabled=true;try{await api('/profiles/'+profile.id,{method:'DELETE',headers:{'If-Match':String(profile.revision)}});await reload();}catch(error){$('profiles-error').textContent=error.message;button.disabled=false;}}
 $('agency-form').addEventListener('submit',async event=>{event.preventDefault();if(!await askConfirm('¿Actualizar la API de AgencyKey?','La API se utilizará para todos los bots configurados.','Actualizar API'))return;$('save-api').disabled=true;$('api-error').textContent='';try{const key=$('agency-key').value.trim();if(!key)throw new Error('Introduce la API de AgencyKey');const result=await api('/agencykey',{method:'PUT',body:JSON.stringify({api_key:key})});$('agency-key').value='';creators=result.creators;$('api-status').textContent='API guardada · '+creators.length+' modelos disponibles';}catch(error){$('api-error').textContent=error.message;}finally{$('save-api').disabled=false;}});
 $('access-form').addEventListener('submit',async event=>{event.preventDefault();if(!await askConfirm('¿Cambiar la contraseña de las apps?','Se pedirá la nueva contraseña en la próxima descarga de configuraciones.','Cambiar contraseña'))return;$('rotate').disabled=true;$('access-error').textContent='';try{await api('/access',{method:'POST',body:JSON.stringify({code:$('access-input').value})});$('access-input').value='';$('access-status').textContent='Contraseña cambiada';}catch(error){$('access-error').textContent=error.message;}finally{$('rotate').disabled=false;}});
-$('nav-profiles').addEventListener('click',()=>section('profiles'));$('nav-access').addEventListener('click',()=>section('access'));$('add').addEventListener('click',()=>openProfile());$('reload').addEventListener('click',reload);
+$('nav-profiles').addEventListener('click',()=>section('profiles'));$('nav-drops').addEventListener('click',()=>section('drops'));$('nav-access').addEventListener('click',()=>section('access'));$('add').addEventListener('click',()=>openProfile());$('reload').addEventListener('click',reload);
 function finishConfirm(value){const resolve=confirmResolve;confirmResolve=null;$('confirm-dialog').close();if(resolve)resolve(value);}
 function askConfirm(title,message,label){if(confirmResolve)return Promise.resolve(false);$('confirm-title').textContent=title;$('confirm-message').textContent=message;$('confirm-accept').textContent=label;$('confirm-dialog').showModal();$('confirm-cancel').focus();return new Promise(resolve=>confirmResolve=resolve);}
 $('confirm-cancel').addEventListener('click',()=>finishConfirm(false));$('confirm-accept').addEventListener('click',()=>finishConfirm(true));$('confirm-dialog').addEventListener('cancel',event=>{event.preventDefault();finishConfirm(false);});

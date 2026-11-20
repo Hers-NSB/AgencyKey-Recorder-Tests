@@ -628,11 +628,57 @@ async function desktopRecordingJob(request,env) {
   return json({active:false});
 }
 
+const caracasDate = new Intl.DateTimeFormat('sv-SE', {
+  timeZone:'America/Caracas', year:'numeric', month:'2-digit', day:'2-digit',
+});
+
+async function reportDropPublications(request, env) {
+  const input = await body(request, 32768);
+  if (!Array.isArray(input?.posts) || input.posts.length < 1 || input.posts.length > 50)
+    throw new ApiError(400, 'Envía entre 1 y 50 publicaciones');
+  const latest = Math.floor(Date.now()/1000) + 86400;
+  const statements = input.posts.map(post => {
+    if (!post || typeof post.drop_id !== 'string' || !/^[a-f0-9]{32}$/.test(post.drop_id) ||
+        typeof post.post_id !== 'string' || !/^[1-9][0-9]{0,24}$/.test(post.post_id) ||
+        typeof post.creator_name !== 'string' || !post.creator_name.trim() || post.creator_name.length > 256 ||
+        !Number.isSafeInteger(post.position) || post.position < 1 ||
+        typeof post.manual !== 'boolean' || !Number.isSafeInteger(post.confirmed_at) ||
+        post.confirmed_at < 0 || post.confirmed_at > latest)
+      throw new ApiError(400, 'Publicación inválida');
+    const id = creatorId(post.creator_id);
+    const day = caracasDate.format(new Date(post.confirmed_at*1000));
+    return env.DB.prepare(`INSERT INTO drop_publications
+      (creator_id, creator_name, drop_id, position, post_id, manual, confirmed_at, local_date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`)
+      .bind(id,post.creator_name.trim(),post.drop_id,post.position,post.post_id,
+            Number(post.manual),post.confirmed_at,day);
+  });
+  await env.DB.batch(statements);
+  return json({accepted:true});
+}
+
+async function dailyDrops(request, env) {
+  const today = caracasDate.format(new Date());
+  const day = new URL(request.url).searchParams.get('date') ?? today;
+  const date = new Date(day + 'T00:00:00Z');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !Number.isFinite(date.getTime()) ||
+      date.toISOString().slice(0,10) !== day)
+    throw new ApiError(400, 'Introduce una fecha válida');
+  const {results} = await env.DB.prepare(`SELECT d.creator_id,
+    COALESCE(p.creator_name, MAX(d.creator_name)) AS creator_name, d.drop_id,
+    SUM(1 - d.manual) AS automatic, SUM(d.manual) AS manual, MAX(d.confirmed_at) AS last_at
+    FROM drop_publications d LEFT JOIN profiles p ON p.creator_id = d.creator_id
+    WHERE d.local_date = ? GROUP BY d.creator_id, d.drop_id
+    ORDER BY creator_name COLLATE NOCASE, d.creator_id, last_at DESC, d.drop_id`).bind(day).all();
+  return json({date:day,today,drops:results});
+}
+
 async function adminHandle(request, env, path) {
   if (path === '/v1/admin/login' && request.method === 'POST') return adminLogin(request,env);
   if (path === '/v1/admin/setup' && request.method === 'POST') return adminLogin(request,env,true);
   await authorizeAdmin(request, env);
   if (request.method !== 'GET') originCheck(request);
+  if (path === '/v1/admin/drops' && request.method === 'GET') return dailyDrops(request,env);
   if (path.startsWith('/v1/admin/recording-session')) return recordingAdmin(request,env,path);
   if (path === '/v1/admin/logout' && request.method === 'POST') {
     await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(await sessionId(sessionToken(request))).run();
@@ -731,9 +777,10 @@ async function handle(request, env) {
       'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
       'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`}});
   }
-  if (path === '/health' && request.method === 'GET') return json({service: 'agencykey-recorder-tests', version: 8});
+  if (path === '/health' && request.method === 'GET') return json({service: 'dropper', version: 9});
   if (path.startsWith('/v1/admin/')) return adminHandle(request, env, path);
   await authorize(request, env);
+  if (path==='/v1/drop-publications' && request.method==='POST') return reportDropPublications(request,env);
   if (path==='/v1/recording-desktop-job') return desktopRecordingJob(request,env);
   if (path==='/v1/recording-session') {
     if (request.method==='GET') {

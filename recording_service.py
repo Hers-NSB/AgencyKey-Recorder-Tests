@@ -344,7 +344,9 @@ class RecordingCoordinator:
 
     @staticmethod
     def missing_ids(batch):
-        return [number for number in range(1, len(batch.order) + 1) if number not in batch.published_ids]
+        skipped = set(getattr(batch, 'skipped', ()))
+        return [number for number in range(1, len(batch.order) + 1)
+                if number not in batch.published_ids and number not in skipped]
 
     async def start(self, batch, bot, chat_id, application, *, resend=False, preparation=None):
         if self.busy:
@@ -354,6 +356,9 @@ class RecordingCoordinator:
         if missing:
             await bot.send_message(chat_id, 'Para grabar también los posts manuales, indica sus IDs: '
                                    + ', '.join(map(str, missing)))
+            return
+        if not batch.published_ids:
+            await bot.send_message(chat_id, 'Este Drop no tiene posts publicados')
             return
         path = self.job_path(chat_id)
         previous = json.loads(path.read_text()) if path.exists() else {}
@@ -393,6 +398,7 @@ class RecordingCoordinator:
         return SimpleNamespace(id=job['batch_id'], status='done', creator=self.creator,
                                order=list(range(len(ids))), published_ids={i+1: value for i, value in enumerate(ids)},
                                photo_post_ids=job.get('photo_post_ids', []),
+                               post_positions=job.get('post_positions'),
                                started_wall_at=job.get('started_wall_at'), session_total=job.get('session_total', len(ids)),
                                rejected=job.get('rejected', []))
 
@@ -400,14 +406,18 @@ class RecordingCoordinator:
         self.last_recording_step = None
         job = dict(previous or {})
         job.update(batch_id=batch.id, chat_id=chat_id, creator_id=int(self.creator.external_id))
-        job['post_ids_oldest_first'] = [batch.published_ids[n] for n in range(1, len(batch.order)+1)]
+        positions = sorted(batch.published_ids)
+        job['post_ids_oldest_first'] = [batch.published_ids[n] for n in positions]
+        job['post_positions'] = getattr(batch, 'post_positions', None) or positions
+        total = len(positions)
         if hasattr(batch, 'received'):
             job['photo_post_ids'] = [batch.published_ids[n] for n, message_id in enumerate(batch.order, 1)
-                                     if message_id in batch.received and batch.received[message_id].photo_id]
+                                     if n in batch.published_ids and message_id in batch.received
+                                     and batch.received[message_id].photo_id]
         else:
             job.setdefault('photo_post_ids', getattr(batch, 'photo_post_ids', []))
         job.setdefault('started_wall_at', getattr(batch, 'started_wall_at', None) or time())
-        job.setdefault('session_total', getattr(batch, 'session_total', 0) or len(batch.order))
+        job.setdefault('session_total', getattr(batch, 'session_total', 0) or total)
         job.setdefault('rejected', list(getattr(batch, 'rejected', [])))
         path = self.job_path(chat_id)
         try:
@@ -416,15 +426,15 @@ class RecordingCoordinator:
                 report_path = None
                 job.pop('report', None)
             if report_path is None:
-                self.progress({'stage': 'preparando comprobante', 'completed': 0, 'total': len(batch.order)})
+                self.progress({'stage': 'preparando comprobante', 'completed': 0, 'total': total})
                 job['status'] = 'recording'
                 recorder.save_json(path, job)
                 try:
                     await bot.send_message(chat_id, '🎥 Preparando video…', reply_markup=ReplyKeyboardRemove())
                 except TelegramError:
                     log.warning('Comprobante | No se pudo entregar el aviso inicial; la grabación continúa.')
-                ids = [recorder.post_id(batch.published_ids[n]) for n in range(len(batch.order), 0, -1)]
-                post_numbers = {pid: number for number, pid in enumerate(reversed(ids), 1)}
+                ids = [recorder.post_id(pid) for pid in reversed(job['post_ids_oldest_first'])]
+                post_numbers = dict(zip(reversed(ids), job['post_positions']))
                 config = recorder.validate_config({'profile_url': recorder.model_profile_url(self.creator.external_id),
                                                    'creator_username': self.creator.username,
                                                    'post_ids_newest_first': ids, 'photo_post_ids': job['photo_post_ids']})
@@ -442,7 +452,7 @@ class RecordingCoordinator:
                 self.active_photo_wait = (chat_id, photo_wait)
                 options = {}
                 if self.session_client:
-                    self.progress({'stage': 'cargando sesión de AgencyKey', 'completed': 0, 'total': len(batch.order)})
+                    self.progress({'stage': 'cargando sesión de AgencyKey', 'completed': 0, 'total': total})
                     shared = None
                     if preparation:
                         try:
@@ -471,7 +481,7 @@ class RecordingCoordinator:
             caption = f'✅ Comprobante · {len(report["seen"])} posts · {self.creator.name}'
             if drm_ids := report.get('drm_photo_ids'):
                 protected = set(drm_ids)
-                display = [str(number) for number, pid in enumerate(job['post_ids_oldest_first'], 1)
+                display = [str(number) for number, pid in zip(job['post_positions'], job['post_ids_oldest_first'])
                            if recorder.post_id(pid) in protected]
                 numbers = ', '.join(display)
                 caption += ('\n🔒 Fotos sin verificar por DRM · Posts ' + numbers if len(numbers) < 800 else
@@ -488,7 +498,7 @@ class RecordingCoordinator:
             await self.send_summary(job, bot, chat_id, path)
         except recorder.RecordingCancelled:
             job.update(status='cancelled')
-            self.progress({'stage': 'Grabación cancelada', 'completed': 0, 'total': len(batch.order)})
+            self.progress({'stage': 'Grabación cancelada', 'completed': 0, 'total': total})
             recorder.save_json(path, job)
             try:
                 await bot.send_message(chat_id, '⏹️ Grabación cancelada. Puedes volver a grabar el mismo Drop',
@@ -514,7 +524,7 @@ class RecordingCoordinator:
             if uncertain and 'La entrega no está confirmada' not in detail:
                 detail += ' Comprueba si el video llegó antes de reenviarlo.'
             message = detail if uncertain else f'{detail} Pulsa Reintentar video.'
-            self.emit('recording', {'stage': message, 'error': True, 'completed': 0, 'total': len(batch.order)})
+            self.emit('recording', {'stage': message, 'error': True, 'completed': 0, 'total': total})
             log.error('Comprobante | %s | Entrega incierta: %s', detail, uncertain)
             try:
                 await bot.send_message(chat_id, '⚠️ Envío sin confirmar · Revisa el chat antes de reenviar'
@@ -537,7 +547,7 @@ class RecordingCoordinator:
             else:
                 step = self.last_recording_step or 'Preparando el comprobante'
                 message = f'{step}. {recorder.recording_error_detail(error)}'
-            self.emit('recording', {'stage': message, 'error': True, 'completed': 0, 'total': len(batch.order)})
+            self.emit('recording', {'stage': message, 'error': True, 'completed': 0, 'total': total})
             log.error('%s', message)
             recorder.save_json(path, job)
             retry = self.proof_keyboard(RETRY_RECORDING)

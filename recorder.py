@@ -1255,7 +1255,7 @@ def verified_video(report_path: Path) -> tuple[dict, Path]:
 TOKEN_DIALOG_SCRIPT = r"""
 Add-Type -AssemblyName System.Windows.Forms
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'AgencyKey Recorder Tests - Telegram'
+$form.Text = 'Dropper - Telegram'
 $form.ClientSize = New-Object System.Drawing.Size(470,155)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
@@ -1374,7 +1374,7 @@ def menu(*, headless: bool = False) -> None:
     print(f'Chrome instalado · navegador {"oculto" if headless else "visible"} · movimiento continuo.')
     print(f'Carpeta de datos y videos: {ROOT}')
     while True:
-        print('\nAgencyKey Recorder Tests — independiente de Dropper\n'
+        print('\nDropper · grabador independiente\n'
               '1. Configurar posts existentes\n2. Conectar AgencyKey\n3. Grabar prueba local\n'
               '4. Enviar último video al bot de pruebas\n5. Generar demo sin AgencyKey\n0. Salir')
         choice = input('Opción: ').strip()

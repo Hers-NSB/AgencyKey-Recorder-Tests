@@ -27,7 +27,9 @@ PUBLISH_SLOW = "🐢 Publicar lento"
 RESUME_SLOW = "🐢 Continuar lento"
 CANCEL = "❌ Cancelar Drop"
 CONTINUE = "Continuar"
-CONTROL_TEXTS = {NEW_BATCH, PUBLISH, PUBLISH_NORMAL, PUBLISH_SLOW, CANCEL, CONTINUE,
+SEND_LINK = "Enviar enlace"
+SKIP_POST = "Omitir post"
+CONTROL_TEXTS = {NEW_BATCH, PUBLISH, PUBLISH_NORMAL, PUBLISH_SLOW, CANCEL, CONTINUE, SEND_LINK, SKIP_POST,
                  RESUME_SLOW, RETRY_RECORDING, CANCEL_RECORDING, RETRY_DELIVERY, RESEND_PROOF,
                  "🎥 Repetir grabación"}
 
@@ -39,7 +41,7 @@ def without_final_periods(text):
 
 class DropperBot:
     def __init__(self, agencykey: AgencyKey, creator=None, recording=None, events=None,
-                 telegram_users=None, journal=None):
+                 telegram_users=None, journal=None, publication_reporting=False):
         self.agencykey = agencykey
         self.creator = creator
         self.session = SessionStats()
@@ -47,6 +49,7 @@ class DropperBot:
         self.events = events
         self.telegram_users = None if telegram_users is None else frozenset(telegram_users)
         self.journal = journal
+        self.publication_reporting = publication_reporting
         if recording:
             recording.completion_markup = ReplyKeyboardMarkup([[NEW_BATCH]], resize_keyboard=True, is_persistent=True)
 
@@ -56,7 +59,8 @@ class DropperBot:
         try:
             self.events.put_nowait(("publication", {
                 "id": batch.id, "status": batch.status, "stage": stage, "total": len(batch.order) or len(batch.received),
-                "completed": batch.cursor, "manual": tuple(batch.manual), "mention": batch.rejected_mention,
+                "completed": len(batch.published_ids), "processed": batch.cursor, "manual": tuple(batch.manual),
+                "skipped": tuple(batch.skipped), "mention": batch.rejected_mention,
                 "failed": batch.failed, "uncertain": batch.uncertain, "rate_limited": batch.retry_at is not None,
             }))
         except Full:
@@ -87,8 +91,10 @@ class DropperBot:
         if pending_error and await self.notify(context, update.effective_chat.id, pending_error):
             context.user_data.pop("telegram_error", None)
 
-    def checkpoint(self, chat_id, batch):
+    def checkpoint(self, chat_id, batch, *, publication=False, manual=False):
         if self.journal:
+            if publication and self.publication_reporting:
+                self.journal.queue_publication(batch, manual=manual)
             self.journal.save(chat_id, batch)
 
     @staticmethod
@@ -100,10 +106,8 @@ class DropperBot:
                 return ReplyKeyboardRemove()
             rows.extend([[PUBLISH_NORMAL, PUBLISH_SLOW], [CANCEL]])
         elif batch and batch.status == "paused":
-            if batch.failed and not batch.recovery_delivered:
-                rows = [[CONTINUE]]
-            elif batch.failed:
-                rows = [[CONTINUE], [CANCEL]]
+            if batch.failed:
+                rows = [[SEND_LINK, SKIP_POST]]
             else:
                 rows = [[CONTINUE, RESUME_SLOW] if batch.retry_at is not None else [CONTINUE], [CANCEL]]
         elif batch and batch.status == "publishing":
@@ -135,6 +139,7 @@ class DropperBot:
         handlers = {NEW_BATCH: self.start, PUBLISH: self.publish, PUBLISH_NORMAL: self.publish,
                     PUBLISH_SLOW: self.publish, CANCEL: self.cancel,
                     CONTINUE: self.resume, RESUME_SLOW: self.resume,
+                    SEND_LINK: self.prompt_manual_link, SKIP_POST: self.skip_post,
                     RETRY_RECORDING: self.video, RETRY_DELIVERY: self.video, RESEND_PROOF: self.video,
                     CANCEL_RECORDING: self.cancel_video, "🎥 Repetir grabación": self.video}
         if message.text in handlers:
@@ -219,6 +224,32 @@ class DropperBot:
             return
         await self.publish_batch(batch, update, context)
 
+    async def prompt_manual_link(self, update, context):
+        batch = context.user_data.get("batch")
+        if not batch or batch.status != "paused" or not batch.failed:
+            await self.status(update, context)
+            return
+        chat_id = update.effective_chat.id
+        if not batch.recovery_delivered:
+            await self.send_recovery(context, chat_id, batch)
+            self.checkpoint(chat_id, batch)
+        await self.reply(update, context, f"🔗 Pega el enlace de OnlyFans del post #{batch.cursor + 1}",
+                         reply_markup=self.keyboard(context))
+
+    async def skip_post(self, update, context):
+        batch = context.user_data.get("batch")
+        if not batch or batch.status != "paused" or not batch.failed:
+            await self.status(update, context)
+            return
+        if self.recording and self.recording.busy:
+            await self.reply(update, context, "🎥 Espera a que termine el comprobante actual")
+            return
+        batch.skip_failed_post()
+        chat_id = update.effective_chat.id
+        self.checkpoint(chat_id, batch)
+        await self.notify(context, chat_id, f"⏭️ Post #{batch.cursor} omitido · Continuando")
+        await self.publish_batch(batch, update, context)
+
     async def complete_manual_post(self, batch, update, context):
         from recorder import post_id
         link = (update.effective_message.text or "").strip()
@@ -228,6 +259,8 @@ class DropperBot:
             if parsed.scheme != "https":
                 raise ValueError()
             value = post_id(link)
+            if len(value) > 25:
+                raise ValueError()
             if username and parsed.path.strip("/").split("/")[-1].casefold() != username.casefold():
                 raise ValueError()
         except ValueError:
@@ -244,18 +277,18 @@ class DropperBot:
         number = batch.cursor + 1
         batch.published_ids[number] = value
         batch.confirm_manual()
-        self.checkpoint(update.effective_chat.id, batch)
+        self.checkpoint(update.effective_chat.id, batch, publication=True, manual=True)
         self.session.manual += 1
         await self.notify(context, update.effective_chat.id, f"✅ Post #{number} confirmado · Continuando")
         await self.publish_batch(batch, update, context)
 
     async def publish_batch(self, batch, update, context):
         batch.start_timer()
-        preparation = self.recording.prepare_browser() if self.recording else None
+        preparation = self.recording.prepare_browser() if self.recording and (batch.published_ids or batch.cursor < len(batch.order)) else None
         transferred = False
         try:
             transferred = await self.publish_with_preparation(batch, update, context, preparation)
-            if batch.status == 'done' and self.recording:
+            if batch.status == 'done' and self.recording and batch.published_ids:
                 await self.cleanup(context, update.effective_chat.id, batch)
         finally:
             if preparation and not transferred:
@@ -291,10 +324,18 @@ class DropperBot:
                 except TelegramError:
                     log.debug("No se pudo actualizar el progreso", exc_info=True)
 
+        last_position = batch.cursor
+
+        def checkpoint():
+            nonlocal last_position
+            publication = batch.cursor > last_position and batch.cursor in batch.published_ids
+            self.checkpoint(chat_id, batch, publication=publication)
+            last_position = batch.cursor
+
         try:
             await batch.publish(self.agencykey, download_photo, progress, session=self.session,
                                 on_stage=lambda stage: self.show_batch(batch, stage),
-                                checkpoint=lambda: self.checkpoint(chat_id, batch))
+                                checkpoint=checkpoint)
             self.show_batch(batch)
         finally:
             if loading:
@@ -302,7 +343,7 @@ class DropperBot:
                     await context.bot.delete_message(chat_id, loading.message_id)
                 except TelegramError:
                     log.debug("No se pudo retirar el progreso", exc_info=True)
-        if batch.status == 'done' and self.recording:
+        if batch.status == 'done' and self.recording and batch.published_ids:
             batch.session_total = self.session.total
             options = {'preparation': preparation} if preparation else {}
             return await self.recording.start(batch, context.bot, chat_id, context.application, **options)
@@ -421,20 +462,22 @@ class DropperBot:
 
     async def report(self, update, context):
         batch = context.user_data["batch"]
-        confirmed = batch.confirmed
+        confirmed = len(batch.published_ids)
         if batch.status == "done":
             await self.cleanup(context, update.effective_chat.id, batch)
-            if self.recording:
+            if self.recording and batch.published_ids:
                 await self.notify(context, update.effective_chat.id,
                                   '🎥 Comprobante en proceso' if self.recording.busy else '🎥 Comprobante del último Drop',
                                   reply_markup=self.recording.proof_keyboard(RETRY_DELIVERY) if not self.recording.busy
                                   else self.recording.photo_wait_keyboard(update.effective_chat.id))
                 return
             text = (f"✅ Drop finalizado · {batch.creator.name}\n"
-                    f"📦 Total del Drop: {batch.cursor}\n"
+                    f"📦 Total del Drop: {confirmed}\n"
                     f"⏱ Tiempo total: {batch.elapsed_text}\n\n"
                     f"🔄 Bot · {batch.creator.name}\n"
                     f"🗂 Total de post: {self.session.total} posts\n")
+            if batch.skipped:
+                text += f"\n⏭️ Posts omitidos: {len(batch.skipped)}"
             if batch.rejected:
                 text += f"\n⚠️ Mensajes rechazados: {len(batch.rejected)}"
         elif batch.status == "publishing":
@@ -442,10 +485,8 @@ class DropperBot:
         elif batch.failed:
             number = batch.cursor + 1
             text = (f"⏸️ Falló el post #{number} de {len(batch.order)} · {batch.creator.name}\n"
-                    f"🔗 Pega el enlace del post #{number} para continuar. "
-                    "Si ya aparece en el muro, usa ese enlace. Si falta, publícalo manualmente primero.")
-            if not batch.recovery_delivered:
-                text += "\nPulsa Continuar si necesitas que vuelva a enviarte el contenido del post."
+                    f"🔗 Pega el enlace del post #{number} si ya aparece en el muro. "
+                    "Pulsa Omitir post si no lo vas a publicar.")
         else:
             text = (f"⏸ Drop pausado · {batch.creator.name}\n"
                     f"Post #{batch.cursor + 1} de {len(batch.order)}\n")
@@ -510,7 +551,7 @@ class DropperBot:
         batch.status = "cancelled"
         self.checkpoint(update.effective_chat.id, batch)
         self.show_batch(batch)
-        confirmed = batch.confirmed
+        confirmed = len(batch.published_ids)
         log.info("Drop %s cancelado con %d publicaciones confirmadas.", batch.id, confirmed)
         text = "🗑️ Drop cancelado"
         if batch.uncertain:
@@ -535,8 +576,9 @@ async def on_error(update, context):
             data.pop("telegram_error", None)
 
 
-def register(app, agencykey, creator, recording=None, events=None, *, telegram_users=(), journal=None):
-    bot = DropperBot(agencykey, creator, recording, events, telegram_users, journal)
+def register(app, agencykey, creator, recording=None, events=None, *, telegram_users=(), journal=None,
+             publication_reporting=False):
+    bot = DropperBot(agencykey, creator, recording, events, telegram_users, journal, publication_reporting)
     app.add_handler(TypeHandler(Update, bot.authorize), group=-1)
     app.add_handler(CommandHandler("start", bot.start))
     app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, bot.menu))

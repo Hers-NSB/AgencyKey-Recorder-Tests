@@ -185,6 +185,27 @@ class ProofTests(unittest.IsolatedAsyncioTestCase):
             await coordinator.start(self.batch_with_id(job['batch_id']), bot,42,app)
             bot.send_video.assert_awaited_once()
 
+    async def test_recording_uses_only_published_ids_across_an_omitted_photo(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(recorder, 'ROOT', Path(folder)):
+            batch = self.batch()
+            batch.published_ids.pop(2)
+            batch.skipped = [2]
+            batch.manual = [3]
+            batch.received = {2: Post('omitido', 'photo-2'), 3: Post('manual', 'photo-3')}
+            video, report_path = Path(folder)/'video.mp4', Path(folder)/'report.json'
+            video.write_bytes(b'fixture')
+            bot = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=8)),
+                                  send_video=AsyncMock(return_value=SimpleNamespace(message_id=7)))
+            coordinator = RecordingCoordinator(batch.creator)
+            self.assertEqual(coordinator.missing_ids(batch), [])
+            with patch.object(recorder, 'record', new=AsyncMock(return_value=report_path)) as record, \
+                 patch.object(recorder, 'verified_video', return_value=({'seen':['103','101']}, video)):
+                await coordinator.run(batch, bot, 42)
+            config = record.call_args.args[0]
+            self.assertEqual(config['post_ids_newest_first'], ['103', '101'])
+            self.assertEqual(config['photo_post_ids'], ['103'])
+            self.assertEqual(coordinator.restore_batch(42).post_positions, [1, 3])
+
     def batch_with_id(self, value):
         batch=self.batch();batch.id=value;return batch
 

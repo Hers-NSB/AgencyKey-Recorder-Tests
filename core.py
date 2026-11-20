@@ -38,6 +38,7 @@ class Batch:
     error: str = ""
     uncertain: bool = False
     manual: list[int] = field(default_factory=list)
+    skipped: list[int] = field(default_factory=list)
     published_ids: dict[int, str] = field(default_factory=dict)
     failed: bool = False
     recovery_delivered: bool = False
@@ -67,7 +68,7 @@ class Batch:
 
     @property
     def confirmed(self) -> int:
-        return self.cursor - len(self.manual)
+        return self.cursor - len(self.manual) - len(self.skipped)
 
     @property
     def rejected_mention(self) -> str | None:
@@ -78,14 +79,21 @@ class Batch:
         return None
 
     def confirm_manual(self) -> None:
+        self.resolve_failed_post(self.manual)
+
+    def skip_failed_post(self) -> None:
+        self.resolve_failed_post(self.skipped)
+
+    def resolve_failed_post(self, positions: list[int]) -> None:
         if self.status != "paused" or not self.failed or self.cursor >= len(self.order):
-            raise ValueError("No hay una publicación fallida para confirmar.")
-        self.manual.append(self.cursor + 1)
-        log.info("Drop %s | Post #%d confirmado manualmente por el usuario.", self.id, self.cursor + 1)
+            raise ValueError("No hay una publicación fallida pendiente.")
+        positions.append(self.cursor + 1)
         self.cursor += 1
         self.failed = False
         self.awaiting_confirmation = False
         self.recovery_delivered = False
+        self.uncertain = False
+        self.error = ""
 
     async def publish(
         self, agencykey: AgencyKey, download_photo: Callable[[str], Awaitable[bytes]],

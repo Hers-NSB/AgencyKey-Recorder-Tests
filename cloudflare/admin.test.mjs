@@ -21,6 +21,19 @@ test('password administrator configures a shared API, selects models and rotates
  await page.locator('#nav-profiles').click();await page.locator('#add').click();await page.locator('#creator-id option[value="52"]').waitFor({state:'attached'});await page.locator('#telegram-token').fill(firstToken);await page.locator('#creator-id').selectOption('52');await page.waitForFunction(()=>document.getElementById('creator-name').value==='Lilith');await page.locator('#save').click();await page.getByRole('button',{name:'Editar Lilith',exact:true}).waitFor();assert.equal(sqlite.prepare('SELECT name FROM profiles').get().name,'Lilith');
  await page.locator('#add').click();await page.locator('#creator-id option[value="99"]').waitFor({state:'attached'});await page.locator('#telegram-token').fill(secondToken);await page.locator('#creator-id').selectOption('99');await page.waitForFunction(()=>document.getElementById('creator-name').value==='Lola');await page.locator('#save').click();await page.getByRole('button',{name:'Editar Lola',exact:true}).waitFor();
  assert.equal((await (await desktop(env,'GET','/v1/profiles')).json()).profiles.length,2);
+ const drop = {drop_id:'a'.repeat(32),position:1,post_id:'101',creator_id:52,creator_name:'Lilith',
+  manual:false,confirmed_at:Date.parse('2026-11-16T04:01:00Z')/1000};
+ assert.equal((await desktop(env,'POST','/v1/drop-publications',{posts:[drop,
+  {...drop,position:3,post_id:'103',manual:true},
+  {...drop,creator_id:99,creator_name:'Lola',post_id:'207'}]})).status,200);
+ await page.locator('#nav-drops').click();
+ const date = page.locator('#drops-date');
+ await date.fill('2026-11-16');
+ await page.locator('#drops-body article').filter({hasText:'Lilith'}).getByText('1 Drop · 2 posts · 1 automático · 1 manual').waitFor();
+ await page.locator('#drops-body article').filter({hasText:'Lola'}).getByText('1 Drop · 1 post · 1 automático · 0 manuales').waitFor();
+ await date.fill('2026-11-15');
+ await page.locator('#drops-status').filter({hasText:'No hay publicaciones'}).waitFor();
+ await page.locator('#nav-profiles').click();
  await page.getByRole('button',{name:'Editar Lilith',exact:true}).click();await page.locator('#creator-id option[value="52"]').waitFor({state:'attached'});upstream.ofNames[52]='Lilith actualizada';await page.locator('#save').click();await page.getByRole('button',{name:'Editar Lilith actualizada',exact:true}).waitFor();
  await page.getByRole('button',{name:'Eliminar Lola',exact:true}).click();await page.locator('#confirm-accept').click();await page.waitForFunction(()=>document.querySelectorAll('#profiles-body .bot-row').length===1);
  await page.setViewportSize({width:390,height:850});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.setViewportSize({width:1120,height:900});await mkdir('ui-checks',{recursive:true});await page.screenshot({path:'ui-checks/dropper-panel.png',fullPage:true});

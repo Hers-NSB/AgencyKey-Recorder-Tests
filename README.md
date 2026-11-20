@@ -1,4 +1,4 @@
-# AgencyKey Recorder Tests
+# Dropper
 
 Aplicación de Windows que publica los mensajes reenviados a un bot de Telegram en el muro de la modelo asignada mediante AgencyKey y envía un comprobante en video. La publicación, la grabación y los registros se ejecutan en la PC donde se abre la app.
 
@@ -6,7 +6,7 @@ Aplicación de Windows que publica los mensajes reenviados a un bot de Telegram 
 
 - Windows de 64 bits, Google Chrome instalado e internet.
 - Una API de AgencyKey y un bot de Telegram.
-- [Descargar el EXE oficial para Windows](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/releases/latest/download/AgencyKeyRecorderTests.exe). Funciona sin instalar Python.
+- [Descargar el EXE oficial para Windows](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/releases/latest). Funciona sin instalar Python.
 
 ## Primeros pasos
 
@@ -24,7 +24,7 @@ La app debe permanecer abierta para verificar, publicar y grabar. Las verificaci
 
 1. En el panel, edita el bot y añade los `@usuarios` de Telegram autorizados. Una lista vacía bloquea la publicación. Al reconocer un usuario en una PC, la app lo vincula a su ID de Telegram para evitar que otra cuenta reutilice ese nombre.
 2. Configura una sola clave de AgencyKey en **Ajustes**. La app descarga la clave y el token del bot usando su contraseña general. Compártela únicamente con quienes puedan usar las configuraciones de todos los bots.
-3. Si falla un post, el bot indica su número y pide su enlace. Si el muro ya lo muestra, pega ese enlace. Si falta, publícalo manualmente y pega el enlace para reanudar. La app conserva el avance del lote tras reiniciar.
+3. Si falla un post, el bot muestra **Enviar enlace** y **Omitir post** debajo del teclado. Usa **Enviar enlace** y pega el enlace de OnlyFans si lo publicaste manualmente. Usa **Omitir post** si no lo publicaste. El bot continúa y graba los posts confirmados del Drop. La app conserva el avance del lote tras reiniciar.
 4. El comprobante graba los posts del Drop en el orden del muro, del más reciente al más antiguo. Chrome permanece oculto y las publicaciones ajenas al Drop se excluyen del video y de la espera de fotos.
 5. Tras 120 segundos sin cargar una foto del Drop, Telegram avisa qué post está pendiente. Chrome sigue en ese punto y la grabación continúa automáticamente cuando aparece la foto. **Reintentar** vuelve a comprobarla y, si Chrome ya se cerró, inicia otra grabación del mismo Drop. **Cancelar grabación** detiene solo el comprobante.
 6. Si Chrome muestra un aviso de DRM en un post del Drop, el comprobante incluye el post tal como aparece e indica que su foto quedó sin verificar.
@@ -38,7 +38,7 @@ Para conservar un número limitado de días de videos y diagnósticos locales, c
 | Verificación manual desde la web | En la fila de la modelo: **Ver detalle** o **Descargar reporte**. |
 | Publicación o grabación en la app | **Ver registro → Guardar registro** en la app. |
 
-Los reportes de web y app son independientes. **Reintentar** en Telegram solo vuelve a grabar el comprobante si el intento anterior terminó. Si falla una publicación, **Continuar** permite reanudar tras indicar el enlace del post.
+Los reportes de web y app son independientes. **Reintentar** en Telegram solo vuelve a grabar el comprobante si el intento anterior terminó. En el panel web, abre **Drops** para consultar las publicaciones automáticas y manuales confirmadas por fecha de Caracas y modelo. El historial se alimenta desde la app actualizada.
 
 ## Estado del proyecto
 

@@ -8,7 +8,7 @@ const route='/v1/admin/profiles/'+firstId;
 const credentials='/v1/profiles/'+firstId+'/credentials';
 beforeEach(async()=>{const state=makeEnvironment();env=state.env;db=state.sqlite;upstream=installUpstream();assert.equal((await admin(env,'PUT','/v1/admin/agencykey',{api_key:input.api_key})).status,200);upstream.calls=[];});
 test('serves a public login page but requires a private admin session for data',async()=>{
- const response=await request(env,'GET','/admin');assert.equal(response.status,200);assert.match(response.headers.get('content-security-policy'),/frame-ancestors 'none'/);const html=await response.text();assert.ok(html.includes('Entrar a AgencyKey Recorder Tests'));assert.ok(!html.includes(env.ADMIN_TOKEN));assert.ok(!html.includes(env.ENCRYPTION_KEY));
+ const response=await request(env,'GET','/admin');assert.equal(response.status,200);assert.match(response.headers.get('content-security-policy'),/frame-ancestors 'none'/);const html=await response.text();assert.ok(html.includes('Entrar a Dropper'));assert.ok(!html.includes(env.ADMIN_TOKEN));assert.ok(!html.includes(env.ENCRYPTION_KEY));
  for(const path of ['/v1/admin/session','/v1/admin/profiles']){
   assert.equal((await request(env,'GET',path)).status,401);
   assert.equal((await request(env,'GET',path,undefined,{'Cf-Access-Authenticated-User-Email':'owner@example.test',Authorization:'Bearer '+env.ADMIN_TOKEN},{access:{getIdentity:async()=>({email:'owner@example.test'})}})).status,401);
@@ -496,4 +496,31 @@ test('a recoverable verification expires after its maximum lifetime',async()=>{
  db.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify(row),'recording_desktop_job');
  assert.equal((await (await admin(env,'POST',root+'/check',{id:first.id})).json()).status,'desktop_offline');
  assert.equal((await admin(env,'POST',root+'/feed/'+firstId,{request_id:crypto.randomUUID()})).status,202);
+});
+
+test('daily summaries group confirmed publications by Drop and model in Caracas time', async()=>{
+ const path = '/v1/drop-publications';
+ const drop = 'a'.repeat(32), otherDrop = 'b'.repeat(32);
+ const beforeMidnight = Date.parse('2026-11-16T03:59:00Z')/1000;
+ const afterMidnight = Date.parse('2026-11-16T04:01:00Z')/1000;
+ const post = (post_id, options={})=>({post_id, creator_id:52, creator_name:'Modelo A',
+   drop_id:drop, position:1, manual:false, confirmed_at:beforeMidnight, ...options});
+ const posts = [
+  post('101'),
+  post('103',{position:3,confirmed_at:afterMidnight}),
+  post('104',{position:4,manual:true,confirmed_at:afterMidnight}),
+  post('105',{drop_id:otherDrop,confirmed_at:afterMidnight}),
+  post('101',{creator_id:99,creator_name:'Modelo B',confirmed_at:afterMidnight}),
+ ];
+ assert.equal((await request(env,'POST',path,{posts})).status,401);
+ assert.equal((await request(env,'GET','/v1/admin/drops')).status,401);
+ assert.equal((await desktop(env,'POST',path,{posts:[post('999'),post('invalid')]})).status,400);
+ for (let i=0;i<2;i++) assert.equal((await desktop(env,'POST',path,{posts})).status,200);
+ const previous = await (await admin(env,'GET','/v1/admin/drops?date=2026-11-15')).json();
+ assert.deepEqual(previous.drops.map(d=>[d.creator_id,d.drop_id,d.automatic,d.manual]),[[52,drop,1,0]]);
+ const next = await (await admin(env,'GET','/v1/admin/drops?date=2026-11-16')).json();
+ assert.deepEqual(next.drops.map(d=>[d.creator_id,d.drop_id,d.automatic,d.manual]),
+   [[52,drop,1,1],[52,otherDrop,1,0],[99,drop,1,0]]);
+ assert.equal(db.prepare('SELECT COUNT(*) AS count FROM drop_publications').get().count,5);
+ assert.equal((await admin(env,'GET','/v1/admin/drops?date=2026-02-30')).status,400);
 });

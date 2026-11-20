@@ -79,6 +79,9 @@ class CloudClient:
         register_secrets(result.get('telegram_token'), result.get('api_key'))
         return result
 
+    def report_publications(self, records):
+        return self.request('POST', '/v1/drop-publications', json={'posts': records})
+
     def claim_recording_job(self):
         return self.request('POST', '/v1/recording-desktop-job').get('job')
 

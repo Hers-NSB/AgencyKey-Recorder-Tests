@@ -294,6 +294,8 @@ class BotPanel:
         self.publication_id = data['id']
         status = data['status']
         total, completed = data['total'], data['completed']
+        processed = data.get('processed', completed)
+        skipped = data.get('skipped', ())
         if status == 'collecting':
             detail = f'{total} en cola' if total else 'Esperando mensajes reenviados en Telegram'
             self.show_publication('Drop abierto', detail)
@@ -309,28 +311,30 @@ class BotPanel:
             if data.get('rate_limited'):
                 detail = 'El servicio pidió una pausa. Consulta en Telegram cuándo puedes continuar.'
             elif mention:
-                detail = f'AgencyKey rechazó la mención {mention}\nPublica manualmente y pulsa Continuar en Telegram'
+                detail = f'AgencyKey rechazó la mención {mention}\nUsa Enviar enlace u Omitir post en Telegram'
             elif data['uncertain']:
-                detail = 'Revisa el feed antes de publicar manualmente y pulsa Continuar en Telegram'
+                detail = 'Revisa el muro y elige Enviar enlace u Omitir post en Telegram'
             elif data['failed']:
-                detail = 'Publica manualmente y pulsa Continuar en Telegram · Ver detalle en el registro'
+                detail = 'Usa Enviar enlace u Omitir post en Telegram · Ver detalle en el registro'
             else:
                 detail = 'La publicación se detuvo antes de enviar el siguiente mensaje'
             self.show_publication(f'Drop pausado · {completed} de {total} publicados', detail, '#edbe70')
         else:
             stage = data['stage']
-            if completed < total and stage != 'Publicación confirmada':
-                stage = f'{stage} · Mensaje #{total - completed}'
+            if processed < total and stage != 'Publicación confirmada':
+                stage = f'{stage} · Mensaje #{total - processed}'
             self.show_publication(f'Drop en curso · {completed} de {total} publicados', stage, ACCENT)
-        self.publication_progress.configure(mode='determinate', maximum=max(1, total), value=completed)
+        self.publication_progress.configure(mode='determinate', maximum=max(1, total), value=processed)
         self.publication_progress.pack(fill='x', pady=(6, 2))
         if total:
-            start = max(0, min(completed - 1, total - 3))
+            start = max(0, min(processed - 1, total - 3))
             rows = ['Orden de publicación · Del último al primero']
             for index in range(start, min(total, start + 3)):
-                if index < completed:
+                if index + 1 in skipped:
+                    state = 'Omitido'
+                elif index < processed:
                     state = 'Publicado manualmente' if index + 1 in data['manual'] else 'Publicado'
-                elif index == completed:
+                elif index == processed:
                     state = 'En pausa' if status == 'paused' else 'En curso'
                 else:
                     state = 'Pendiente'
@@ -448,7 +452,7 @@ class DropperWindow:
         self.recording_job_error = None
         self.recording_job_stop = threading.Event()
         self.update_hint = tk.StringVar()
-        root.title('AgencyKey Recorder Tests · Centro de bots')
+        root.title('Dropper · Centro de bots')
         root.configure(bg=BG)
         width, height, x, y = initial_geometry(root.winfo_screenwidth(), root.winfo_screenheight(), work_area())
         root.geometry(f'{width}x{height}+{x}+{y}')
@@ -458,7 +462,7 @@ class DropperWindow:
         self.styles()
         top = tk.Frame(root, bg=BG, padx=26, pady=22)
         top.pack(fill='x')
-        label(top, 'AgencyKey Recorder Tests', size=18, bold=True, bg=BG).pack(side='left')
+        label(top, 'Dropper', size=18, bold=True, bg=BG).pack(side='left')
         self.sync_button = ttk.Button(top, text='Actualizar', command=self.refresh)
         self.sync_button.pack(side='right')
         tk.Label(top, textvariable=self.update_hint, bg=BG, fg=ACCENT).pack(side='right', padx=12)
@@ -946,7 +950,7 @@ class DropperWindow:
 
     def close(self):
         if any(panel.controller.running for panel in self.panels.values()):
-            if not messagebox.askyesno('Cerrar AgencyKey Recorder Tests', '¿Detener los bots y cerrar? Los Drops pendientes se perderán', parent=self.root):
+            if not messagebox.askyesno('Cerrar Dropper', '¿Detener los bots y cerrar? Los Drops pendientes se perderán', parent=self.root):
                 return
             self.closing = True
             self.recording_job_stop.set()
@@ -1120,7 +1124,7 @@ def capture_window(root, target):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--version', action='version', version='AgencyKey Recorder Tests 1.0')
+    parser.add_argument('--version', action='version', version='Dropper 1.0')
     parser.add_argument('--smoke-test', action='store_true')
     parser.add_argument('--screenshot')
     parser.add_argument('--connection-test', metavar='REPORT')
