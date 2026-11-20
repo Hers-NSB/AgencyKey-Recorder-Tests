@@ -5,7 +5,7 @@ import httpx
 from config import register_secrets
 from connection import tls_context, system_proxy, network_message
 
-DEFAULT_URL = 'https://agencykey-recorder-tests.datosenviados07.workers.dev'
+DEFAULT_URL = 'https://dropper.datosenviados07.workers.dev'
 
 
 class CloudError(Exception):
