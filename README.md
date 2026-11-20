@@ -10,7 +10,7 @@ Aplicación de Windows que publica los mensajes reenviados a un bot de Telegram 
 
 ## Primeros pasos
 
-1. En el [panel web](https://agencykey-recorder-tests.datosenviados07.workers.dev/admin), guarda la clave global de AgencyKey y la contraseña de las apps en **Ajustes**. En **Bots**, configura el token de Telegram, la modelo y los `@usuarios` autorizados para cada bot.
+1. En el [panel web](https://dropper.datosenviados07.workers.dev/admin), guarda la clave global de AgencyKey y la contraseña de las apps en **Ajustes**. En **Bots**, configura el token de Telegram, la modelo y los `@usuarios` autorizados para cada bot.
 2. Abre el EXE, pulsa **Actualizar** e introduce la contraseña de las apps cuando se solicite.
 3. Con la app abierta, pulsa **Conectar AgencyKey** en la web e inicia sesión en la ventana de Chrome.
 4. Pulsa **Verificar Mi perfil** desde la web. No hace falta iniciar el bot para comprobar la modelo.
@@ -18,7 +18,7 @@ Aplicación de Windows que publica los mensajes reenviados a un bot de Telegram 
 
 Se admiten mensajes de texto y fotos individuales con texto. El lote se publica del último mensaje reenviado al primero. Si el Drop contiene publicaciones confirmadas, el bot envía el video y la confirmación al mismo chat.
 
-La app debe permanecer abierta para verificar, publicar y grabar. Las verificaciones reutilizan Chrome al cambiar de modelo y reintentan las cargas incompletas o los cortes de conexión; puedes detenerlas con **Cancelar verificación**. Si recargas la web, se retoma la comprobación pendiente. La búsqueda de posts comienza al grabar, después de confirmar la identidad de la modelo. **Actualizar** descarga configuraciones; para actualizar la aplicación hay que descargar y abrir el nuevo EXE.
+La app debe permanecer abierta para verificar, publicar y grabar. Las verificaciones reutilizan Chrome al cambiar de modelo y reintentan las cargas incompletas o los cortes de conexión; puedes detenerlas con **Cancelar verificación**. Si recargas la web, se retoma la comprobación pendiente. La búsqueda de posts comienza al grabar, después de confirmar la identidad de la modelo. **Actualizar** descarga configuraciones. Instala el último `Dropper.exe` para conectar la aplicación al dominio `dropper.datosenviados07.workers.dev`.
 
 ## Acceso y recuperación
 

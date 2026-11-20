@@ -10,7 +10,7 @@ Dropper publica desde Telegram y graba el comprobante en una PC con Windows. El 
 
 ## Producción
 
-- Pendiente publicar el Worker v9 en el [panel de Cloudflare](https://agencykey-recorder-tests.datosenviados07.workers.dev/admin). Aplicar `cloudflare/schema.sql` a la base D1 existente, desplegar el Worker y verificar `/health` y la sección **Drops**.
-- La [publicación de Windows](https://github.com/Hers-NSB/Dropper/actions/workflows/windows-exe.yml) se ejecuta al integrar en `main`. Instalar `Dropper.exe` desde la [última versión oficial](https://github.com/Hers-NSB/Dropper/releases/latest) cuando aparezca entre los archivos de descarga.
+- Worker v9 activo en el [panel de Cloudflare](https://dropper.datosenviados07.workers.dev/admin). La base D1 existente ya contiene el esquema de **Drops**. Se comprobó que `/health` devuelve la versión 9, el panel incluye el resumen y la consulta requiere sesión de administrador.
+- El [workflow de Windows](https://github.com/Hers-NSB/Dropper/actions/workflows/windows-exe.yml) compila y publica `Dropper.exe` desde `main`. Usa la [última versión oficial](https://github.com/Hers-NSB/Dropper/releases/latest) para conectar la app al nuevo dominio de Dropper.
 
 Consulta [README.md](README.md) para configurar los bots, recuperar publicaciones y consultar el resumen.

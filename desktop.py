@@ -1135,7 +1135,7 @@ def main():
         try:
             client = CloudClient('dropper-connectivity-check')
             health = client.request('GET','/health')
-            if health.get('service') != 'agencykey-recorder-tests':
+            if health.get('service') != 'dropper':
                 raise CloudError('Respuesta de configuración inválida')
             try:
                 client.list_profiles()
