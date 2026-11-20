@@ -1,23 +1,16 @@
-# Estado actual · 2026-11-18
+# Estado actual · 2026-11-20
 
-AgencyKey Recorder Tests ejecuta los bots, la publicación, la grabación y los registros en la PC de Windows. El panel web guarda la configuración y permite solicitar la verificación de Mi perfil con la app abierta y el bot detenido.
+Dropper publica desde Telegram y graba el comprobante en una PC con Windows. El panel de Cloudflare administra los bots y permite consultar las confirmaciones de cada modelo.
 
-## Corrección de CPU del Worker
+## Resumen diario y recuperación desde Telegram
 
-- Rama `fix/cloudflare-desktop-auth-cpu`. El Worker reutiliza durante 24 horas una comprobación cifrada de la contraseña de la app. La comprobación caduca o se invalida al rotar la contraseña. El EXE instalado conserva el protocolo y la contraseña.
-- Los tests del Worker cubren ambas consultas periódicas, el arranque de otra instancia, la caducidad, la revocación y las contraseñas Unicode. Tras desplegar, comprobar que las dos rutas responden HTTP 200 y revisar si Cloudflare vuelve a registrar `exceededCpu`.
+- El [PR #35](https://github.com/Hers-NSB/Dropper/pull/35) incorpora el resumen diario por modelo en hora de Caracas. Dropper conserva las confirmaciones pendientes y las sincroniza cuando recupera la conexión.
+- Si falla un post, **Enviar enlace** permite confirmar la publicación manual y **Omitir post** continúa con las demás. El video conserva el orden del muro e incluye los posts automáticos y manuales confirmados.
+- La compilación de Windows genera `Dropper.exe`. Pasaron las [pruebas en Ubuntu y Windows](https://github.com/Hers-NSB/Dropper/actions/runs/44774214889) y la [compilación y prueba del EXE](https://github.com/Hers-NSB/Dropper/actions/runs/44774215246).
 
 ## Producción
 
-- [Panel web v8](https://agencykey-recorder-tests.datosenviados07.workers.dev/admin) activo. Incluye la clave global de AgencyKey, los tokens de Telegram, los `@usuarios` autorizados y la verificación de Mi perfil.
-- El [EXE oficial](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/releases/latest) se genera desde `main`. El flujo de Windows comprueba el arranque sin Python y compara los archivos publicados con los probados.
-- El comprobante en Chrome oculto incluye únicamente los posts del Drop. Telegram permite reintentar la carga o cancelar tras 120 segundos. Las fotos con aviso de DRM se identifican como no verificadas en el comprobante.
+- Pendiente publicar el Worker v9 en el [panel de Cloudflare](https://agencykey-recorder-tests.datosenviados07.workers.dev/admin). Aplicar `cloudflare/schema.sql` a la base D1 existente, desplegar el Worker y verificar `/health` y la sección **Drops**.
+- La [publicación de Windows](https://github.com/Hers-NSB/Dropper/actions/workflows/windows-exe.yml) se ejecuta al integrar en `main`. Instalar `Dropper.exe` desde la [última versión oficial](https://github.com/Hers-NSB/Dropper/releases/latest) cuando aparezca entre los archivos de descarga.
 
-## Validación
-
-- Las pruebas cubren publicaciones fijadas ajenas al Drop, fotos que cargan tarde, avisos de DRM, cierre de Chrome y cancelar o reintentar desde Telegram.
-- [Pruebas de Windows y Ubuntu](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/workflows/tests.yml) y [compilación del EXE](https://github.com/Hers-NSB/AgencyKey-Recorder-Tests/actions/workflows/windows-exe.yml).
-
-## Uso
-
-Consulta [README.md](README.md) para descargar el EXE, configurar los bots y recuperar lotes o comprobantes. Los errores del bot se consultan en el registro de la app y los de verificación en el panel web.
+Consulta [README.md](README.md) para configurar los bots, recuperar publicaciones y consultar el resumen.

@@ -1,12 +1,12 @@
 import unittest
 from queue import Queue
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 
 from agencykey import AgencyKeyError, Creator, PublishRateLimited, UnconfirmedPost
-from bot import CANCEL, CONTINUE, NEW_BATCH, PUBLISH, PUBLISH_NORMAL, PUBLISH_SLOW, RESUME_SLOW, DropperBot, on_error
+from bot import CANCEL, CONTINUE, NEW_BATCH, PUBLISH, PUBLISH_NORMAL, PUBLISH_SLOW, RESUME_SLOW, SEND_LINK, SKIP_POST, DropperBot, on_error
 from core import Batch, Post
 
 
@@ -31,7 +31,7 @@ def batch_with_posts(count=3):
 
 
 class PublishingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_pause_shows_only_continue_and_link_confirms_manual(self):
+    async def test_pause_shows_manual_options_and_link_confirms_manual(self):
         api = SimpleNamespace(publish_text=AsyncMock(side_effect=[101, AgencyKeyError("fallo"), 103]))
         bot = DropperBot(api)
         ctx = context()
@@ -46,7 +46,11 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         ctx.bot.copy_message.assert_awaited_once_with(chat_id=123, from_chat_id=123, message_id=2)
         keyboard = ctx.bot.send_message.call_args.kwargs["reply_markup"]
         self.assertIsInstance(keyboard, ReplyKeyboardMarkup)
-        self.assertEqual([[button.text for button in row] for row in keyboard.keyboard], [[CONTINUE]])
+        self.assertEqual([[button.text for button in row] for row in keyboard.keyboard],
+                         [[SEND_LINK, SKIP_POST]])
+        send_link = update(SEND_LINK)
+        await bot.menu(send_link, ctx)
+        self.assertIn("Pega el enlace de OnlyFans", send_link.effective_message.reply_text.call_args.args[0])
         await bot.menu(update(CONTINUE), ctx)
         ctx.bot.copy_message.assert_awaited_once_with(chat_id=123, from_chat_id=123, message_id=2)
         self.assertEqual((batch.status, batch.cursor), ("paused", 1))
@@ -61,6 +65,22 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         await bot.menu(update(CONTINUE), ctx)
         self.assertEqual(api.publish_text.await_count, 3)
 
+    async def test_omitting_failed_post_preserves_following_posts_and_reports_only_confirmed(self):
+        api = SimpleNamespace(publish_text=AsyncMock(side_effect=[101, AgencyKeyError("fallo"), 103]))
+        journal = SimpleNamespace(save=Mock(), queue_publication=Mock())
+        bot = DropperBot(api, journal=journal, publication_reporting=True)
+        ctx = context()
+        batch = batch_with_posts()
+        ctx.user_data["batch"] = batch
+        await bot.publish_batch(batch, update(), ctx)
+        await bot.menu(update(SKIP_POST), ctx)
+
+        self.assertEqual((batch.status, batch.cursor, batch.skipped), ("done", 3, [2]))
+        self.assertEqual(batch.published_ids, {1: "101", 3: "103"})
+        self.assertEqual(bot.session.total, 2)
+        self.assertEqual(journal.queue_publication.call_count, 2)
+        self.assertIn("Total del Drop: 2", ctx.bot.send_message.call_args.args[1])
+
     async def test_unconfirmed_last_post_is_not_retried(self):
         api = SimpleNamespace(publish_text=AsyncMock(side_effect=UnconfirmedPost("sin confirmar")))
         batch = batch_with_posts(1)
@@ -70,7 +90,7 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         await bot.publish_batch(batch, update(), ctx)
         self.assertTrue(batch.uncertain)
         await bot.menu(update(CONTINUE), ctx)
-        self.assertIn("Si ya aparece en el muro", ctx.bot.send_message.call_args.args[1])
+        self.assertIn("si ya aparece en el muro", ctx.bot.send_message.call_args.args[1])
         await bot.menu(update("https://onlyfans.com/101/modelo"), ctx)
         self.assertEqual((batch.status, batch.manual), ("done", [1]))
         self.assertEqual(api.publish_text.await_count, 1)

@@ -1,4 +1,5 @@
 import asyncio
+from threading import Event, Thread
 
 from telegram.ext import ApplicationBuilder
 
@@ -34,6 +35,7 @@ def main(stop_event=None, on_ready=None, credentials=None, creator=None, recordi
             raise AgencyKeyError("La modelo configurada ya no está disponible para esta clave")
         log.info("Bot conectado · Modelo fija: %s · Ejecución local", selected.name)
 
+    sync_stop = Event()
     try:
         app = (
             ApplicationBuilder()
@@ -45,8 +47,12 @@ def main(stop_event=None, on_ready=None, credentials=None, creator=None, recordi
             .build()
         )
         bot.register(app, agencykey, creator, recording, events=recording_events,
-                     telegram_users=telegram_users, journal=journal)
-        log.info("Iniciando AgencyKey Recorder Tests.")
+                     telegram_users=telegram_users, journal=journal,
+                     publication_reporting=recording_session_client is not None)
+        if recording_session_client is not None:
+            Thread(target=journal.sync_publications, args=(recording_session_client, sync_stop),
+                   name="dropper-publications", daemon=True).start()
+        log.info("Iniciando Dropper.")
         if stop_event is None:
             app.run_polling(allowed_updates=["message"])
         else:
@@ -55,5 +61,7 @@ def main(stop_event=None, on_ready=None, credentials=None, creator=None, recordi
     except Exception:
         log.exception("Dropper se detuvo durante el arranque o la ejecución.")
         raise SystemExit(1) from None
+    finally:
+        sync_stop.set()
     log.info("Dropper detenido.")
 

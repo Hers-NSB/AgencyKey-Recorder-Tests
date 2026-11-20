@@ -8,9 +8,9 @@ if not exist vendor\encoder\ffmpeg.exe (
  echo Falta vendor\encoder\ffmpeg.exe. Descarga el artefacto minimal-windows-encoder de GitHub Actions.
  goto error
 )
-.venv\Scripts\python -m PyInstaller --clean --noconfirm AgencyKeyRecorderTests.spec
+.venv\Scripts\python -m PyInstaller --clean --noconfirm Dropper.spec
 if errorlevel 1 goto error
-echo Ejecutable creado en dist\AgencyKeyRecorderTests.exe
+echo Ejecutable creado en dist\Dropper.exe
 pause
 exit /b 0
 :error

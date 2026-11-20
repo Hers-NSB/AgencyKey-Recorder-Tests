@@ -12,7 +12,7 @@ a = Analysis(
     excludes=['imageio_ffmpeg', 'playwright.sync_api', 'playwright.__main__'], noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name='AgencyKeyRecorderTests',
+exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name='Dropper',
           debug=False, bootloader_ignore_signals=False, strip=False, upx=False, console=True,
           hide_console='hide-early')
 
